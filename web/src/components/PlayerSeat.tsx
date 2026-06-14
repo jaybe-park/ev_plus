@@ -9,9 +9,10 @@ interface Props {
   badge: ActionBadge | null;
   isFolded: boolean;
   isBetting: boolean;
-  cardsDealt: number;        // 0~2: 받은 카드 수
-  myCardsRevealed: boolean;  // 내 카드 공개 여부 (human만)
+  cardsDealt: number;
+  myCardsRevealed: boolean;
   onRevealCards?: () => void;
+  showdownRevealed: boolean; // showdown 이벤트 재생 후(또는 재생 종료 후)에 true
 }
 
 const BADGE_STYLES: Record<ActionBadge["variant"], string> = {
@@ -29,7 +30,7 @@ function Slot({ id }: { id: string }) {
 
 export default function PlayerSeat({
   player, isWinner, isActive, isThinking, badge,
-  isFolded, isBetting, cardsDealt, myCardsRevealed, onRevealCards,
+  isFolded, isBetting, cardsDealt, myCardsRevealed, onRevealCards, showdownRevealed,
 }: Props) {
   const ringClass = isWinner
     ? "ring-4 ring-yellow-400"
@@ -70,8 +71,8 @@ export default function PlayerSeat({
       );
     }
 
-    // 쇼다운: 봇 카드 공개
-    if (!player.is_human && player.hole_cards) {
+    // 쇼다운: showdown 이벤트 재생 후 + 서버가 카드를 보냈을 때만 공개
+    if (!player.is_human && player.hole_cards && showdownRevealed) {
       return (
         <>
           {player.hole_cards.map((c, i) => (

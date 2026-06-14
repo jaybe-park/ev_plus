@@ -26,6 +26,7 @@ export default function App() {
     foldedDuringReplay,
     bettingPlayer,
     dealtCards,
+    showdownRevealed,
     enqueue,
     skip,
     setVisibleCardCount,
@@ -130,6 +131,7 @@ export default function App() {
               dealtCards={dealtCards}
               myCardsRevealed={myCardsRevealed}
               onRevealCards={() => setMyCardsRevealed((v) => !v)}
+              showdownRevealed={showdownRevealed}
             />
             {state.hand_over && !isReplaying && (
               <HandResult

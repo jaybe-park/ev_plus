@@ -112,7 +112,10 @@ class WebGameSession:
 
         players_out = []
         for p in self.game.players:
-            reveal = p.is_human or (self.hand_over and not p.is_folded)
+            # 봇 카드는 실제 쇼다운(여러 명 대결)이 있었을 때만 공개
+            # 모두 폴드 → 1명 남은 경우는 카드 비공개
+            had_showdown = bool(self.showdown_hands)
+            reveal = p.is_human or (self.hand_over and not p.is_folded and had_showdown)
             players_out.append({
                 "name": p.name,
                 "chips": p.chips,

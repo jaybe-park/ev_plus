@@ -28,10 +28,11 @@ export interface EventQueueState {
   isThinking: boolean;
   badge: ActionBadge | null;
   visibleCardCount: number;
-  visibleLogCount: number;           // state.action_log 중 몇 개까지 표시할지
+  visibleLogCount: number;
   foldedDuringReplay: Set<string>;
   bettingPlayer: string | null;
   dealtCards: Map<string, number>;
+  showdownRevealed: boolean;         // showdown 이벤트가 재생됐는지 (봇 카드 공개 시점)
   enqueue: (
     events: GameEvent[],
     initialCardCount: number,
@@ -54,6 +55,7 @@ export function useEventQueue(): EventQueueState {
   const [foldedDuringReplay, setFoldedDuringReplay] = useState<Set<string>>(new Set());
   const [bettingPlayer, setBettingPlayer]           = useState<string | null>(null);
   const [dealtCards, setDealtCards]                 = useState<Map<string, number>>(new Map());
+  const [showdownRevealed, setShowdownRevealed]     = useState(false);
 
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const clearTimers = () => {
@@ -74,6 +76,7 @@ export function useEventQueue(): EventQueueState {
       setVisibleLogCount(initialLogCount);
       setFoldedDuringReplay(new Set(initialFolded));
       if (isNewHand) setDealtCards(new Map());
+      setShowdownRevealed(false);
       setQueue(events);
       if (events.length > 0) setIsReplaying(true);
     },
@@ -88,6 +91,7 @@ export function useEventQueue(): EventQueueState {
     setBadge(null);
     setBettingPlayer(null);
     setIsReplaying(false);
+    setShowdownRevealed(false);
   }, []);
 
   useEffect(() => {
@@ -164,9 +168,10 @@ export function useEventQueue(): EventQueueState {
       // 기계적 이벤트 (blind, street_start, showdown, winner)
       const b = formatBadge(current);
       if (b) setBadge(b);
-      // 로그: 이벤트 시작 즉시 등장
       if (current.log) setVisibleLogCount((n) => n + 1);
       if (current.type === "blind" && player) setBettingPlayer(player);
+      // showdown 이벤트: 봇 카드 공개
+      if (current.type === "showdown") setShowdownRevealed(true);
 
       const t = setTimeout(() => {
         setBadge(null);
@@ -191,6 +196,7 @@ export function useEventQueue(): EventQueueState {
     foldedDuringReplay,
     bettingPlayer,
     dealtCards,
+    showdownRevealed,
     enqueue,
     skip,
     setVisibleCardCount,
