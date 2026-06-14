@@ -18,18 +18,45 @@ gto_postflop_hands       ← 포스트플랍 핸드별 빈도 (미사용)
 
 ## 현재 저장된 데이터 현황
 
-| 스팟 | 소스 | 상태 |
+### RFI (오픈 레인지) — GTO Wizard ✅
+
+| 스팟 | 오픈률 | 상태 |
 |---|---|---|
-| UTG RFI (30% open) | GTO Wizard | ✅ 정확 |
-| MP/HJ RFI (34% open) | GTO Wizard | ✅ 정확 |
-| CO RFI (40% open) | GTO Wizard | ✅ 정확 |
-| BTN RFI (52% open) | GTO Wizard | ✅ 정확 |
-| SB RFI (59% open) | GTO Wizard | ✅ 정확 |
-| BB vs BTN | 구 JSON | ⚠️ 교정 필요 |
-| BB vs CO | 구 JSON | ⚠️ 교정 필요 |
-| BB vs MP | 구 JSON | ⚠️ 교정 필요 |
-| BB vs UTG | 구 JSON | ⚠️ AKo 오류 포함 |
-| SB vs BTN | 구 JSON | ⚠️ 교정 필요 |
+| UTG RFI | 30% | ✅ GTO Wizard |
+| HJ RFI | 34% | ✅ GTO Wizard |
+| CO RFI | 40% | ✅ GTO Wizard |
+| BTN RFI | 52% | ✅ GTO Wizard |
+| SB RFI | 59% | ✅ GTO Wizard |
+
+### vs_open (수비 레인지) — GTO Wizard ✅
+
+| 스팟 | 3bet 핸드 수 | 상태 |
+|---|---|---|
+| HJ vs UTG open | 38/169 (~22%) | ✅ GTO Wizard |
+| CO vs UTG open | 41/169 (~24%) | ✅ GTO Wizard |
+| BTN vs UTG open | 43/169 (~25%) | ✅ GTO Wizard |
+| SB vs UTG open | 39/169 (~23%) | ✅ GTO Wizard |
+| BB vs UTG open | 54/169 (~32%) | ✅ GTO Wizard |
+| CO vs HJ open | 42/169 (~25%) | ✅ GTO Wizard |
+| BTN vs HJ open | 43/169 (~25%) | ✅ GTO Wizard |
+| SB vs HJ open | 45/169 (~27%) | ✅ GTO Wizard |
+| BB vs HJ open | 57/169 (~34%) | ✅ GTO Wizard |
+| BTN vs CO open | 47/169 (~28%) | ✅ GTO Wizard |
+| SB vs CO open | 41/169 (~24%) | ✅ GTO Wizard |
+| BB vs CO open | 60/169 (~36%) | ✅ GTO Wizard |
+| SB vs BTN open | 46/169 (~27%) | ✅ GTO Wizard |
+| BB vs BTN open | 67/169 (~40%) | ✅ GTO Wizard |
+| BB vs SB open | 90/169 (~53%) | ✅ GTO Wizard |
+
+### vs_open — 미존재 (fold 100% 폴백)
+
+현재 기본 vs_open 12개 모두 수집 완료. 아래는 아직 없는 심화 스팟.
+
+| 스팟 | 비고 |
+|---|---|
+| HJ vs UTG cold call | 수집 예정 |
+| CO vs UTG cold call | 수집 예정 |
+| vs_3bet 전체 | 수집 예정 |
 
 **미존재 스팟 (데이터 없음 → fold 100% 폴백)**
 - vs_3bet 레인지 전체
