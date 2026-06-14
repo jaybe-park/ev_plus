@@ -27,7 +27,25 @@
 
 ## ✨ 기능 추가
 
-- [ ] **GTO 데이터 확장**
+### GTO 개선
+
+- [ ] **GTO 힌트 토글**
+  - 현재: 항상 표시됨
+  - 변경: 버튼으로 on/off 전환 (기본값: off)
+  - 위치: ActionBar 또는 헤더에 토글 버튼 추가
+
+- [ ] **GTO 데이터 DB화**
+  - 현재: JSON 파일로 관리 (`gto_data/`)
+  - 목표: SQLite DB로 전환하여 읽기/쓰기 관리
+  - 선행 조건: DB 기록 연결 완료 후
+
+- [ ] **Chrome 연동 — 실시간 GTO 스팟 저장**
+  - 실제 포커 사이트(GTO Wizard 등)에서 플레이하면서
+  - 누락된 스팟(포지션 조합)을 브라우저에서 감지 → 자동 저장
+  - 구현 방향: Chrome Extension or Claude in Chrome MCP 활용
+  - 저장 대상: 현재 없는 포지션 조합 (vs_3bet, 포스트플랍 등)
+
+- [ ] **GTO 데이터 확장** (수동 입력)
   - vs_3bet 레인지 (BTN_vs_BB 등)
   - SB vs CO, SB vs MP, SB vs UTG 등 빠진 vs_open 상황
   - 포스트플랍 레인지 (장기)
