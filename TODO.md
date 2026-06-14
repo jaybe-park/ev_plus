@@ -34,10 +34,22 @@
   - 변경: 버튼으로 on/off 전환 (기본값: off)
   - 위치: ActionBar 또는 헤더에 토글 버튼 추가
 
-- [ ] **GTO 데이터 DB화**
-  - 현재: JSON 파일로 관리 (`gto_data/`)
-  - 목표: SQLite DB로 전환하여 읽기/쓰기 관리
-  - 선행 조건: DB 기록 연결 완료 후
+- [ ] **GTO 데이터 DB화** ← 다음 작업
+  - 현재 JSON 데이터는 vs_open 일부가 부정확 (AKs/AKo 폴드 50% 등 명백한 오류 포함)
+  - **1단계: DB 스키마 생성**
+    - `gto_preflop_situations` (position, vs_position, range_type, raise_size)
+    - `gto_preflop_hands` (situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin)
+    - `gto_postflop_situations` / `gto_postflop_hands` — 별도 테이블로 분리
+  - **2단계: 마이그레이션 스크립트** (`tools/migrate_gto.py`)
+    - 기존 JSON → DB INSERT
+    - 완료 후 `gto_data/` 디렉터리 삭제 (DB가 source of truth)
+  - **3단계: `gto/loader.py` 교체**
+    - 파일 읽기 → DB 쿼리 방식으로 전환
+    - 앱 시작 시 전체 프리플랍 데이터 메모리 로드 (캐시)
+  - **4단계: 데이터 점진적 교체**
+    - 오류 있는 vs_open 레인지 공개 GTO 차트 참고해서 교정
+    - Chrome 연동 완성 후 자동 수집으로 확장
+  - 선행 조건: 없음 (독립 작업 가능)
 
 - [ ] **Chrome 연동 — 실시간 GTO 스팟 저장**
   - 실제 포커 사이트(GTO Wizard 등)에서 플레이하면서
