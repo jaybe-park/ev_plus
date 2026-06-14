@@ -69,4 +69,4 @@ ev_plus/
 | [AI 봇](docs/ai-bot.md) | 난이도별 전략, GTO 준수율 |
 | [DB 스키마](docs/db-schema.md) | 테이블 구조, 기록 설계 |
 | [테스트](docs/testing.md) | 테스트 항목, 실행 방법 |
-| [로드맵](docs/roadmap.md) | 미구현 기능, 개선 계획 |
+| [TODO](TODO.md) | 버그, 미연결 기능, 작업 목록 |
