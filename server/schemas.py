@@ -7,7 +7,7 @@ class StartGameRequest(BaseModel):
     chips: int = 1000
     num_bots: int = 5
     difficulty: str = "medium"  # easy / medium / hard
-    small_blind: int = 10
+    big_blind: int = 10
 
 
 class ActionRequest(BaseModel):

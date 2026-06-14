@@ -73,5 +73,5 @@ export interface SetupConfig {
   chips: number;
   num_bots: number;
   difficulty: "easy" | "medium" | "hard";
-  small_blind: number;
+  big_blind: number;
 }

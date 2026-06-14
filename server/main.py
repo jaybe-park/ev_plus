@@ -35,7 +35,7 @@ def start_game(req: StartGameRequest):
         chips=req.chips,
         num_bots=req.num_bots,
         difficulty=req.difficulty,
-        small_blind=req.small_blind,
+        small_blind=req.big_blind // 2,  # BB 입력 → SB = BB / 2
     )
     sessions[session_id] = session
     return session.get_state()

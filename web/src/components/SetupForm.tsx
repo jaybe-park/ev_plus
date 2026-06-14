@@ -11,7 +11,7 @@ export default function SetupForm({ onStart }: Props) {
     chips: 1000,
     num_bots: 5,
     difficulty: "medium",
-    small_blind: 10,
+    big_blind: 10,
   });
 
   const set = <K extends keyof SetupConfig>(k: K, v: SetupConfig[K]) =>
@@ -74,14 +74,14 @@ export default function SetupForm({ onStart }: Props) {
             </div>
           </Field>
 
-          <Field label="스몰 블라인드">
+          <Field label="빅 블라인드 (BB)">
             <input
               type="number"
               className="input"
-              value={form.small_blind}
+              value={form.big_blind}
               min={1}
               step={5}
-              onChange={(e) => set("small_blind", Number(e.target.value))}
+              onChange={(e) => set("big_blind", Number(e.target.value))}
             />
           </Field>
         </div>
