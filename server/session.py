@@ -147,6 +147,7 @@ class WebGameSession:
             "winners": self.winners,
             "showdown_hands": self.showdown_hands,
             "gto_hint": self._get_gto_hint() if waiting else None,
+            "gto_key": self._get_gto_key() if waiting else None,
             "action_log": self.action_log[-30:],
             "call_amount": call_amount,
             "min_raise_to": min_raise_to,
@@ -485,6 +486,50 @@ class WebGameSession:
         elif action == Action.ALL_IN:
             return f"{pos_str} {player.name}: 올인!"
         return f"{pos_str} {player.name}: {action.value}"
+
+    def _get_gto_key(self) -> Optional[dict]:
+        """현재 프리플랍 상황의 GTO 레인지 조회 키 반환"""
+        if self.game.current_street != Street.PREFLOP:
+            return None
+        if self.human.is_folded:
+            return None
+
+        positions = self.game.get_positions()
+        my_pos = positions.get(self.human.name, "")
+        if not my_pos:
+            return None
+
+        current_bet = self.game.current_bet
+        bb = self.game.big_blind
+
+        if current_bet <= bb:
+            # RFI: 아직 아무도 레이즈 안 함
+            return {"position": my_pos, "vs_position": None, "range_type": "open"}
+
+        # 레이즈가 있는 상황 — action_log에서 레이즈 횟수와 포지션 파악
+        raiser_positions = []
+        for entry in self.action_log:
+            if "──" in entry:  # 스트리트 구분선 = 프리플랍 끝
+                break
+            if "레이즈" in entry:
+                for p in self.game.players:
+                    if p.name in entry:
+                        pos = positions.get(p.name, "")
+                        if pos and pos not in raiser_positions:
+                            raiser_positions.append(pos)
+                        break
+
+        if not raiser_positions:
+            return None
+
+        opener_pos = raiser_positions[0]
+
+        if len(raiser_positions) == 1:
+            return {"position": my_pos, "vs_position": opener_pos, "range_type": "vs_open"}
+        else:
+            three_bettor_pos = raiser_positions[1]
+            vs_pos = f"{opener_pos}/{three_bettor_pos}"
+            return {"position": my_pos, "vs_position": vs_pos, "range_type": "vs_3bet"}
 
     def _get_gto_hint(self) -> Optional[str]:
         if self.human.is_folded or self.game.current_street != Street.PREFLOP:

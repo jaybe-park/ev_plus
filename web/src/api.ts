@@ -1,4 +1,4 @@
-import type { GameState, SetupConfig } from "./types";
+import type { GameState, SetupConfig, GtoKey, GtoRange } from "./types";
 
 const BASE = "https://localhost:8000";
 
@@ -29,4 +29,12 @@ export const api = {
 
   nextHand: (id: string): Promise<GameState> =>
     request(`/game/${id}/next-hand`, { method: "POST" }),
+
+  getGtoRange: (key: GtoKey): Promise<GtoRange> => {
+    const params = new URLSearchParams({ position: key.position, range_type: key.range_type });
+    if (key.vs_position !== null && key.vs_position !== undefined) {
+      params.set("vs_position", key.vs_position);
+    }
+    return request(`/gto/preflop/range?${params}`);
+  },
 };

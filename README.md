@@ -50,11 +50,11 @@ ev_plus/
 | 텍사스 홀덤 게임 엔진 | ✅ 완료 |
 | 웹 UI + 단계별 애니메이션 | ✅ 완료 |
 | AI 봇 3단계 | ✅ 완료 |
-| 프리플랍 GTO 힌트 (RFI 5개) | ✅ GTO Wizard 데이터 |
+| 프리플랍 GTO 힌트 | ✅ GTO Wizard 데이터 (RFI+vs_open+vs_3bet) |
+| GTO 패널 (레인지 그리드) | ✅ 오른쪽 탭 — 핸드별 색상 + 비교 |
 | 포커 로직 테스트 50개 | ✅ 전체 통과 |
-| GTO 데이터 DB화 | ✅ 완료 (SQLite) |
+| GTO 데이터 DB화 | ✅ 완료 (SQLite, 55개 스팟) |
 | GTO Wizard Chrome 연동 | ✅ HTTPS API 직접 저장 |
-| vs_open GTO 데이터 | ⚠️ 구 JSON (교정 필요) |
 | 포스트플랍 GTO | ❌ 미구현 |
 | DB 기록 연결 | ❌ 미연결 |
 

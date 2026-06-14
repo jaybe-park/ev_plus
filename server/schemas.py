@@ -65,3 +65,4 @@ class GameStateResponse(BaseModel):
     call_amount: int = 0
     min_raise_to: int = 0
     events: List[GameEvent] = []   # 이번 응답에서 발생한 이벤트 목록
+    gto_key: Optional[Dict[str, Any]] = None  # GTO 레인지 조회용 키 {position, vs_position, range_type}

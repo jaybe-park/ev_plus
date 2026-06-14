@@ -139,6 +139,57 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
     return {"ok": True, "situation": req.situation_label, "hands": len(req.hands)}
 
 
+@app.get("/gto/preflop/range")
+def get_gto_preflop_range(
+    position: str,
+    vs_position: Optional[str] = None,
+    range_type: str = "open",
+):
+    """프리플랍 레인지 데이터 반환 (전체 169핸드 + 요약 통계)"""
+    from gto.loader import _load_all, _cache
+    _load_all()
+
+    key = (position, vs_position, range_type)
+    data = _cache.get(key)
+
+    if not data:
+        return {
+            "found": False,
+            "position": position,
+            "vs_position": vs_position,
+            "range_type": range_type,
+        }
+
+    hands = data.get("hands", {})
+
+    # 콤보 수 가중 평균 계산
+    COMBOS = {"pair": 6, "suited": 4, "offsuit": 12}
+    total_combos = 0
+    summary: Dict[str, float] = {}
+
+    for hand, freqs in hands.items():
+        if len(hand) == 2:
+            c = COMBOS["pair"]
+        elif hand.endswith("s"):
+            c = COMBOS["suited"]
+        else:
+            c = COMBOS["offsuit"]
+        total_combos += c
+        for action, freq in freqs.items():
+            summary[action] = summary.get(action, 0.0) + freq * c
+
+    if total_combos > 0:
+        summary = {k: round(v / total_combos, 4) for k, v in summary.items()}
+
+    return {
+        "found": True,
+        "situation": data.get("situation", ""),
+        "raise_size": data.get("raise_size", ""),
+        "summary": summary,
+        "hands": hands,
+    }
+
+
 @app.get("/gto/preflop/situations")
 def list_gto_situations():
     """저장된 프리플랍 스팟 목록 반환."""
