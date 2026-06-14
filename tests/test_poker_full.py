@@ -637,6 +637,184 @@ def test_5_9_showdown_reveals_bot_cards():
 
 
 # ═════════════════════════════════════════════════════════════
+# 영역 6 — 버그 픽스 검증 (헤즈업 + 사이드팟)
+# ═════════════════════════════════════════════════════════════
+
+def test_6_1_headsup_blind_posting():
+    """헤즈업: dealer(BTN/SB)가 스몰 블라인드를 포스팅해야 함"""
+    game, players = make_game(2, chips=1000, sb=10)
+    # dealer=0 → P0=BTN/SB, P1=BB
+    game.start_hand()
+
+    positions = game.get_positions()
+    sb_name = next(name for name, pos in positions.items() if pos == "BTN/SB")
+    bb_name = next(name for name, pos in positions.items() if pos == "BB")
+
+    sb_player = next(p for p in players if p.name == sb_name)
+    bb_player = next(p for p in players if p.name == bb_name)
+
+    assert sb_player.total_bet_this_round == game.small_blind, \
+        f"BTN/SB는 SB({game.small_blind}) 포스팅해야 함, 실제={sb_player.total_bet_this_round}"
+    assert bb_player.total_bet_this_round == game.big_blind, \
+        f"BB는 BB({game.big_blind}) 포스팅해야 함, 실제={bb_player.total_bet_this_round}"
+
+def test_6_2_headsup_preflop_btnSB_acts_first():
+    """헤즈업 프리플랍: BTN/SB가 먼저 행동해야 함"""
+    game, players = make_game(2, chips=1000, sb=10)
+    game.start_hand()
+
+    order = game._betting_order(Street.PREFLOP)
+    positions = game.get_positions()
+
+    first_actor = order[0]
+    first_pos = positions.get(first_actor.name, "")
+    assert first_pos == "BTN/SB", \
+        f"헤즈업 프리플랍 첫 행동자는 BTN/SB여야 함, 실제={first_pos}({first_actor.name})"
+
+def test_6_3_headsup_postflop_bb_acts_first():
+    """헤즈업 포스트플랍: BB(딜러 반대)가 먼저 행동"""
+    game, players = make_game(2, chips=1000, sb=10)
+    game.start_hand()
+
+    order = game._betting_order(Street.FLOP)
+    positions = game.get_positions()
+    first_pos = positions.get(order[0].name, "")
+    assert first_pos == "BB", \
+        f"헤즈업 포스트플랍 첫 행동자는 BB여야 함, 실제={first_pos}"
+
+def test_6_4_headsup_chip_conservation():
+    """헤즈업 20핸드 칩 총량 보존"""
+    from server.session import WebGameSession
+    sess = WebGameSession("hu", "Human", 500, 1, "easy", 10)
+    total = sum(p.chips for p in sess.game.players) + sess.game.pot
+    assert total == 1000, f"초기 총합 1000이어야 함: {total}"
+
+    for _ in range(20):
+        if sess.game_over:
+            break
+        for _ in range(15):
+            state = sess.get_state()
+            if state["hand_over"] or state["game_over"]:
+                break
+            if state["waiting_for_action"]:
+                sess.submit_action("call", 0)
+        if sess.get_state()["hand_over"]:
+            sess.next_hand()
+
+    total_now = sum(p.chips for p in sess.game.players) + sess.game.pot
+    assert total_now == 1000, f"헤즈업 칩 보존 실패: {total_now}"
+
+def test_6_5_sidepot_shortstack_wins_mainpot_only():
+    """숏스택이 최강 핸드 — 메인팟만 받고, 사이드팟은 다음 강한 플레이어에게
+    P0(100 올인) AA, P1(500 올인) KK, P2(1000 올인) QQ
+    메인팟 = 100×3=300 → P0
+    사이드팟1 = (500-100)×2=800 → P1
+    사이드팟2 = (1000-500)×1=500 → P2 (본인 돈 반환)
+    """
+    from server.session import WebGameSession
+    sess = WebGameSession("sp1", "Human", 1000, 2, "easy", 10)
+
+    p0 = sess.human
+    p1 = sess.game.players[1]
+    p2 = sess.game.players[2]
+
+    # 모두 chips=0 (전부 베팅한 상태)로 통일 → total 체크가 단순해짐
+    p0.total_bet_this_round = 100;  p0.chips = 0;  p0.is_all_in = True
+    p1.total_bet_this_round = 500;  p1.chips = 0;  p1.is_all_in = True
+    p2.total_bet_this_round = 1000; p2.chips = 0;  p2.is_all_in = True
+    sess.game.pot = 1600
+
+    sess.game.community_cards = [
+        c("2","H"), c("7","D"), c("9","S"), c("3","C"), c("5","H")
+    ]
+    p0.hole_cards = [c("A","S"), c("A","H")]   # AA — 최강
+    p1.hole_cards = [c("K","S"), c("K","H")]   # KK
+    p2.hole_cards = [c("Q","S"), c("Q","H")]   # QQ
+
+    sess._do_showdown()
+
+    assert p0.chips == 300,  f"P0 메인팟(300) 수령 실패: {p0.chips}"
+    assert p1.chips == 800,  f"P1 사이드팟1(800) 수령 실패: {p1.chips}"
+    assert p2.chips == 500,  f"P2 사이드팟2(500, 본인 반환) 실패: {p2.chips}"
+    assert p0.chips + p1.chips + p2.chips == 1600, "팟 총합 보존 실패"
+
+def test_6_6_sidepot_three_allins():
+    """3명 다른 올인 → 팟이 3개로 정확히 분리"""
+    from server.session import WebGameSession
+    sess = WebGameSession("sp2", "Human", 1000, 2, "easy", 10)
+
+    p0, p1, p2 = sess.human, sess.game.players[1], sess.game.players[2]
+
+    p0.total_bet_this_round = 200;  p0.chips = 0;  p0.is_all_in = True
+    p1.total_bet_this_round = 200;  p1.chips = 0;  p1.is_all_in = True
+    p2.total_bet_this_round = 200;  p2.chips = 0;  p2.is_all_in = True
+    sess.game.pot = 600
+
+    pots = sess._calculate_side_pots()
+    assert len(pots) == 1, f"동일 기여액이면 팟 1개여야 함: {len(pots)}"
+    assert pots[0][0] == 600
+    assert len(pots[0][1]) == 3
+
+def test_6_7_sidepot_folded_player_contribution():
+    """폴드한 플레이어의 기여분은 팟에 포함되지만 수령 불가"""
+    from server.session import WebGameSession
+    sess = WebGameSession("sp3", "Human", 1000, 2, "easy", 10)
+
+    p0, p1, p2 = sess.human, sess.game.players[1], sess.game.players[2]
+
+    # P2가 200 넣고 폴드
+    p0.total_bet_this_round = 300; p0.chips = 700
+    p1.total_bet_this_round = 300; p1.chips = 700
+    p2.total_bet_this_round = 200; p2.chips = 800; p2.is_folded = True
+    sess.game.pot = 800  # 300+300+200
+
+    sess.game.community_cards = [
+        c("2","H"), c("7","D"), c("9","S"), c("3","C"), c("5","H")
+    ]
+    p0.hole_cards = [c("A","S"), c("A","H")]  # P0 승리
+    p1.hole_cards = [c("K","S"), c("K","H")]
+
+    sess._do_showdown()
+
+    assert "P0" in sess.winners or sess.human.name in sess.winners
+    # P0가 팟 전부(800) 수령, P2는 폴드로 아무것도 못 받음
+    assert p0.chips == 700 + 800, f"P0 전체 팟 수령해야 함: {p0.chips}"
+    assert p2.chips == 800, f"P2 폴드 후 추가 수령 없어야 함: {p2.chips}"
+
+def test_6_8_sidepot_conservation():
+    """사이드팟 분배 후 칩 총합 보존
+    P0(100 올인) AA, P1(400 올인) KK, P2(500 올인) QQ
+    메인팟 = 100×3=300 → P0
+    사이드팟1 = (400-100)×2=600 → P1
+    사이드팟2 = (500-400)×1=100 → P2 (본인 반환)
+    """
+    from server.session import WebGameSession
+    sess = WebGameSession("sp4", "Human", 1000, 2, "easy", 10)
+
+    p0, p1, p2 = sess.human, sess.game.players[1], sess.game.players[2]
+
+    p0.total_bet_this_round = 100; p0.chips = 0; p0.is_all_in = True
+    p1.total_bet_this_round = 400; p1.chips = 0; p1.is_all_in = True
+    p2.total_bet_this_round = 500; p2.chips = 0; p2.is_all_in = True
+    sess.game.pot = 1000
+
+    sess.game.community_cards = [
+        c("2","H"), c("7","D"), c("9","S"), c("3","C"), c("5","H")
+    ]
+    p0.hole_cards = [c("A","S"), c("A","H")]
+    p1.hole_cards = [c("K","S"), c("K","H")]
+    p2.hole_cards = [c("Q","S"), c("Q","H")]
+
+    sess._do_showdown()
+
+    assert p0.chips == 300, f"P0 메인팟(300) 실패: {p0.chips}"
+    assert p1.chips == 600, f"P1 사이드팟1(600) 실패: {p1.chips}"
+    assert p2.chips == 100, f"P2 사이드팟2(100) 실패: {p2.chips}"
+    total_after = p0.chips + p1.chips + p2.chips
+    assert total_after == 1000, f"사이드팟 후 칩 보존 실패: {total_after}"
+
+
+# ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
 
@@ -688,6 +866,15 @@ ALL_TESTS = [
     ("5-7  사람 카드 항상 공개",              test_5_7_human_cards_always_visible),
     ("5-8  봇 카드 핸드 중 숨김",             test_5_8_bot_cards_hidden_during_hand),
     ("5-9  쇼다운 시 봇 카드 공개",           test_5_9_showdown_reveals_bot_cards),
+    # 영역 6 — 버그 픽스
+    ("6-1  헤즈업 블라인드 포스팅 (BTN/SB=SB)", test_6_1_headsup_blind_posting),
+    ("6-2  헤즈업 프리플랍 BTN/SB 선행동",     test_6_2_headsup_preflop_btnSB_acts_first),
+    ("6-3  헤즈업 포스트플랍 BB 선행동",       test_6_3_headsup_postflop_bb_acts_first),
+    ("6-4  헤즈업 20핸드 칩 총량 보존",        test_6_4_headsup_chip_conservation),
+    ("6-5  사이드팟 — 숏스택 메인팟만 수령",   test_6_5_sidepot_shortstack_wins_mainpot_only),
+    ("6-6  사이드팟 — 동일 올인 팟 1개",       test_6_6_sidepot_three_allins),
+    ("6-7  사이드팟 — 폴드 기여분 처리",       test_6_7_sidepot_folded_player_contribution),
+    ("6-8  사이드팟 분배 후 칩 보존",          test_6_8_sidepot_conservation),
 ]
 
 
@@ -715,6 +902,7 @@ if __name__ == "__main__":
                 "3": "영역 3 — 팟 분배",
                 "4": "영역 4 — 게임 흐름",
                 "5": "영역 5 — 웹 세션",
+                "6": "영역 6 — 버그 픽스",
             }
             print(f"\n  {labels.get(area, '')}")
             print("  " + "─" * 40)

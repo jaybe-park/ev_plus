@@ -211,9 +211,15 @@ class TexasHoldem:
             p.reset_for_hand()
 
     def _post_blinds(self):
-        active = self._active_players_from_dealer()
-        sb_player = active[0]
-        bb_player = active[1]
+        n = len(self.players)
+        if n == 2:
+            # 헤즈업: 딜러(BTN/SB)가 스몰 블라인드, 상대가 빅 블라인드
+            sb_player = self.players[self.dealer_index]
+            bb_player = self.players[(self.dealer_index + 1) % n]
+        else:
+            active = self._active_players_from_dealer()
+            sb_player = active[0]
+            bb_player = active[1]
 
         sb_actual = sb_player.place_bet(self.small_blind)
         self.pot += sb_actual
@@ -294,10 +300,14 @@ class TexasHoldem:
     def _betting_order(self, street: Street) -> List[Player]:
         n = len(self.players)
         if street == Street.PREFLOP:
-            # UTG부터 (딜러+3)
-            start = (self.dealer_index + 3) % n
+            if n == 2:
+                # 헤즈업: BTN/SB(딜러)가 프리플랍 선행동
+                start = self.dealer_index
+            else:
+                # UTG부터 (딜러+3)
+                start = (self.dealer_index + 3) % n
         else:
-            # SB부터
+            # SB부터 (딜러+1)
             start = (self.dealer_index + 1) % n
         return [self.players[(start + i) % n] for i in range(n)]
 

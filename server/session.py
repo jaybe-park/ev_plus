@@ -266,6 +266,55 @@ class WebGameSession:
         self._setup_round(street)
         self._run_until_human()
 
+    def _calculate_side_pots(self) -> list:
+        """
+        플레이어별 total_bet_this_round 기준으로 사이드팟 목록 계산.
+        반환: [(pot_amount, [eligible_players]), ...] — 메인팟부터 순서대로.
+        eligible_players: 해당 팟에 참여 가능한 비폴드 플레이어.
+        """
+        all_players = self.game.players
+        contenders = [
+            p for p in all_players
+            if not p.is_folded and len(p.hole_cards) >= 2
+        ]
+        if not contenders:
+            return []
+
+        # 기여액 오름차순으로 정렬 (올인 숏스택이 앞에 옴)
+        sorted_contenders = sorted(contenders, key=lambda p: p.total_bet_this_round)
+
+        pots = []
+        processed = {p.name: 0 for p in all_players}
+        prev_level = 0
+
+        for i, c in enumerate(sorted_contenders):
+            level = c.total_bet_this_round
+            if level <= prev_level:
+                continue
+            delta = level - prev_level
+
+            # 이 레벨까지 모든 플레이어(폴드 포함)의 기여분 합산
+            pot_amount = 0
+            for p in all_players:
+                take = min(p.total_bet_this_round - processed[p.name], delta)
+                pot_amount += take
+                processed[p.name] += take
+
+            # 이 팟에 참여 가능한 플레이어: 이 레벨 이상 기여한 비폴드 플레이어
+            eligible = sorted_contenders[i:]
+            if pot_amount > 0:
+                pots.append((pot_amount, eligible))
+            prev_level = level
+
+        # 미처리 잔여분 (폴드 플레이어가 최대 기여자보다 많이 낸 경우 등)
+        remainder = sum(
+            p.total_bet_this_round - processed[p.name] for p in all_players
+        )
+        if remainder > 0 and pots:
+            pots[-1] = (pots[-1][0] + remainder, pots[-1][1])
+
+        return pots
+
     def _do_showdown(self) -> None:
         from core.evaluator import HandEvaluator
 
@@ -277,26 +326,33 @@ class WebGameSession:
             self.winners = [winner.name]
             self.action_log.append(f"🏆 {winner.name} 승리 (상대 폴드)")
         else:
-            # 홀카드가 없는 플레이어는 평가에서 제외 (비정상 상태 방어)
             contenders = [p for p in contenders if len(p.hole_cards) >= 2]
             if not contenders:
                 self.game.pot = 0
                 self.game._advance_dealer()
                 self.hand_over = True
                 return
+
             evals = {
                 p.name: HandEvaluator.evaluate(p.hole_cards + self.game.community_cards)
                 for p in contenders
             }
-            best = max(evals.values())
-            win_players = [p for p in contenders if evals[p.name] == best]
-            share = self.game.pot // len(win_players)
-            remainder = self.game.pot % len(win_players)
-            for w in win_players:
-                w.chips += share
-            if remainder:
-                win_players[0].chips += remainder
-            self.winners = [w.name for w in win_players]
+
+            pots = self._calculate_side_pots()
+            all_winners: set = set()
+
+            for pot_amount, eligible in pots:
+                best = max(evals[p.name] for p in eligible)
+                pot_winners = [p for p in eligible if evals[p.name] == best]
+                share = pot_amount // len(pot_winners)
+                remainder = pot_amount % len(pot_winners)
+                for w in pot_winners:
+                    w.chips += share
+                    all_winners.add(w.name)
+                if remainder:
+                    pot_winners[0].chips += remainder
+
+            self.winners = list(all_winners)
             self.showdown_hands = {p.name: str(evals[p.name]) for p in contenders}
             self.action_log.append(f"🏆 {', '.join(self.winners)} 승리")
 
