@@ -206,6 +206,7 @@ class TexasHoldem:
         self.community_cards = []
         self.pot = 0
         self.current_bet = 0
+        self.min_raise = self.big_blind  # 매 핸드 초기화 (이전 핸드 레이즈 값 잔류 방지)
         self.event_log = []
         for p in self.players:
             p.reset_for_hand()
