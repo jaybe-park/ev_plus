@@ -1,0 +1,340 @@
+"""
+웹 게임 세션 — 한 번에 한 액션씩 처리하는 스텝 방식
+HTTP 요청마다: 사람 액션 적용 → 봇들 자동 처리 → 다음 사람 차례까지 진행
+"""
+
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from typing import List, Optional, Dict
+
+from core.game import TexasHoldem, Action, Street
+from core.player import Player
+from ai.bot import PokerBot, BotDifficulty
+from gto.advisor import GTOAdvisor
+
+STREETS = [Street.PREFLOP, Street.FLOP, Street.TURN, Street.RIVER]
+
+
+class WebGameSession:
+    def __init__(
+        self,
+        session_id: str,
+        human_name: str,
+        chips: int,
+        num_bots: int,
+        difficulty: str,
+        small_blind: int,
+    ):
+        self.session_id = session_id
+        diff_map = {
+            "easy": BotDifficulty.EASY,
+            "medium": BotDifficulty.MEDIUM,
+            "hard": BotDifficulty.HARD,
+        }
+        difficulty_enum = diff_map.get(difficulty, BotDifficulty.MEDIUM)
+
+        self.human = Player(human_name, chips, is_human=True)
+        bot_names = ["🤖 Alpha", "🤖 Beta", "🤖 Gamma", "🤖 Delta", "🤖 Epsilon"]
+        bot_players = [Player(bot_names[i], chips, is_human=False) for i in range(min(num_bots, 5))]
+
+        all_players = [self.human] + bot_players
+        self.game = TexasHoldem(all_players, small_blind=small_blind, big_blind=small_blind * 2)
+        self.bots: Dict[str, PokerBot] = {
+            p.name: PokerBot(p, difficulty_enum) for p in bot_players
+        }
+        self.gto = GTOAdvisor()
+
+        # 베팅 라운드 상태
+        self._order: List[Player] = []
+        self._acted: set = set()
+        self._round_i: int = 0
+        self.street_index: int = 0
+
+        # 핸드/게임 상태
+        self.hand_number: int = 0
+        self.hand_over: bool = False
+        self.game_over: bool = False
+        self.winners: List[str] = []
+        self.showdown_hands: Dict[str, str] = {}
+        self.action_log: List[str] = []
+
+        self._start_new_hand()
+
+    # ──────────────────────────────────────────
+    # 공개 API
+    # ──────────────────────────────────────────
+
+    def submit_action(self, action_str: str, amount: int) -> None:
+        if self.hand_over or self.game_over:
+            return
+
+        action_map = {
+            "fold": Action.FOLD,
+            "check": Action.CHECK,
+            "call": Action.CALL,
+            "raise": Action.RAISE,
+            "allin": Action.ALL_IN,
+        }
+        action = action_map.get(action_str)
+        if action is None:
+            return
+
+        player = self._next_to_act()
+        if player is None or not player.is_human:
+            return
+
+        self._apply(player, action, amount)
+        self._run_until_human()
+
+    def next_hand(self) -> None:
+        if self.game_over:
+            return
+        self._start_new_hand()
+
+    def get_state(self) -> dict:
+        positions = self.game.get_positions()
+        next_player = self._next_to_act() if not self.hand_over else None
+        waiting = next_player is not None and next_player.is_human
+
+        call_amount = 0
+        min_raise_to = 0
+        if waiting:
+            call_amount = max(0, self.game.current_bet - self.human.current_bet)
+            min_raise_to = self.game.current_bet + self.game.min_raise
+
+        players_out = []
+        for p in self.game.players:
+            reveal = p.is_human or (self.hand_over and not p.is_folded)
+            players_out.append({
+                "name": p.name,
+                "chips": p.chips,
+                "current_bet": p.current_bet,
+                "is_folded": p.is_folded,
+                "is_all_in": p.is_all_in,
+                "is_human": p.is_human,
+                "position": positions.get(p.name, ""),
+                "hole_cards": [str(c) for c in p.hole_cards] if reveal else None,
+            })
+
+        return {
+            "session_id": self.session_id,
+            "hand_number": self.hand_number,
+            "street": self.game.current_street.value,
+            "pot": self.game.pot,
+            "current_bet": self.game.current_bet,
+            "min_raise": self.game.min_raise,
+            "big_blind": self.game.big_blind,
+            "community_cards": [str(c) for c in self.game.community_cards],
+            "players": players_out,
+            "waiting_for_action": waiting,
+            "hand_over": self.hand_over,
+            "game_over": self.game_over,
+            "winners": self.winners,
+            "showdown_hands": self.showdown_hands,
+            "gto_hint": self._get_gto_hint() if waiting else None,
+            "action_log": self.action_log[-30:],
+            "call_amount": call_amount,
+            "min_raise_to": min_raise_to,
+        }
+
+    # ──────────────────────────────────────────
+    # 핸드 시작
+    # ──────────────────────────────────────────
+
+    def _start_new_hand(self) -> None:
+        self.hand_over = False
+        self.winners = []
+        self.showdown_hands = {}
+        self.action_log = []
+
+        # 파산 플레이어 제거
+        self.game.players = [p for p in self.game.players if p.chips > 0]
+        if len(self.game.players) < 2 or self.human not in self.game.players:
+            self.game_over = True
+            return
+        self.game.dealer_index = self.game.dealer_index % len(self.game.players)
+
+        self.hand_number += 1
+        self.game.start_hand()
+        self.game.current_street = Street.PREFLOP
+        self.street_index = 0
+
+        # 블라인드 로그
+        positions = self.game.get_positions()
+        for name, pos in positions.items():
+            if pos in ("SB", "BTN/SB"):
+                self.action_log.append(f"[{pos}] {name}: 스몰 블라인드 ({self.game.small_blind})")
+            elif pos == "BB":
+                self.action_log.append(f"[{pos}] {name}: 빅 블라인드 ({self.game.big_blind})")
+
+        self._setup_round(Street.PREFLOP)
+        self._run_until_human()
+
+    # ──────────────────────────────────────────
+    # 베팅 라운드 관리
+    # ──────────────────────────────────────────
+
+    def _setup_round(self, street: Street) -> None:
+        n = len(self.game.players)
+        start = (self.game.dealer_index + 3) % n if street == Street.PREFLOP else (self.game.dealer_index + 1) % n
+        self._order = [self.game.players[(start + i) % n] for i in range(n)]
+        self._acted = set()
+        self._round_i = 0
+
+        # 프리플랍: SB는 이미 액션한 것으로 처리
+        if street == Street.PREFLOP:
+            positions = self.game.get_positions()
+            for p in self.game.players:
+                if positions.get(p.name, "") in ("SB", "BTN/SB") and p.current_bet > 0:
+                    self._acted.add(p.name)
+
+    def _is_round_over(self) -> bool:
+        active = [p for p in self.game.players if not p.is_folded and not p.is_all_in]
+        if not active:
+            return True
+        return all(
+            p.name in self._acted and p.current_bet == self.game.current_bet
+            for p in active
+        )
+
+    def _next_to_act(self) -> Optional[Player]:
+        n = len(self._order)
+        if not self._order:
+            return None
+        checked = 0
+        while checked < n * 3:
+            if self.game._count_active() <= 1:
+                return None
+            if self._is_round_over():
+                return None
+            p = self._order[self._round_i % n]
+            if p.is_folded or p.is_all_in:
+                self._round_i += 1
+                checked += 1
+                continue
+            if p.name in self._acted and p.current_bet == self.game.current_bet:
+                self._round_i += 1
+                checked += 1
+                continue
+            return p
+        return None
+
+    def _apply(self, player: Player, action: Action, amount: int) -> None:
+        self.game.apply_action(player, action, amount)
+        self._acted.add(player.name)
+        if action in (Action.RAISE, Action.ALL_IN):
+            self._acted = {player.name}
+            idx = self._order.index(player)
+            self._round_i = (idx + 1) % len(self._order)
+        else:
+            self._round_i += 1
+        self.action_log.append(self._fmt(player, action, amount))
+
+    def _run_until_human(self) -> None:
+        while True:
+            player = self._next_to_act()
+            if player is None:
+                self._advance_street()
+                return
+            if player.is_human:
+                return
+            bot = self.bots.get(player.name)
+            if bot:
+                action, amount = bot.decide_action(self.game._get_game_state())
+                self._apply(player, action, amount)
+            else:
+                self._apply(player, Action.CHECK, 0)
+
+    def _advance_street(self) -> None:
+        if self.game._count_active() <= 1 or self.street_index >= 3:
+            self._do_showdown()
+            return
+
+        self.street_index += 1
+        street = STREETS[self.street_index]
+        self.game.deal_community(street)
+        self.game.current_street = street
+        self.game.current_bet = 0
+        self.game.min_raise = self.game.big_blind
+        for p in self.game.players:
+            if not p.is_folded:
+                p.reset_for_street()
+
+        self.action_log.append(f"── {street.value} ──")
+        self._setup_round(street)
+        self._run_until_human()
+
+    def _do_showdown(self) -> None:
+        from core.evaluator import HandEvaluator
+
+        contenders = [p for p in self.game.players if not p.is_folded]
+
+        if len(contenders) == 1:
+            winner = contenders[0]
+            winner.chips += self.game.pot
+            self.winners = [winner.name]
+            self.action_log.append(f"🏆 {winner.name} 승리 (상대 폴드)")
+        else:
+            # 홀카드가 없는 플레이어는 평가에서 제외 (비정상 상태 방어)
+            contenders = [p for p in contenders if len(p.hole_cards) >= 2]
+            if not contenders:
+                self.game.pot = 0
+                self.game._advance_dealer()
+                self.hand_over = True
+                return
+            evals = {
+                p.name: HandEvaluator.evaluate(p.hole_cards + self.game.community_cards)
+                for p in contenders
+            }
+            best = max(evals.values())
+            win_players = [p for p in contenders if evals[p.name] == best]
+            share = self.game.pot // len(win_players)
+            remainder = self.game.pot % len(win_players)
+            for w in win_players:
+                w.chips += share
+            if remainder:
+                win_players[0].chips += remainder
+            self.winners = [w.name for w in win_players]
+            self.showdown_hands = {p.name: str(evals[p.name]) for p in contenders}
+            self.action_log.append(f"🏆 {', '.join(self.winners)} 승리")
+
+        self.game.pot = 0
+        self.game._advance_dealer()
+        self.hand_over = True
+
+        if self.human.chips <= 0 or sum(1 for p in self.game.players if p.chips > 0) < 2:
+            self.game_over = True
+
+    # ──────────────────────────────────────────
+    # 헬퍼
+    # ──────────────────────────────────────────
+
+    def _fmt(self, player: Player, action: Action, amount: int) -> str:
+        positions = self.game.get_positions()
+        pos = positions.get(player.name, "")
+        pos_str = f"[{pos}]" if pos else ""
+        if action == Action.FOLD:
+            return f"{pos_str} {player.name}: 폴드"
+        elif action == Action.CHECK:
+            return f"{pos_str} {player.name}: 체크"
+        elif action == Action.CALL:
+            call_amt = self.game.current_bet - player.current_bet
+            return f"{pos_str} {player.name}: 콜 ({call_amt})"
+        elif action == Action.RAISE:
+            return f"{pos_str} {player.name}: 레이즈 → {amount}"
+        elif action == Action.ALL_IN:
+            return f"{pos_str} {player.name}: 올인!"
+        return f"{pos_str} {player.name}: {action.value}"
+
+    def _get_gto_hint(self) -> Optional[str]:
+        if self.human.is_folded or self.game.current_street != Street.PREFLOP:
+            return None
+        state = self.game._get_game_state()
+        positions = state.get("positions", {})
+        my_pos = positions.get(self.human.name, "")
+        rec = self.gto.get_recommendation(
+            self.human.hole_cards, my_pos, positions, state, self.game.big_blind
+        )
+        return self.gto.format_hint(rec)
