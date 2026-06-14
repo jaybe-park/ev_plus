@@ -48,6 +48,44 @@ gto_postflop_hands       ← 포스트플랍 핸드별 빈도 (미사용)
 | BB vs BTN open | 67/169 (~40%) | ✅ GTO Wizard |
 | BB vs SB open | 90/169 (~53%) | ✅ GTO Wizard |
 
+### vs_3bet — GTO Wizard (31/35 완료)
+
+> ⚠️ GTO Wizard 무료 계정 하루 100스팟 제한으로 4개 미완성. 내일 이어서 수집 가능.
+
+**완료 (31개):**
+
+| 오프너 | 3베터 | 대응 포지션 |
+|---|---|---|
+| UTG | HJ | CO, BTN, SB, BB, UTG |
+| UTG | CO | BTN, SB, BB, UTG |
+| UTG | BTN | SB, BB, UTG |
+| UTG | SB | BB, UTG |
+| UTG | BB | UTG |
+| HJ | CO | BTN, SB, BB, HJ |
+| HJ | BTN | SB, BB, HJ |
+| HJ | SB | BB, HJ |
+| HJ | BB | HJ |
+| CO | BTN | SB, BB, CO |
+| CO | SB | BB, CO |
+| CO | BB | CO |
+
+**미완성 (4개) — 내일 수집:**
+
+| 스팟 | 상태 |
+|---|---|
+| BB vs [BTN open / SB 3bet] | ❌ 한도 초과 |
+| BTN vs SB 3bet | ❌ 한도 초과 |
+| BTN vs BB 3bet | ❌ 한도 초과 |
+| SB vs BB 3bet | ❌ 한도 초과 |
+| BTN vs [UTG open / HJ 3bet] | 24/169 | ✅ GTO Wizard |
+| SB vs [UTG open / HJ 3bet] | 20/169 | ✅ GTO Wizard |
+| BB vs [UTG open / HJ 3bet] | 20/169 | ✅ GTO Wizard |
+| UTG vs HJ 3bet | 51/169 | ✅ GTO Wizard |
+| BTN vs [UTG open / CO 3bet] | 24/169 | ✅ GTO Wizard |
+| SB vs [UTG open / CO 3bet] | 20/169 | ✅ GTO Wizard |
+| BB vs [UTG open / CO 3bet] | 17/169 | ✅ GTO Wizard |
+| UTG vs CO 3bet | 51/169 | ✅ GTO Wizard |
+
 ### vs_open — 미존재 (fold 100% 폴백)
 
 현재 기본 vs_open 12개 모두 수집 완료. 아래는 아직 없는 심화 스팟.

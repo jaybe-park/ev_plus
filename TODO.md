@@ -52,14 +52,20 @@
   - UTG(19%), MP/HJ(34%), CO(40%), BTN(52%), SB(59%) — 모두 AKo fold=0 확인
   - 구 JSON 데이터(오류 있음) → GTO Wizard 정확 데이터로 대체
 
-- [ ] **vs_open / vs_3bet 데이터 GTO Wizard로 교체** ← 다음 작업
-  - 현재 구 JSON 데이터 (오류 있음): BB vs BTN/CO/MP/UTG, SB vs BTN
-  - 동일한 방법으로 GTO Wizard에서 스팟별 추출 후 저장
-  - URL: `preflop_actions=F-F-F-R&history_spot=5` (BB vs BTN 등)
+- [x] **vs_open 15개 GTO Wizard로 수집 완료**
+  - UI 클릭 방식으로 모든 포지션 조합 수집
+
+- [x] **vs_3bet 31/35개 수집** (GTO Wizard 무료 한도 100스팟/일 초과로 중단)
+  - 완료: UTG/HJ/CO 오픈 시리즈 전체, HJ 오픈 전체, CO 오픈 전체
+  - 미완성 4개: BTN 오픈 시리즈 3개 + SB 오픈 1개
+
+- [ ] **vs_3bet 나머지 4개 수집** ← 다음 작업 (GTO Wizard 한도 리셋 후)
+  - BB vs [BTN open / SB 3bet]
+  - BTN vs SB 3bet
+  - BTN vs BB 3bet
+  - SB vs BB 3bet
 
 - [ ] **GTO 데이터 확장** (미존재 스팟)
-  - vs_3bet 레인지 (BTN_vs_BB 등)
-  - SB vs CO, SB vs MP, SB vs UTG 등 빠진 vs_open 상황
   - 포스트플랍 레인지 (장기)
 
 - [ ] **GTO 데이터 확장** (수동 입력)
