@@ -1,17 +1,15 @@
 """
-GTO 데이터 로더
-홀카드 → 핸드 표기 변환 + JSON 레인지 로드
+GTO 데이터 로더 — SQLite 기반 (v2)
+앱 시작 시 프리플랍 데이터 전체를 메모리에 로드하고 캐시.
 """
 
-import json
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import random
 from typing import Optional
 from core.card import Card, Rank
-
-# 데이터 루트 경로
-_DATA_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "gto_data", "preflop")
-_cache: dict = {}
-
 
 _RANK_GTO = {"10": "T"}
 
@@ -27,7 +25,6 @@ def hand_to_notation(card1: Card, card2: Card) -> str:
     r1, r2 = card1.rank, card2.rank
     suited = card1.suit == card2.suit
 
-    # 높은 랭크가 앞에
     if r1.rank_value < r2.rank_value:
         r1, r2 = r2, r1
 
@@ -40,47 +37,84 @@ def hand_to_notation(card1: Card, card2: Card) -> str:
         return f"{s1}{s2}o"
 
 
-def load_range(path: str) -> Optional[dict]:
-    """JSON 레인지 파일 로드 (캐시)"""
-    if path in _cache:
-        return _cache[path]
-    full_path = os.path.join(_DATA_ROOT, path)
-    if not os.path.exists(full_path):
-        return None
-    with open(full_path, encoding="utf-8") as f:
-        data = json.load(f)
-    _cache[path] = data
-    return data
+# ──────────────────────────────────────────
+# 메모리 캐시
+# (position, vs_position, range_type) → range_data dict
+# ──────────────────────────────────────────
+_cache: dict = {}
+_loaded: bool = False
+
+
+def _load_all() -> None:
+    """앱 첫 사용 시 DB에서 전체 프리플랍 데이터를 로드."""
+    global _loaded
+    if _loaded:
+        return
+
+    try:
+        from db.connection import get_connection
+        conn = get_connection()
+        cur = conn.cursor()
+
+        situations = cur.execute(
+            "SELECT * FROM gto_preflop_situations"
+        ).fetchall()
+
+        for s in situations:
+            hands_rows = cur.execute(
+                "SELECT hand, freq_fold, freq_call, freq_raise, freq_allin "
+                "FROM gto_preflop_hands WHERE situation_id = ?",
+                (s["id"],)
+            ).fetchall()
+
+            hands = {}
+            for h in hands_rows:
+                freqs = {}
+                if h["freq_fold"]  > 0: freqs["fold"]  = h["freq_fold"]
+                if h["freq_call"]  > 0: freqs["call"]  = h["freq_call"]
+                if h["freq_raise"] > 0: freqs["raise"] = h["freq_raise"]
+                if h["freq_allin"] > 0: freqs["allin"] = h["freq_allin"]
+                if not freqs:
+                    freqs = {"fold": 1.0}
+                hands[h["hand"]] = freqs
+
+            key = (s["position"], s["vs_position"], s["range_type"])
+            _cache[key] = {
+                "situation":     s["situation_label"],
+                "raise_size":    s["raise_size"] or "",
+                "range_type":    s["range_type"],
+                "hands":         hands,
+            }
+
+        conn.close()
+        _loaded = True
+
+    except Exception as e:
+        # DB 없거나 마이그레이션 전이면 조용히 실패 (힌트 없음)
+        _loaded = True  # 재시도 방지
 
 
 def get_open_range(position: str) -> Optional[dict]:
-    """포지션별 오픈 레인지 로드"""
-    return load_range(f"open/{position}.json")
+    """포지션별 오픈(RFI) 레인지"""
+    _load_all()
+    return _cache.get((position, None, "open"))
 
 
 def get_vs_open_range(my_pos: str, opener_pos: str) -> Optional[dict]:
-    """상대 오픈에 대한 수비 레인지 로드"""
-    fname = f"vs_open/{my_pos}_vs_{opener_pos}.json"
-    return load_range(fname)
+    """상대 오픈에 대한 수비 레인지"""
+    _load_all()
+    return _cache.get((my_pos, opener_pos, "vs_open"))
 
 
 def get_action_frequencies(range_data: dict, hand_notation: str) -> dict:
-    """
-    레인지 데이터에서 특정 핸드의 액션 빈도 반환
-    없으면 fold 100% 반환
-    """
+    """레인지 데이터에서 특정 핸드의 액션 빈도 반환. 없으면 fold 100%."""
     if range_data is None:
         return {"fold": 1.0}
-    hands = range_data.get("hands", {})
-    return hands.get(hand_notation, {"fold": 1.0})
+    return range_data.get("hands", {}).get(hand_notation, {"fold": 1.0})
 
 
 def sample_action(frequencies: dict) -> str:
-    """
-    빈도에 따라 랜덤하게 액션 선택 (혼합 전략 구현)
-    예) {"fold":0.3, "raise":0.7} → 70% 확률로 "raise"
-    """
-    import random
+    """빈도에 따라 랜덤하게 액션 선택 (혼합 전략)."""
     r = random.random()
     cumulative = 0.0
     for action, freq in frequencies.items():
@@ -90,32 +124,16 @@ def sample_action(frequencies: dict) -> str:
     return list(frequencies.keys())[-1]
 
 
-def get_open_situation(positions: dict, player_name: str, game_state: dict) -> Optional[str]:
-    """
-    현재 상황이 오픈 레인지에 해당하는지 판단
-    아직 아무도 레이즈 안 했고 내가 첫 오픈이면 → 포지션 반환
-    """
-    players = game_state.get("players", [])
-    # 나보다 앞에 액션한 플레이어 중 레이즈한 사람이 있는지 확인
-    my_pos = positions.get(player_name, "")
-    any_raise = game_state.get("current_bet", 0) > game_state.get("big_blind", 20)
-    if not any_raise:
-        return my_pos  # RFI 상황
-    return None
-
-
 def find_opener_position(positions: dict, game_state: dict, big_blind: int) -> Optional[str]:
     """현재 레이즈를 처음 한 플레이어의 포지션 찾기"""
     current_bet = game_state.get("current_bet", 0)
     if current_bet <= big_blind:
         return None
-    # current_bet이 BB 초과 → 누군가 오픈했음
-    # 가장 많이 베팅한 사람 = 오프너
     players = game_state.get("players", [])
     opener = max(
         (p for p in players if p.get("current_bet", 0) == current_bet),
         key=lambda p: p.get("current_bet", 0),
-        default=None
+        default=None,
     )
     if opener:
         return positions.get(opener["name"])

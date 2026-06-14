@@ -2,7 +2,7 @@
 poker_simulator DB 스키마 정의 및 마이그레이션
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -133,10 +133,79 @@ CREATE INDEX IF NOT EXISTS idx_postflop_human  ON postflop_actions(is_human);
 CREATE INDEX IF NOT EXISTS idx_games_played    ON games(played_at);
 """
 
+CREATE_GTO_PREFLOP_SITUATIONS = """
+CREATE TABLE IF NOT EXISTS gto_preflop_situations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    position        TEXT    NOT NULL,   -- BTN, CO, MP, UTG, SB, BB
+    vs_position     TEXT,               -- NULL = RFI, 오프너 포지션 = vs_open/vs_3bet
+    range_type      TEXT    NOT NULL,   -- open | vs_open | vs_3bet
+    raise_size      TEXT,               -- "2.5bb", "3x"
+    situation_label TEXT    NOT NULL,   -- "BTN RFI", "BB vs BTN open"
+    UNIQUE(position, vs_position, range_type)
+);
+"""
+
+CREATE_GTO_PREFLOP_HANDS = """
+CREATE TABLE IF NOT EXISTS gto_preflop_hands (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    situation_id    INTEGER NOT NULL REFERENCES gto_preflop_situations(id) ON DELETE CASCADE,
+    hand            TEXT    NOT NULL,   -- "AKs", "AA", "K7o"
+    freq_fold       REAL    NOT NULL DEFAULT 0.0,
+    freq_call       REAL    NOT NULL DEFAULT 0.0,
+    freq_raise      REAL    NOT NULL DEFAULT 0.0,
+    freq_allin      REAL    NOT NULL DEFAULT 0.0,
+    UNIQUE(situation_id, hand)
+);
+"""
+
+CREATE_GTO_POSTFLOP_SITUATIONS = """
+CREATE TABLE IF NOT EXISTS gto_postflop_situations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    street          TEXT    NOT NULL,   -- flop | turn | river
+    ip_position     TEXT    NOT NULL,   -- in-position 플레이어
+    oop_position    TEXT    NOT NULL,   -- out-of-position 플레이어
+    pot_type        TEXT,               -- SRP | 3BP | 4BP
+    action_sequence TEXT,               -- "check-bet" | "bet-raise" 등
+    raise_size      TEXT,
+    situation_label TEXT,
+    UNIQUE(street, ip_position, oop_position, pot_type, action_sequence)
+);
+"""
+
+CREATE_GTO_POSTFLOP_HANDS = """
+CREATE TABLE IF NOT EXISTS gto_postflop_hands (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    situation_id    INTEGER NOT NULL REFERENCES gto_postflop_situations(id) ON DELETE CASCADE,
+    hand            TEXT    NOT NULL,
+    freq_check      REAL    DEFAULT 0.0,
+    freq_fold       REAL    DEFAULT 0.0,
+    freq_call       REAL    DEFAULT 0.0,
+    freq_raise_33   REAL    DEFAULT 0.0,
+    freq_raise_50   REAL    DEFAULT 0.0,
+    freq_raise_75   REAL    DEFAULT 0.0,
+    freq_raise_100  REAL    DEFAULT 0.0,
+    freq_allin      REAL    DEFAULT 0.0,
+    UNIQUE(situation_id, hand)
+);
+"""
+
+CREATE_GTO_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_gto_pre_sit   ON gto_preflop_situations(position, vs_position, range_type);
+CREATE INDEX IF NOT EXISTS idx_gto_pre_hand  ON gto_preflop_hands(situation_id, hand);
+CREATE INDEX IF NOT EXISTS idx_gto_post_sit  ON gto_postflop_situations(street, ip_position, oop_position);
+CREATE INDEX IF NOT EXISTS idx_gto_post_hand ON gto_postflop_hands(situation_id, hand);
+"""
+
 ALL_STATEMENTS = [
     CREATE_GAMES,
     CREATE_PREFLOP_ACTIONS,
     CREATE_POSTFLOP_ACTIONS,
     CREATE_SCHEMA_VERSION,
     CREATE_INDEXES,
+    # v2: GTO 데이터
+    CREATE_GTO_PREFLOP_SITUATIONS,
+    CREATE_GTO_PREFLOP_HANDS,
+    CREATE_GTO_POSTFLOP_SITUATIONS,
+    CREATE_GTO_POSTFLOP_HANDS,
+    CREATE_GTO_INDEXES,
 ]
