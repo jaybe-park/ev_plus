@@ -41,16 +41,26 @@
   - `gto_data/` 디렉터리 삭제 (DB가 source of truth)
   - ⚠️ vs_open 일부 데이터 부정확 (AKs/AKo fold 50% 등) → 점진적 교정 필요
 
-- [ ] **GTO 데이터 교정**
-  - vs_open 레인지 오류 수정: AKs/AKo는 폴드 없음, QQ 3bet 빈도 조정 등
-  - 공개 GTO 차트(GTOBase, Upswing 등) 참고해서 DB 직접 UPDATE
-  - Chrome 연동 완성 후 자동 수집으로 확장
+- [x] **GTO Wizard → DB 연동 구축** (Claude in Chrome MCP)
+  - 서버 HTTPS 전환 (ssl/ 자체 서명 인증서, Mixed Content 해결)
+  - 추출 방식: CSS `background-size`의 누적 퍼센트로 각 핸드 action 빈도 파싱
+  - URL 패턴: `history_spot=N` (N: UTG=0, HJ=1, CO=2, BTN=3, SB=4, BB=5)
+  - GTO Wizard → `fetch('https://localhost:8000/gto/preflop/save')` 직접 호출
+  - RFI 5개 스팟 GTO Wizard 데이터로 교체 완료
 
-- [ ] **Chrome 연동 — 실시간 GTO 스팟 저장**
-  - 실제 포커 사이트(GTO Wizard 등)에서 플레이하면서
-  - 누락된 스팟(포지션 조합)을 브라우저에서 감지 → 자동 저장
-  - 구현 방향: Chrome Extension or Claude in Chrome MCP 활용
-  - 저장 대상: 현재 없는 포지션 조합 (vs_3bet, 포스트플랍 등)
+- [x] **RFI 데이터 GTO Wizard로 교체**
+  - UTG(19%), MP/HJ(34%), CO(40%), BTN(52%), SB(59%) — 모두 AKo fold=0 확인
+  - 구 JSON 데이터(오류 있음) → GTO Wizard 정확 데이터로 대체
+
+- [ ] **vs_open / vs_3bet 데이터 GTO Wizard로 교체** ← 다음 작업
+  - 현재 구 JSON 데이터 (오류 있음): BB vs BTN/CO/MP/UTG, SB vs BTN
+  - 동일한 방법으로 GTO Wizard에서 스팟별 추출 후 저장
+  - URL: `preflop_actions=F-F-F-R&history_spot=5` (BB vs BTN 등)
+
+- [ ] **GTO 데이터 확장** (미존재 스팟)
+  - vs_3bet 레인지 (BTN_vs_BB 등)
+  - SB vs CO, SB vs MP, SB vs UTG 등 빠진 vs_open 상황
+  - 포스트플랍 레인지 (장기)
 
 - [ ] **GTO 데이터 확장** (수동 입력)
   - vs_3bet 레인지 (BTN_vs_BB 등)

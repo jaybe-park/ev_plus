@@ -8,6 +8,8 @@ from typing import Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from typing import Optional
 
 from server.schemas import StartGameRequest, ActionRequest, GameStateResponse
 from server.session import WebGameSession
@@ -16,7 +18,7 @@ app = FastAPI(title="Texas Hold'em Poker")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origin_regex=r"(http://(localhost|127\.0\.0\.1)(:\d+)?|https://.*\.gtowizard\.com)",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -63,6 +65,94 @@ def next_hand(session_id: str):
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
     session.next_hand()
     return session.get_state()
+
+
+# ──────────────────────────────────────────
+# GTO 데이터 관리 API
+# ──────────────────────────────────────────
+
+class GtoPreflopSaveRequest(BaseModel):
+    position: str                          # BTN, CO, MP, UTG, SB, BB
+    vs_position: Optional[str] = None     # None=RFI, "BTN"=vs_open
+    range_type: str                        # open | vs_open | vs_3bet
+    raise_size: Optional[str] = None      # "2.5bb", "3x"
+    situation_label: str                   # "BTN RFI"
+    hands: Dict[str, Dict[str, float]]    # {"AA": {"raise": 1.0}, ...}
+
+
+@app.post("/gto/preflop/save")
+def save_gto_preflop(req: GtoPreflopSaveRequest):
+    """GTO Wizard에서 추출한 프리플랍 레인지를 DB에 저장 (덮어쓰기)."""
+    from db.connection import get_connection
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # SQLite에서 NULL=NULL이 성립하지 않아 ON CONFLICT가 작동 안 함
+    # → IS NULL 비교로 직접 존재 여부 확인 후 update or insert
+    if req.vs_position is None:
+        row = cur.execute(
+            "SELECT id FROM gto_preflop_situations WHERE position=? AND range_type=? AND vs_position IS NULL",
+            (req.position, req.range_type)
+        ).fetchone()
+    else:
+        row = cur.execute(
+            "SELECT id FROM gto_preflop_situations WHERE position=? AND range_type=? AND vs_position=?",
+            (req.position, req.range_type, req.vs_position)
+        ).fetchone()
+
+    if row:
+        sit_id = row["id"]
+        cur.execute(
+            "UPDATE gto_preflop_situations SET raise_size=?, situation_label=? WHERE id=?",
+            (req.raise_size, req.situation_label, sit_id)
+        )
+    else:
+        cur.execute(
+            "INSERT INTO gto_preflop_situations (position, vs_position, range_type, raise_size, situation_label) VALUES (?,?,?,?,?)",
+            (req.position, req.vs_position, req.range_type, req.raise_size, req.situation_label)
+        )
+        sit_id = cur.lastrowid
+
+    # 기존 핸드 삭제 후 재삽입
+    cur.execute("DELETE FROM gto_preflop_hands WHERE situation_id=?", (sit_id,))
+    for hand, freqs in req.hands.items():
+        cur.execute("""
+            INSERT INTO gto_preflop_hands
+                (situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            sit_id, hand,
+            freqs.get("fold", 0.0),
+            freqs.get("call", 0.0),
+            freqs.get("raise", 0.0),
+            freqs.get("allin", 0.0),
+        ))
+
+    conn.commit()
+    conn.close()
+
+    # 캐시 무효화
+    import gto.loader as loader
+    loader._cache.clear()
+    loader._loaded = False
+
+    return {"ok": True, "situation": req.situation_label, "hands": len(req.hands)}
+
+
+@app.get("/gto/preflop/situations")
+def list_gto_situations():
+    """저장된 프리플랍 스팟 목록 반환."""
+    from db.connection import get_connection
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT s.situation_label, s.position, s.vs_position, s.range_type,
+               COUNT(h.id) as hand_count
+        FROM gto_preflop_situations s
+        LEFT JOIN gto_preflop_hands h ON h.situation_id = s.id
+        GROUP BY s.id ORDER BY s.range_type, s.position
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # 프로덕션: React 빌드 파일 서빙
