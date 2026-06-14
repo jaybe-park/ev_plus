@@ -19,12 +19,12 @@ from db.connection import get_connection
 GTO_DATA_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "gto_data", "preflop")
 
 # JSON 파일 → (position, vs_position, range_type) 매핑
-OPEN_POSITIONS   = ["BTN", "CO", "MP", "UTG", "SB"]
+OPEN_POSITIONS   = ["BTN", "CO", "HJ", "UTG", "SB"]
 VS_OPEN_MAP = {
     # "파일명_위치": (my_pos, vs_pos)
     "BB_vs_BTN": ("BB", "BTN"),
     "BB_vs_CO":  ("BB", "CO"),
-    "BB_vs_MP":  ("BB", "MP"),
+    "BB_vs_HJ":  ("BB", "HJ"),
     "BB_vs_UTG": ("BB", "UTG"),
     "SB_vs_BTN": ("SB", "BTN"),
 }

@@ -330,8 +330,8 @@ class TexasHoldem:
             3: ["BTN", "SB", "BB"],
             4: ["BTN", "SB", "BB", "UTG"],
             5: ["BTN", "SB", "BB", "UTG", "CO"],
-            6: ["BTN", "SB", "BB", "UTG", "MP", "CO"],
-            7: ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "CO"],
+            6: ["BTN", "SB", "BB", "UTG", "HJ", "CO"],
+            7: ["BTN", "SB", "BB", "UTG", "UTG+1", "HJ", "CO"],
         }
         labels = labels_by_count.get(n, ["BTN", "SB", "BB"] + [f"P{i}" for i in range(n - 3)])
         positions = {}

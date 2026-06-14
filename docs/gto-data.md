@@ -147,12 +147,3 @@ range_data = get_vs_open_range("BB", "BTN")
 - 169개 핸드 전체 저장 (누락 핸드 = fold 100% 폴백)
 - 빈도 합계 ≈ 1.0
 
----
-
-## 포지션 네이밍 주의
-
-GTO Wizard는 6-max에서 `UTG → HJ → CO → BTN → SB → BB`를 사용하지만,
-우리 게임 엔진(`game.py`)은 `UTG → MP → CO → BTN → SB → BB`를 사용한다.
-
-GTO Wizard의 **HJ = 우리 코드의 MP**.
-DB 저장 시 position 컬럼은 게임 엔진 기준(`MP`)으로 저장해야 힌트가 정상 작동한다.
