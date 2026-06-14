@@ -28,6 +28,24 @@ export interface GameState {
   action_log: string[];
   call_amount: number;
   min_raise_to: number;
+  events: GameEvent[];
+}
+
+// ── 애니메이션 이벤트 ──────────────────────────────
+
+export type GameEvent =
+  | { type: "blind";         player: string; position: string; amount: number; street: string }
+  | { type: "deal_hole";     player: string; position: string; street: string }
+  | { type: "action";        player: string; position: string; action: string; amount: number; street: string }
+  | { type: "street_start";  street: string }
+  | { type: "community_card"; card: string; street: string }
+  | { type: "showdown";      hands: Record<string, string[]> }
+  | { type: "winner";        winners: string[]; pot: number };
+
+export interface ActionBadge {
+  player: string;
+  text: string;
+  variant: "blind" | "fold" | "check" | "call" | "raise" | "allin";
 }
 
 export interface SetupConfig {

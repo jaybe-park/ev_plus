@@ -1,6 +1,7 @@
 """
 웹 게임 세션 — 한 번에 한 액션씩 처리하는 스텝 방식
 HTTP 요청마다: 사람 액션 적용 → 봇들 자동 처리 → 다음 사람 차례까지 진행
+이벤트 목록을 함께 반환해 프론트엔드 애니메이션에 활용
 """
 
 import sys
@@ -60,6 +61,9 @@ class WebGameSession:
         self.showdown_hands: Dict[str, str] = {}
         self.action_log: List[str] = []
 
+        # 애니메이션 이벤트 큐
+        self._events: List[dict] = []
+
         self._start_new_hand()
 
     # ──────────────────────────────────────────
@@ -85,12 +89,14 @@ class WebGameSession:
         if player is None or not player.is_human:
             return
 
+        self._events = []  # 새 액션마다 이벤트 초기화
         self._apply(player, action, amount)
         self._run_until_human()
 
     def next_hand(self) -> None:
         if self.game_over:
             return
+        self._events = []
         self._start_new_hand()
 
     def get_state(self) -> dict:
@@ -118,6 +124,10 @@ class WebGameSession:
                 "hole_cards": [str(c) for c in p.hole_cards] if reveal else None,
             })
 
+        # 이벤트를 반환하고 초기화 (한 번만 소비)
+        events = list(self._events)
+        self._events = []
+
         return {
             "session_id": self.session_id,
             "hand_number": self.hand_number,
@@ -137,7 +147,15 @@ class WebGameSession:
             "action_log": self.action_log[-30:],
             "call_amount": call_amount,
             "min_raise_to": min_raise_to,
+            "events": events,
         }
+
+    # ──────────────────────────────────────────
+    # 이벤트 발행 헬퍼
+    # ──────────────────────────────────────────
+
+    def _emit(self, event: dict) -> None:
+        self._events.append(event)
 
     # ──────────────────────────────────────────
     # 핸드 시작
@@ -161,13 +179,37 @@ class WebGameSession:
         self.game.current_street = Street.PREFLOP
         self.street_index = 0
 
-        # 블라인드 로그
+        # 블라인드 이벤트 + 로그
         positions = self.game.get_positions()
-        for name, pos in positions.items():
-            if pos in ("SB", "BTN/SB"):
-                self.action_log.append(f"[{pos}] {name}: 스몰 블라인드 ({self.game.small_blind})")
-            elif pos == "BB":
-                self.action_log.append(f"[{pos}] {name}: 빅 블라인드 ({self.game.big_blind})")
+        for p in self.game.players:
+            pos = positions.get(p.name, "")
+            if pos in ("SB", "BTN/SB") and p.current_bet > 0:
+                self.action_log.append(f"[{pos}] {p.name}: 스몰 블라인드 ({self.game.small_blind})")
+                self._emit({
+                    "type": "blind",
+                    "player": p.name,
+                    "position": pos,
+                    "amount": self.game.small_blind,
+                    "street": "프리플랍",
+                })
+            elif pos == "BB" and p.current_bet > 0:
+                self.action_log.append(f"[{pos}] {p.name}: 빅 블라인드 ({self.game.big_blind})")
+                self._emit({
+                    "type": "blind",
+                    "player": p.name,
+                    "position": pos,
+                    "amount": self.game.big_blind,
+                    "street": "프리플랍",
+                })
+
+        # 카드 딜 이벤트
+        for p in self.game.players:
+            self._emit({
+                "type": "deal_hole",
+                "player": p.name,
+                "position": positions.get(p.name, ""),
+                "street": "프리플랍",
+            })
 
         self._setup_round(Street.PREFLOP)
         self._run_until_human()
@@ -222,6 +264,12 @@ class WebGameSession:
         return None
 
     def _apply(self, player: Player, action: Action, amount: int) -> None:
+        positions = self.game.get_positions()
+        street = self.game.current_street.value
+
+        # 콜 금액은 apply_action 전에 계산
+        call_amt = max(0, self.game.current_bet - player.current_bet)
+
         self.game.apply_action(player, action, amount)
         self._acted.add(player.name)
         if action in (Action.RAISE, Action.ALL_IN):
@@ -230,7 +278,19 @@ class WebGameSession:
             self._round_i = (idx + 1) % len(self._order)
         else:
             self._round_i += 1
-        self.action_log.append(self._fmt(player, action, amount))
+
+        self.action_log.append(self._fmt_log(player, action, call_amt, amount))
+
+        # 액션 이벤트 발행
+        event_amount = amount if action in (Action.RAISE,) else call_amt
+        self._emit({
+            "type": "action",
+            "player": player.name,
+            "position": positions.get(player.name, ""),
+            "action": action.value,
+            "amount": event_amount,
+            "street": street,
+        })
 
     def _run_until_human(self) -> None:
         while True:
@@ -263,15 +323,25 @@ class WebGameSession:
                 p.reset_for_street()
 
         self.action_log.append(f"── {street.value} ──")
+
+        # 스트리트 전환 이벤트
+        self._emit({
+            "type": "street_start",
+            "street": street.value,
+        })
+
+        # 커뮤니티 카드 이벤트 (장별로 분리)
+        comm = self.game.community_cards
+        if street == Street.FLOP:
+            for card in comm[-3:]:
+                self._emit({"type": "community_card", "card": str(card), "street": street.value})
+        else:
+            self._emit({"type": "community_card", "card": str(comm[-1]), "street": street.value})
+
         self._setup_round(street)
         self._run_until_human()
 
     def _calculate_side_pots(self) -> list:
-        """
-        플레이어별 total_bet_this_round 기준으로 사이드팟 목록 계산.
-        반환: [(pot_amount, [eligible_players]), ...] — 메인팟부터 순서대로.
-        eligible_players: 해당 팟에 참여 가능한 비폴드 플레이어.
-        """
         all_players = self.game.players
         contenders = [
             p for p in all_players
@@ -280,9 +350,7 @@ class WebGameSession:
         if not contenders:
             return []
 
-        # 기여액 오름차순으로 정렬 (올인 숏스택이 앞에 옴)
         sorted_contenders = sorted(contenders, key=lambda p: p.total_bet_this_round)
-
         pots = []
         processed = {p.name: 0 for p in all_players}
         prev_level = 0
@@ -293,23 +361,18 @@ class WebGameSession:
                 continue
             delta = level - prev_level
 
-            # 이 레벨까지 모든 플레이어(폴드 포함)의 기여분 합산
             pot_amount = 0
             for p in all_players:
                 take = min(p.total_bet_this_round - processed[p.name], delta)
                 pot_amount += take
                 processed[p.name] += take
 
-            # 이 팟에 참여 가능한 플레이어: 이 레벨 이상 기여한 비폴드 플레이어
             eligible = sorted_contenders[i:]
             if pot_amount > 0:
                 pots.append((pot_amount, eligible))
             prev_level = level
 
-        # 미처리 잔여분 (폴드 플레이어가 최대 기여자보다 많이 낸 경우 등)
-        remainder = sum(
-            p.total_bet_this_round - processed[p.name] for p in all_players
-        )
+        remainder = sum(p.total_bet_this_round - processed[p.name] for p in all_players)
         if remainder > 0 and pots:
             pots[-1] = (pots[-1][0] + remainder, pots[-1][1])
 
@@ -325,6 +388,11 @@ class WebGameSession:
             winner.chips += self.game.pot
             self.winners = [winner.name]
             self.action_log.append(f"🏆 {winner.name} 승리 (상대 폴드)")
+            self._emit({
+                "type": "winner",
+                "winners": [winner.name],
+                "pot": self.game.pot,
+            })
         else:
             contenders = [p for p in contenders if len(p.hole_cards) >= 2]
             if not contenders:
@@ -337,6 +405,15 @@ class WebGameSession:
                 p.name: HandEvaluator.evaluate(p.hole_cards + self.game.community_cards)
                 for p in contenders
             }
+
+            # 쇼다운 이벤트 — 봇 카드 공개
+            self._emit({
+                "type": "showdown",
+                "hands": {
+                    p.name: [str(c) for c in p.hole_cards]
+                    for p in contenders if not p.is_human
+                },
+            })
 
             pots = self._calculate_side_pots()
             all_winners: set = set()
@@ -356,6 +433,12 @@ class WebGameSession:
             self.showdown_hands = {p.name: str(evals[p.name]) for p in contenders}
             self.action_log.append(f"🏆 {', '.join(self.winners)} 승리")
 
+            self._emit({
+                "type": "winner",
+                "winners": self.winners,
+                "pot": self.game.pot,
+            })
+
         self.game.pot = 0
         self.game._advance_dealer()
         self.hand_over = True
@@ -367,7 +450,7 @@ class WebGameSession:
     # 헬퍼
     # ──────────────────────────────────────────
 
-    def _fmt(self, player: Player, action: Action, amount: int) -> str:
+    def _fmt_log(self, player: Player, action: Action, call_amt: int, amount: int) -> str:
         positions = self.game.get_positions()
         pos = positions.get(player.name, "")
         pos_str = f"[{pos}]" if pos else ""
@@ -376,7 +459,6 @@ class WebGameSession:
         elif action == Action.CHECK:
             return f"{pos_str} {player.name}: 체크"
         elif action == Action.CALL:
-            call_amt = self.game.current_bet - player.current_bet
             return f"{pos_str} {player.name}: 콜 ({call_amt})"
         elif action == Action.RAISE:
             return f"{pos_str} {player.name}: 레이즈 → {amount}"
