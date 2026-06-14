@@ -15,6 +15,7 @@ interface Props {
   myCardsRevealed: boolean;
   onRevealCards: () => void;
   showdownRevealed: boolean;
+  displayedChips: Map<string, number>;
 }
 
 const POSITIONS: Record<number, [number, number][]> = {
@@ -28,7 +29,7 @@ const POSITIONS: Record<number, [number, number][]> = {
 export default function PokerTable({
   state, activePlayer, isThinking, badge, visibleCardCount,
   foldedDuringReplay, bettingPlayer, isReplaying,
-  dealtCards, myCardsRevealed, onRevealCards, showdownRevealed,
+  dealtCards, myCardsRevealed, onRevealCards, showdownRevealed, displayedChips,
 }: Props) {
   const { players, community_cards, pot, street, winners, hand_over } = state;
 
@@ -116,7 +117,7 @@ export default function PokerTable({
           >
             <PlayerSeat
               player={player}
-              isWinner={hand_over && winners.includes(player.name)}
+              isWinner={hand_over && !isReplaying && winners.includes(player.name)}
               isActive={isActive}
               isThinking={isThinking && isActive}
               badge={badge}
@@ -126,6 +127,7 @@ export default function PokerTable({
               myCardsRevealed={myCardsRevealed}
               onRevealCards={player.is_human ? onRevealCards : undefined}
               showdownRevealed={!isReplaying || showdownRevealed}
+              chips={isReplaying ? (displayedChips.get(player.name) ?? player.chips) : player.chips}
             />
           </div>
         );

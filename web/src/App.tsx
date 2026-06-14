@@ -27,6 +27,7 @@ export default function App() {
     bettingPlayer,
     dealtCards,
     showdownRevealed,
+    displayedChips,
     enqueue,
     skip,
     setVisibleCardCount,
@@ -44,11 +45,17 @@ export default function App() {
       const initialCardCount = isNewHand ? 0 : (state?.community_cards.length ?? 0);
       const initialFolded    = isNewHand ? [] : (state?.players.filter((p) => p.is_folded).map((p) => p.name) ?? []);
       const initialLogCount  = isNewHand ? 0 : (state?.action_log.length ?? 0);
+      // 새 핸드: 블라인드가 이미 반영된 next.players 에서 chips+current_bet 으로 역산
+      // → SB: 990+10=1000, BB: 980+20=1000 (블라인드 포스팅 전 값)
+      // 기존 핸드: 직전 상태의 chips (이번 액션 전 값)
+      const initialChips = isNewHand
+        ? Object.fromEntries(next.players.map((p) => [p.name, p.chips + p.current_bet]))
+        : Object.fromEntries((state?.players ?? next.players).map((p) => [p.name, p.chips]));
 
       setState(next);
 
       if (next.events.length > 0) {
-        enqueue(next.events, initialCardCount, initialFolded, initialLogCount, isNewHand);
+        enqueue(next.events, initialCardCount, initialFolded, initialLogCount, isNewHand, initialChips);
       } else {
         setVisibleCardCount(next.community_cards.length);
       }
@@ -97,7 +104,7 @@ export default function App() {
           <div className="flex items-center gap-4 text-sm">
             <span className="text-gray-400">핸드 #{state.hand_number}</span>
             <span className="text-yellow-400 font-bold">
-              {human?.name}: {human?.chips.toLocaleString()} 칩
+              {human?.name}: {(isReplaying && human ? (displayedChips.get(human.name) ?? human.chips) : human?.chips ?? 0).toLocaleString()} 칩
             </span>
             {isReplaying && (
               <button
@@ -132,6 +139,7 @@ export default function App() {
               myCardsRevealed={myCardsRevealed}
               onRevealCards={() => setMyCardsRevealed((v) => !v)}
               showdownRevealed={showdownRevealed}
+              displayedChips={displayedChips}
             />
             {state.hand_over && !isReplaying && (
               <HandResult

@@ -39,8 +39,10 @@ class GameEvent(BaseModel):
     hands: Optional[Dict[str, List[str]]] = None  # 쇼다운 핸드 공개
     winners: Optional[List[str]] = None
     pot: Optional[int] = None
-    round: Optional[int] = None       # deal_card 이벤트: 1 또는 2 (몇 번째 라운드)
-    log: Optional[str] = None         # 액션 로그 패널에 표시할 텍스트
+    round: Optional[int] = None                      # deal_card: 1 or 2
+    log: Optional[str] = None                        # 액션 로그 텍스트
+    chips_after: Optional[int] = None                # action/blind: 액션 후 플레이어 잔여 칩
+    winner_chips: Optional[Dict[str, int]] = None    # winner: 승자별 최종 칩
 
 
 class GameStateResponse(BaseModel):

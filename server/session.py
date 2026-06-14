@@ -208,14 +208,16 @@ class WebGameSession:
                 self.action_log.append(log_text)
                 self._emit({
                     "type": "blind", "player": p.name, "position": pos,
-                    "amount": self.game.small_blind, "street": "프리플랍", "log": log_text,
+                    "amount": self.game.small_blind, "street": "프리플랍",
+                    "log": log_text, "chips_after": p.chips,
                 })
             elif pos == "BB" and p.current_bet > 0:
                 log_text = f"[{pos}] {p.name}: 빅 블라인드 ({self.game.big_blind})"
                 self.action_log.append(log_text)
                 self._emit({
                     "type": "blind", "player": p.name, "position": pos,
-                    "amount": self.game.big_blind, "street": "프리플랍", "log": log_text,
+                    "amount": self.game.big_blind, "street": "프리플랍",
+                    "log": log_text, "chips_after": p.chips,
                 })
 
         self._setup_round(Street.PREFLOP)
@@ -299,6 +301,7 @@ class WebGameSession:
             "amount": event_amount,
             "street": street,
             "log": log_text,
+            "chips_after": player.chips,
         })
 
     def _run_until_human(self) -> None:
@@ -403,6 +406,7 @@ class WebGameSession:
             self._emit({
                 "type": "winner", "winners": [winner.name],
                 "pot": self.game.pot, "log": win_log,
+                "winner_chips": {winner.name: winner.chips},
             })
         else:
             contenders = [p for p in contenders if len(p.hole_cards) >= 2]
@@ -450,6 +454,9 @@ class WebGameSession:
                 "log": win_log,
                 "winners": self.winners,
                 "pot": self.game.pot,
+                "winner_chips": {w.name: w.chips
+                                 for w in self.game.players
+                                 if w.name in all_winners},
             })
 
         self.game.pot = 0

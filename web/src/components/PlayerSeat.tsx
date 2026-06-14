@@ -12,7 +12,8 @@ interface Props {
   cardsDealt: number;
   myCardsRevealed: boolean;
   onRevealCards?: () => void;
-  showdownRevealed: boolean; // showdown 이벤트 재생 후(또는 재생 종료 후)에 true
+  showdownRevealed: boolean;
+  chips: number;             // 표시할 칩 (replay 중엔 이벤트 기준, 아니면 서버 기준)
 }
 
 const BADGE_STYLES: Record<ActionBadge["variant"], string> = {
@@ -30,7 +31,7 @@ function Slot({ id }: { id: string }) {
 
 export default function PlayerSeat({
   player, isWinner, isActive, isThinking, badge,
-  isFolded, isBetting, cardsDealt, myCardsRevealed, onRevealCards, showdownRevealed,
+  isFolded, isBetting, cardsDealt, myCardsRevealed, onRevealCards, showdownRevealed, chips,
 }: Props) {
   const ringClass = isWinner
     ? "ring-4 ring-yellow-400"
@@ -133,7 +134,7 @@ export default function PlayerSeat({
         <div className="text-white text-xs font-semibold truncate max-w-[80px]">
           {player.name.replace("🤖 ", "")}
         </div>
-        <div className="text-yellow-400 text-xs font-bold">{player.chips.toLocaleString()}</div>
+        <div className="text-yellow-400 text-xs font-bold">{chips.toLocaleString()}</div>
         {player.position && (
           <span className="text-[10px] bg-gray-700 text-gray-300 rounded px-1">{player.position}</span>
         )}
