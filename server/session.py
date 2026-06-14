@@ -179,37 +179,41 @@ class WebGameSession:
         self.game.current_street = Street.PREFLOP
         self.street_index = 0
 
-        # 블라인드 이벤트 + 로그
         positions = self.game.get_positions()
-        for p in self.game.players:
-            pos = positions.get(p.name, "")
-            if pos in ("SB", "BTN/SB") and p.current_bet > 0:
-                self.action_log.append(f"[{pos}] {p.name}: 스몰 블라인드 ({self.game.small_blind})")
+
+        # 1. 카드 딜 이벤트 먼저 — SB부터 시작해서 2라운드 딜링
+        n = len(self.game.players)
+        dealing_order = [
+            self.game.players[(self.game.dealer_index + 1 + i) % n]
+            for i in range(n)
+        ]
+        for deal_round in range(1, 3):
+            for p in dealing_order:
                 self._emit({
-                    "type": "blind",
+                    "type": "deal_card",
                     "player": p.name,
-                    "position": pos,
-                    "amount": self.game.small_blind,
-                    "street": "프리플랍",
-                })
-            elif pos == "BB" and p.current_bet > 0:
-                self.action_log.append(f"[{pos}] {p.name}: 빅 블라인드 ({self.game.big_blind})")
-                self._emit({
-                    "type": "blind",
-                    "player": p.name,
-                    "position": pos,
-                    "amount": self.game.big_blind,
+                    "position": positions.get(p.name, ""),
+                    "round": deal_round,
                     "street": "프리플랍",
                 })
 
-        # 카드 딜 이벤트
+        # 2. 블라인드 이벤트 + 로그 (딜링 이후)
         for p in self.game.players:
-            self._emit({
-                "type": "deal_hole",
-                "player": p.name,
-                "position": positions.get(p.name, ""),
-                "street": "프리플랍",
-            })
+            pos = positions.get(p.name, "")
+            if pos in ("SB", "BTN/SB") and p.current_bet > 0:
+                log_text = f"[{pos}] {p.name}: 스몰 블라인드 ({self.game.small_blind})"
+                self.action_log.append(log_text)
+                self._emit({
+                    "type": "blind", "player": p.name, "position": pos,
+                    "amount": self.game.small_blind, "street": "프리플랍", "log": log_text,
+                })
+            elif pos == "BB" and p.current_bet > 0:
+                log_text = f"[{pos}] {p.name}: 빅 블라인드 ({self.game.big_blind})"
+                self.action_log.append(log_text)
+                self._emit({
+                    "type": "blind", "player": p.name, "position": pos,
+                    "amount": self.game.big_blind, "street": "프리플랍", "log": log_text,
+                })
 
         self._setup_round(Street.PREFLOP)
         self._run_until_human()
@@ -279,7 +283,8 @@ class WebGameSession:
         else:
             self._round_i += 1
 
-        self.action_log.append(self._fmt_log(player, action, call_amt, amount))
+        log_text = self._fmt_log(player, action, call_amt, amount)
+        self.action_log.append(log_text)
 
         # 액션 이벤트 발행
         event_amount = amount if action in (Action.RAISE,) else call_amt
@@ -290,6 +295,7 @@ class WebGameSession:
             "action": action.value,
             "amount": event_amount,
             "street": street,
+            "log": log_text,
         })
 
     def _run_until_human(self) -> None:
@@ -322,12 +328,14 @@ class WebGameSession:
             if not p.is_folded:
                 p.reset_for_street()
 
-        self.action_log.append(f"── {street.value} ──")
+        street_log = f"── {street.value} ──"
+        self.action_log.append(street_log)
 
         # 스트리트 전환 이벤트
         self._emit({
             "type": "street_start",
             "street": street.value,
+            "log": street_log,
         })
 
         # 커뮤니티 카드 이벤트 (장별로 분리)
@@ -387,11 +395,11 @@ class WebGameSession:
             winner = contenders[0]
             winner.chips += self.game.pot
             self.winners = [winner.name]
-            self.action_log.append(f"🏆 {winner.name} 승리 (상대 폴드)")
+            win_log = f"🏆 {winner.name} 승리 (상대 폴드)"
+            self.action_log.append(win_log)
             self._emit({
-                "type": "winner",
-                "winners": [winner.name],
-                "pot": self.game.pot,
+                "type": "winner", "winners": [winner.name],
+                "pot": self.game.pot, "log": win_log,
             })
         else:
             contenders = [p for p in contenders if len(p.hole_cards) >= 2]
@@ -431,10 +439,12 @@ class WebGameSession:
 
             self.winners = list(all_winners)
             self.showdown_hands = {p.name: str(evals[p.name]) for p in contenders}
-            self.action_log.append(f"🏆 {', '.join(self.winners)} 승리")
+            win_log = f"🏆 {', '.join(self.winners)} 승리"
+            self.action_log.append(win_log)
 
             self._emit({
                 "type": "winner",
+                "log": win_log,
                 "winners": self.winners,
                 "pot": self.game.pot,
             })

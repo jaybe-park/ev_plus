@@ -21,13 +21,27 @@
   100% { transform: scale(1)   rotateY(0deg);  opacity: 1; }
 }
 
-.animate-bounce-in {
-  animation: bounce-in 0.25s ease-out forwards;
+/* 베팅 금액 pop */
+@keyframes bet-pop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  60%  { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(1);   opacity: 1; }
 }
 
-.animate-card-reveal {
-  animation: card-reveal 0.3s ease-out forwards;
+/* 칩이 팟을 향해 날아가는 애니메이션 */
+@keyframes chip-fly-to-pot {
+  0%   { transform: translate(-50%, -50%) scale(1);   opacity: 1; }
+  80%  { opacity: 0.6; }
+  100% {
+    transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(0.4);
+    opacity: 0;
+  }
 }
+
+.animate-bounce-in   { animation: bounce-in   0.25s ease-out forwards; }
+/* backwards: 딜레이 동안 첫 프레임(opacity:0) 유지 → 깜빡임 방지 */
+.animate-card-reveal { animation: card-reveal  0.3s  ease-out both; }
+.animate-bet-pop     { animation: bet-pop      0.3s  ease-out forwards; }
 
 * {
   box-sizing: border-box;

@@ -12,6 +12,7 @@ export default function App() {
   const [state, setState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [myCardsRevealed, setMyCardsRevealed] = useState(false);
 
   const prevHandNumber = useRef<number>(0);
 
@@ -21,6 +22,10 @@ export default function App() {
     isThinking,
     badge,
     visibleCardCount,
+    visibleLogCount,
+    foldedDuringReplay,
+    bettingPlayer,
+    dealtCards,
     enqueue,
     skip,
     setVisibleCardCount,
@@ -31,17 +36,19 @@ export default function App() {
     (next: GameState) => {
       const isNewHand = next.hand_number !== prevHandNumber.current;
       prevHandNumber.current = next.hand_number;
+      if (isNewHand) setMyCardsRevealed(false); // 새 핸드: 카드 숨김 초기화
 
       // 새 핸드: 커뮤니티 카드 0부터 시작
       // 이어지는 액션: 이전 표시 카드 수부터 시작
       const initialCardCount = isNewHand ? 0 : (state?.community_cards.length ?? 0);
+      const initialFolded    = isNewHand ? [] : (state?.players.filter((p) => p.is_folded).map((p) => p.name) ?? []);
+      const initialLogCount  = isNewHand ? 0 : (state?.action_log.length ?? 0);
 
       setState(next);
 
       if (next.events.length > 0) {
-        enqueue(next.events, initialCardCount);
+        enqueue(next.events, initialCardCount, initialFolded, initialLogCount, isNewHand);
       } else {
-        // 이벤트 없으면 즉시 모든 카드 표시
         setVisibleCardCount(next.community_cards.length);
       }
     },
@@ -70,7 +77,7 @@ export default function App() {
     run(() => api.submitAction(state.session_id, action, amount));
   };
   const handleNextHand = () => { if (!state) return; run(() => api.nextHand(state.session_id)); };
-  const handleNewGame  = () => { skip(); setState(null); };
+  const handleNewGame  = () => { skip(); setState(null); setMyCardsRevealed(false); };
 
   if (!state) return <SetupForm onStart={handleStart} />;
 
@@ -117,6 +124,12 @@ export default function App() {
               isThinking={isThinking}
               badge={badge}
               visibleCardCount={visibleCardCount}
+              foldedDuringReplay={foldedDuringReplay}
+              bettingPlayer={bettingPlayer}
+              isReplaying={isReplaying}
+              dealtCards={dealtCards}
+              myCardsRevealed={myCardsRevealed}
+              onRevealCards={() => setMyCardsRevealed((v) => !v)}
             />
             {state.hand_over && !isReplaying && (
               <HandResult
@@ -149,7 +162,11 @@ export default function App() {
 
       {/* 사이드패널 — 액션 로그 */}
       <div className="lg:w-64 shrink-0 p-4 border-t lg:border-t-0 lg:border-l border-gray-800">
-        <ActionLog log={state.action_log} />
+        <ActionLog
+          log={isReplaying
+            ? state.action_log.slice(0, visibleLogCount)
+            : state.action_log}
+        />
       </div>
     </div>
   );

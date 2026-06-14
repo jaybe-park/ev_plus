@@ -34,13 +34,13 @@ export interface GameState {
 // ── 애니메이션 이벤트 ──────────────────────────────
 
 export type GameEvent =
-  | { type: "blind";         player: string; position: string; amount: number; street: string }
-  | { type: "deal_hole";     player: string; position: string; street: string }
-  | { type: "action";        player: string; position: string; action: string; amount: number; street: string }
-  | { type: "street_start";  street: string }
-  | { type: "community_card"; card: string; street: string }
-  | { type: "showdown";      hands: Record<string, string[]> }
-  | { type: "winner";        winners: string[]; pot: number };
+  | { type: "blind";          player: string; position: string; amount: number; street: string; log?: string }
+  | { type: "deal_card";      player: string; position: string; round: number;  street: string; log?: string }
+  | { type: "action";         player: string; position: string; action: string; amount: number; street: string; log?: string }
+  | { type: "street_start";   street: string;                                                   log?: string }
+  | { type: "community_card"; card: string;   street: string;                                   log?: string }
+  | { type: "showdown";       hands: Record<string, string[]>;                                  log?: string }
+  | { type: "winner";         winners: string[]; pot: number;                                   log?: string };
 
 export interface ActionBadge {
   player: string;

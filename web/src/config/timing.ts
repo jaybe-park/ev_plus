@@ -3,7 +3,7 @@
 // 기계적 이벤트 — 짧고 빠르게
 export const MECHANICAL_DELAYS: Record<string, number> = {
   blind: 500,
-  deal_hole: 350,
+  deal_card: 220,       // 한 장씩 빠르게
   street_start: 600,
   community_card: 500,
   showdown: 900,
