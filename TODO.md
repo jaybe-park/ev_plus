@@ -59,18 +59,20 @@
   - 완료: UTG/HJ/CO 오픈 시리즈 전체, HJ 오픈 전체, CO 오픈 전체
   - 미완성 4개: BTN 오픈 시리즈 3개 + SB 오픈 1개
 
-- [ ] **vs_3bet 나머지 4개 수집** ← 다음 작업 (GTO Wizard 한도 리셋 후)
+- [x] **미수집 스팟 자동 추적 시스템 구현** (`db/schema.py` v3)
+  - `gto_missing_spots` 테이블: 게임 중 GTO 없는 스팟 자동 저장
+  - `gto/url_generator.py`: 스팟별 GTO Wizard 직접 이동 URL 사전 계산
+  - `gto/advisor.py`: RFI/vs_open/vs_3bet 데이터 없을 때 자동 기록
+  - `scripts/show_missing_spots.py`: 미수집 현황 CLI 조회
+  - 수집모드: "수집모드 실행해줘" → Claude가 Chrome MCP로 자동 수집
+
+- [ ] **vs_3bet 나머지 4개 수집** (GTO Wizard 한도 리셋 후)
   - BB vs [BTN open / SB 3bet]
   - BTN vs SB 3bet
   - BTN vs BB 3bet
   - SB vs BB 3bet
 
 - [ ] **GTO 데이터 확장** (미존재 스팟)
-  - 포스트플랍 레인지 (장기)
-
-- [ ] **GTO 데이터 확장** (수동 입력)
-  - vs_3bet 레인지 (BTN_vs_BB 등)
-  - SB vs CO, SB vs MP, SB vs UTG 등 빠진 vs_open 상황
   - 포스트플랍 레인지 (장기)
 
 - [ ] **포스트플랍 GTO 어드바이저**

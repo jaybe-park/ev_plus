@@ -9,7 +9,30 @@ from .loader import (
     hand_to_notation, get_open_range, get_vs_open_range, get_vs_3bet_range,
     get_action_frequencies, sample_action, find_opener_position
 )
+from .url_generator import get_url
 from core.card import Card
+
+
+def _save_missing_spot(
+    range_type: str, position: str, vs_position: str, situation_label: str
+) -> None:
+    """미수집 GTO 스팟을 DB에 저장 (중복 무시)."""
+    try:
+        from db.connection import get_connection
+        url = get_url(range_type, position, vs_position)
+        conn = get_connection()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO gto_missing_spots
+                (street, position, vs_position, range_type, situation_label, gto_wizard_url)
+            VALUES ('preflop', ?, ?, ?, ?, ?)
+            """,
+            (position, vs_position, range_type, situation_label, url),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # DB 없거나 오류 시 조용히 무시
 
 
 def _count_preflop_raises(action_log: list) -> int:
@@ -70,6 +93,7 @@ class GTOAdvisor:
         if is_rfi:
             range_data = get_open_range(my_position)
             if range_data is None:
+                _save_missing_spot("open", my_position, "", f"{my_position} RFI")
                 return None
             freqs = get_action_frequencies(range_data, hand)
             return {
@@ -87,6 +111,10 @@ class GTOAdvisor:
                 return None
             range_data = get_vs_open_range(my_position, opener_pos)
             if range_data is None:
+                _save_missing_spot(
+                    "vs_open", my_position, opener_pos,
+                    f"{my_position} vs {opener_pos} open"
+                )
                 return None
             freqs = get_action_frequencies(range_data, hand)
             return {
@@ -104,6 +132,11 @@ class GTOAdvisor:
                 opener_pos, three_bettor_pos = raisers[0], raisers[1]
                 range_data = get_vs_3bet_range(my_position, opener_pos, three_bettor_pos)
                 if range_data is None:
+                    _save_missing_spot(
+                        "vs_3bet", my_position,
+                        f"{opener_pos}/{three_bettor_pos}",
+                        f"{my_position} vs {three_bettor_pos} 3bet (over {opener_pos})"
+                    )
                     return None
                 freqs = get_action_frequencies(range_data, hand)
                 return {

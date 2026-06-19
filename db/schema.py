@@ -2,7 +2,7 @@
 poker_simulator DB 스키마 정의 및 마이그레이션
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -196,6 +196,26 @@ CREATE INDEX IF NOT EXISTS idx_gto_post_sit  ON gto_postflop_situations(street, 
 CREATE INDEX IF NOT EXISTS idx_gto_post_hand ON gto_postflop_hands(situation_id, hand);
 """
 
+CREATE_GTO_MISSING_SPOTS = """
+CREATE TABLE IF NOT EXISTS gto_missing_spots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    street          TEXT    NOT NULL DEFAULT 'preflop',  -- preflop | flop | turn | river
+    position        TEXT    NOT NULL,   -- 결정 주체 포지션
+    vs_position     TEXT    NOT NULL DEFAULT '',  -- RFI='' / vs_open='UTG' / vs_3bet='UTG/HJ'
+    range_type      TEXT    NOT NULL,   -- open | vs_open | vs_3bet
+    situation_label TEXT    NOT NULL,   -- 사람이 읽기 쉬운 설명
+    gto_wizard_url  TEXT,               -- 직접 이동 URL (프리플랍만)
+    discovered_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    collected       INTEGER NOT NULL DEFAULT 0,
+    collected_at    TEXT,
+    UNIQUE(street, position, vs_position, range_type)
+);
+"""
+
+CREATE_GTO_MISSING_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_gto_missing_collected ON gto_missing_spots(collected);
+"""
+
 ALL_STATEMENTS = [
     CREATE_GAMES,
     CREATE_PREFLOP_ACTIONS,
@@ -208,4 +228,7 @@ ALL_STATEMENTS = [
     CREATE_GTO_POSTFLOP_SITUATIONS,
     CREATE_GTO_POSTFLOP_HANDS,
     CREATE_GTO_INDEXES,
+    # v3: 미수집 스팟 큐
+    CREATE_GTO_MISSING_SPOTS,
+    CREATE_GTO_MISSING_INDEX,
 ]
