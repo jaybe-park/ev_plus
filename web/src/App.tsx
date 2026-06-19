@@ -32,6 +32,7 @@ export default function App() {
     dealtCards,
     showdownRevealed,
     displayedChips,
+    committedActions,
     enqueue,
     skip,
     setVisibleCardCount,
@@ -180,6 +181,7 @@ export default function App() {
               onRevealCards={() => setMyCardsRevealed((v) => !v)}
               showdownRevealed={showdownRevealed}
               displayedChips={displayedChips}
+              committedActions={committedActions}
             />
             {state.hand_over && !isReplaying && (
               <HandResult
@@ -191,13 +193,14 @@ export default function App() {
           </div>
         </div>
 
-        {/* 액션 바 */}
-        {state.waiting_for_action && !state.hand_over && (
+        {/* 액션 바 — 항상 표시, 내 차례 아닐 때 disabled */}
+        {!state.game_over && (
           <div className="shrink-0">
             <ActionBar
               state={state}
               onAction={handleAction}
-              loading={actionDisabled}
+              loading={loading}
+              disabled={actionDisabled || !state.waiting_for_action || state.hand_over}
             />
           </div>
         )}

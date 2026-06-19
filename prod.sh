@@ -1,7 +1,7 @@
 #!/bin/bash
 # 프로덕션 모드 실행
 # - 프론트를 빌드한 뒤 FastAPI 단일 HTTPS 서버로 서빙
-# - 포트 8000 하나만 사용
+# - 포트 8765 하나만 사용
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSL_KEY="$SCRIPT_DIR/ssl/key.pem"
@@ -37,11 +37,11 @@ fi
 
 echo "  [2/2] 서버 시작..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  https://localhost:8000"
+echo "  https://localhost:8765"
 echo "  종료: Ctrl+C"
 echo ""
 
 cd "$SCRIPT_DIR"
 $PYTHON -m uvicorn server.main:app \
-  --host 0.0.0.0 --port 8000 \
+  --host 0.0.0.0 --port 8765 \
   --ssl-keyfile "$SSL_KEY" --ssl-certfile "$SSL_CERT"

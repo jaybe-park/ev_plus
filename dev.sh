@@ -9,8 +9,8 @@ SSL_CERT="$SCRIPT_DIR/ssl/cert.pem"
 
 echo "♠ Texas Hold'em — 개발 모드"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  백엔드  https://localhost:8000  (HTTPS, reload 활성화)"
-echo "  프론트  http://localhost:5173   (HMR 활성화)"
+echo "  백엔드  https://localhost:8765  (HTTPS, reload 활성화)"
+echo "  프론트  http://localhost:5765   (HMR 활성화)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
@@ -31,7 +31,7 @@ fi
 
 cd "$SCRIPT_DIR"
 $PYTHON -m uvicorn server.main:app \
-  --host 0.0.0.0 --port 8000 \
+  --host 0.0.0.0 --port 8765 \
   --ssl-keyfile "$SSL_KEY" --ssl-certfile "$SSL_CERT" \
   --reload &
 BACKEND_PID=$!
@@ -41,8 +41,8 @@ npm run dev &
 FRONTEND_PID=$!
 
 echo ""
-echo "  ⚠️  첫 실행 시 https://localhost:8000 에서 인증서 수동 허용 필요"
-echo "  브라우저: http://localhost:5173"
+echo "  ⚠️  첫 실행 시 https://localhost:8765 에서 인증서 수동 허용 필요"
+echo "  브라우저: http://localhost:5765"
 echo "  종료: Ctrl+C"
 echo ""
 

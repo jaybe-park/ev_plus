@@ -13,7 +13,8 @@ interface Props {
   myCardsRevealed: boolean;
   onRevealCards?: () => void;
   showdownRevealed: boolean;
-  chips: number;             // 표시할 칩 (replay 중엔 이벤트 기준, 아니면 서버 기준)
+  chips: number;
+  committedAction?: string;  // "레이즈 → 44", "콜 20", "폴드" 등
 }
 
 const BADGE_STYLES: Record<ActionBadge["variant"], string> = {
@@ -32,6 +33,7 @@ function Slot({ id }: { id: string }) {
 export default function PlayerSeat({
   player, isWinner, isActive, isThinking, badge,
   isFolded, isBetting, cardsDealt, myCardsRevealed, onRevealCards, showdownRevealed, chips,
+  committedAction,
 }: Props) {
   const ringClass = isWinner
     ? "ring-4 ring-yellow-400"
@@ -140,10 +142,10 @@ export default function PlayerSeat({
         )}
       </div>
 
-      {/* 현재 베팅 */}
-      {player.current_bet > 0 && (
+      {/* 액션 레이블 (커밋된 액션 우선, 없으면 베팅 금액 폴백) */}
+      {(committedAction || player.current_bet > 0) && (
         <div className={`text-yellow-300 text-xs font-bold bg-black/50 rounded px-1.5 py-0.5 ${isBetting ? "animate-bet-pop" : ""}`}>
-          {player.current_bet}
+          {committedAction ?? player.current_bet}
         </div>
       )}
 

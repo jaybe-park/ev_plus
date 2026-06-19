@@ -312,6 +312,13 @@ class WebGameSession:
                 self._advance_street()
                 return
             if player.is_human:
+                # 모든 상대가 올인 + 베팅 없음 → 자동 체크 (런아웃)
+                opponents = [p for p in self.game.players if not p.is_human and not p.is_folded]
+                all_opponents_allin = bool(opponents) and all(p.is_all_in for p in opponents)
+                no_bet_to_call = self.game.current_bet <= self.human.current_bet
+                if all_opponents_allin and no_bet_to_call:
+                    self._apply(player, Action.CHECK, 0)
+                    continue
                 return
             bot = self.bots.get(player.name)
             if bot:

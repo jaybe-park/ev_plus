@@ -1,6 +1,6 @@
 import type { GameState, SetupConfig, GtoKey, GtoRange } from "./types";
 
-const BASE = "https://localhost:8000";
+const BASE = "https://localhost:8765";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

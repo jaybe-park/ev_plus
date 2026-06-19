@@ -4,6 +4,24 @@ import { getEventDelay, THINKING_RATIO } from "../config/timing";
 
 const BET_ACTIONS = new Set(["call", "raise", "allin"]);
 
+function makeCommitLabel(event: GameEvent): string | null {
+  if (event.type === "blind") {
+    const isSmall = event.position === "SB" || event.position === "BTN/SB";
+    return `${isSmall ? "SB" : "BB"} ${event.amount}`;
+  }
+  if (event.type === "action") {
+    const { action, amount } = event as { action: string; amount: number };
+    switch (action) {
+      case "fold":  return "폴드";
+      case "check": return "체크";
+      case "call":  return `콜 ${amount}`;
+      case "raise": return `레이즈 → ${amount}`;
+      case "allin": return "올인";
+    }
+  }
+  return null;
+}
+
 function formatBadge(event: GameEvent): ActionBadge | null {
   if (event.type === "blind") {
     const isSmall = event.position === "SB" || event.position === "BTN/SB";
@@ -33,7 +51,8 @@ export interface EventQueueState {
   bettingPlayer: string | null;
   dealtCards: Map<string, number>;
   showdownRevealed: boolean;
-  displayedChips: Map<string, number>; // 애니메이션 시점 기준 칩 (이벤트마다 업데이트)
+  displayedChips: Map<string, number>;
+  committedActions: Map<string, string>; // 플레이어별 마지막 액션 레이블 ("레이즈 44", "콜 20", ...)
   enqueue: (
     events: GameEvent[],
     initialCardCount: number,
@@ -59,6 +78,7 @@ export function useEventQueue(): EventQueueState {
   const [dealtCards, setDealtCards]                 = useState<Map<string, number>>(new Map());
   const [showdownRevealed, setShowdownRevealed]     = useState(false);
   const [displayedChips, setDisplayedChips]         = useState<Map<string, number>>(new Map());
+  const [committedActions, setCommittedActions]     = useState<Map<string, string>>(new Map());
 
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const clearTimers = () => {
@@ -80,7 +100,7 @@ export function useEventQueue(): EventQueueState {
       setVisibleLogCount(initialLogCount);
       setFoldedDuringReplay(new Set(initialFolded));
       setDisplayedChips(new Map(Object.entries(initialChips)));
-      if (isNewHand) setDealtCards(new Map());
+      if (isNewHand) { setDealtCards(new Map()); setCommittedActions(new Map()); }
       setShowdownRevealed(false);
       setQueue(events);
       if (events.length > 0) setIsReplaying(true);
@@ -97,6 +117,7 @@ export function useEventQueue(): EventQueueState {
     setBettingPlayer(null);
     setIsReplaying(false);
     setShowdownRevealed(false);
+    setCommittedActions(new Map()); // 스킵 시 초기화 → current_bet 폴백 표시
   }, []);
 
   useEffect(() => {
@@ -153,12 +174,21 @@ export function useEventQueue(): EventQueueState {
         if (BET_ACTIONS.has((current as { action: string }).action)) {
           setBettingPlayer((current as { player: string }).player);
         }
-        // 칩 업데이트: 배지가 뜨는 시점 (베팅 결과가 시각적으로 확정되는 순간)
+        // 칩 업데이트
         const chips = (current as { chips_after?: number }).chips_after;
         if (chips !== undefined && chips !== null && current.player) {
           setDisplayedChips((prev) => {
             const next = new Map(prev);
             next.set((current as { player: string }).player, chips);
+            return next;
+          });
+        }
+        // 액션 레이블 커밋 (배지와 동시에)
+        const label = makeCommitLabel(current);
+        if (label && (current as { player?: string }).player) {
+          setCommittedActions((prev) => {
+            const next = new Map(prev);
+            next.set((current as { player: string }).player, label);
             return next;
           });
         }
@@ -184,6 +214,15 @@ export function useEventQueue(): EventQueueState {
       if (current.log) setVisibleLogCount((n) => n + 1);
       if (current.type === "blind" && player) setBettingPlayer(player);
       if (current.type === "showdown") setShowdownRevealed(true);
+      // blind: 즉시 커밋 레이블 등록
+      if (current.type === "blind" && player) {
+        const label = makeCommitLabel(current);
+        if (label) setCommittedActions((prev) => { const m = new Map(prev); m.set(player, label); return m; });
+      }
+      // street_start: 커밋 레이블 초기화 (새 스트리트 시작)
+      if (current.type === "street_start") {
+        setCommittedActions(new Map());
+      }
 
       // blind: 칩 즉시 반영
       if (current.type === "blind") {
@@ -229,6 +268,7 @@ export function useEventQueue(): EventQueueState {
     dealtCards,
     showdownRevealed,
     displayedChips,
+    committedActions,
     enqueue,
     skip,
     setVisibleCardCount,

@@ -16,10 +16,10 @@ cd web && npm install && cd ..
 
 # 개발 모드 실행
 ./start.sh
-# → 브라우저: http://localhost:5173
+# → 브라우저: http://localhost:5765
 ```
 
-> 백엔드 `http://localhost:8000`, 프론트 `http://localhost:5173` 동시 실행  
+> 백엔드 `http://localhost:8765`, 프론트 `http://localhost:5765` 동시 실행  
 > 프로덕션(단일 포트)은 `./prod.sh` 사용
 
 ---
