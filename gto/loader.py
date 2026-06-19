@@ -94,6 +94,13 @@ def _load_all() -> None:
         _loaded = True  # 재시도 방지
 
 
+def get_vs_3bet_range(my_pos: str, opener_pos: str, three_bettor_pos: str) -> Optional[dict]:
+    """3벳에 대한 대응 레인지. vs_position = "opener/three_bettor" 형식"""
+    _load_all()
+    vs_pos = f"{opener_pos}/{three_bettor_pos}"
+    return _cache.get((my_pos, vs_pos, "vs_3bet"))
+
+
 def get_open_range(position: str) -> Optional[dict]:
     """포지션별 오픈(RFI) 레인지"""
     _load_all()

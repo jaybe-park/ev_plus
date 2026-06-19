@@ -1,9 +1,8 @@
 import random
 from enum import Enum
-from typing import Tuple, List, Optional
+from typing import Tuple, Optional
 from core.game import Action
 from core.player import Player
-from core.card import Rank
 from gto.advisor import GTOAdvisor
 
 _gto_advisor = GTOAdvisor()
@@ -23,12 +22,6 @@ class BotDifficulty(Enum):
 
 
 class PokerBot:
-    """
-    Texas Hold'em AI 봇
-    - EASY:   랜덤 + 기본 핸드 강도 판단
-    - MEDIUM: 핸드 강도 + 팟 오즈 계산
-    - HARD:   포지션 + 블러핑 + 핸드 레인지
-    """
 
     def __init__(self, player: Player, difficulty: BotDifficulty = BotDifficulty.MEDIUM):
         self.player = player
@@ -56,37 +49,102 @@ class PokerBot:
         my_pos = positions.get(self.player.name, "")
         big_blind = game_state.get("big_blind", 20)
 
-        gto_action_str = _gto_advisor.get_bot_action(
+        gto_result = _gto_advisor.get_bot_action(
             self.player.hole_cards, my_pos, positions,
             game_state, big_blind, compliance
         )
-        if gto_action_str is None:
+        if gto_result is None:
+            # GTO 데이터 없는 상황 (vs_4bet 등)
+            # 4벳+ 이상이면 폴드 또는 올인만 허용
+            raise_count = self._count_raises(game_state)
+            if raise_count >= 3:
+                return self._four_bet_plus_response(game_state)
             return None
 
+        action_str = gto_result["action"]
+        raise_count = gto_result.get("raise_count", 0)
+        raise_size = gto_result.get("raise_size", "3x")
         call_amount = game_state["current_bet"] - self.player.current_bet
 
-        if gto_action_str == "fold":
+        if action_str == "fold":
             if call_amount == 0:
-                return Action.CHECK, 0  # 폴드 대신 체크 (공짜면)
+                return Action.CHECK, 0
             return Action.FOLD, 0
-        elif gto_action_str == "call":
+
+        elif action_str == "call":
             if call_amount == 0:
                 return Action.CHECK, 0
             return Action.CALL, call_amount
-        elif gto_action_str == "raise":
-            return self._raise_action(game_state, multiplier=2.5)
+
+        elif action_str == "raise":
+            return self._preflop_raise(game_state, raise_count, raise_size)
+
         return None
 
+    def _preflop_raise(self, state: dict, raise_count: int, raise_size: str) -> Tuple[Action, int]:
+        """
+        프리플랍 레이즈 사이즈 계산.
+        - RFI (raise_count=0): 2.5bb 오픈
+        - 3벳 (raise_count=1): 오픈의 3x
+        - 4벳 (raise_count=2): 3벳의 2.5x (또는 올인)
+        """
+        current_bet = state["current_bet"]
+        big_blind = state.get("big_blind", 20)
+        min_raise = state.get("min_raise", big_blind)
+        max_chips = self.player.chips + self.player.current_bet
+
+        if raise_count == 0:
+            # RFI: 2.5bb
+            raise_to = int(big_blind * 2.5)
+        elif raise_count == 1:
+            # 3벳: 오픈의 3x (일반적인 3벳 사이즈)
+            raise_to = int(current_bet * 3)
+        else:
+            # 4벳: 3벳의 2.5x, 스택 작으면 올인
+            raise_to = int(current_bet * 2.5)
+            if raise_to >= max_chips * 0.7:
+                return Action.ALL_IN, 0
+
+        # 최솟값 보정
+        raise_to = max(raise_to, current_bet + min_raise)
+        raise_to = min(raise_to, max_chips)
+
+        if raise_to >= max_chips:
+            return Action.ALL_IN, 0
+
+        return Action.RAISE, raise_to
+
+    def _four_bet_plus_response(self, state: dict) -> Tuple[Action, int]:
+        """4벳+ 상황 (GTO 데이터 없음): 강한 패만 올인, 나머지 폴드"""
+        call_amount = state["current_bet"] - self.player.current_bet
+        hand_strength = self._evaluate_hand_strength(state)
+
+        # 5% 확률로 올인 블러프, 아니면 강한 패만 올인
+        if hand_strength > 0.85 or (hand_strength > 0.75 and random.random() < 0.3):
+            return Action.ALL_IN, 0
+
+        if call_amount == 0:
+            return Action.CHECK, 0
+        return Action.FOLD, 0
+
+    def _count_raises(self, game_state: dict) -> int:
+        """action_log에서 프리플랍 레이즈 횟수"""
+        count = 0
+        for entry in game_state.get("action_log", []):
+            if "──" in entry:
+                break
+            if "레이즈" in entry:
+                count += 1
+        return count
+
     # ──────────────────────────────────────────
-    # 전략
+    # 포스트플랍 전략 (기존 유지)
     # ──────────────────────────────────────────
 
     def _easy_strategy(self, state: dict, strength: float) -> Tuple[Action, int]:
-        """단순 확률 기반 전략"""
         call_amount = state["current_bet"] - self.player.current_bet
-
         if strength > 0.7:
-            return self._raise_action(state, multiplier=2)
+            return self._raise_action(state, pot_frac=0.5)
         elif strength > 0.4:
             if call_amount == 0:
                 return Action.CHECK, 0
@@ -94,158 +152,126 @@ class PokerBot:
         else:
             if call_amount == 0:
                 return Action.CHECK, 0
-            if random.random() < 0.3:  # 30% 확률로 블러프 콜
+            if random.random() < 0.25:
                 return Action.CALL, call_amount
             return Action.FOLD, 0
 
     def _medium_strategy(self, state: dict, strength: float) -> Tuple[Action, int]:
-        """팟 오즈 고려 전략"""
         call_amount = state["current_bet"] - self.player.current_bet
         pot = state["pot"]
-
         pot_odds = call_amount / (pot + call_amount) if (pot + call_amount) > 0 else 0
 
         if strength > 0.75:
-            return self._raise_action(state, multiplier=random.uniform(2, 3))
+            return self._raise_action(state, pot_frac=random.uniform(0.5, 0.8))
         elif strength > pot_odds + 0.1:
             if call_amount == 0:
-                # 베팅 기회
                 if strength > 0.55:
-                    return self._raise_action(state, multiplier=1.5)
+                    return self._raise_action(state, pot_frac=0.5)
                 return Action.CHECK, 0
             return Action.CALL, call_amount
-        elif strength > pot_odds and random.random() < 0.2:  # 세미 블러프
-            return self._raise_action(state, multiplier=1.5)
+        elif strength > pot_odds and random.random() < 0.2:
+            return self._raise_action(state, pot_frac=0.5)
         else:
             if call_amount == 0:
                 return Action.CHECK, 0
             return Action.FOLD, 0
 
     def _hard_strategy(self, state: dict, strength: float) -> Tuple[Action, int]:
-        """포지션 + 블러핑 + 다양한 베팅 사이즈"""
         call_amount = state["current_bet"] - self.player.current_bet
         pot = state["pot"]
         street = state["street"]
-
         pot_odds = call_amount / (pot + call_amount) if (pot + call_amount) > 0 else 0
-        bluff_freq = self._bluff_frequency(street)
+        bluff_freq = {"플랍": 0.25, "턴": 0.20, "리버": 0.12}.get(street, 0.15)
 
         if strength > 0.8:
-            # 밸류 베팅: 다양한 사이즈
-            multiplier = random.uniform(2.5, 4)
-            return self._raise_action(state, multiplier=multiplier)
-
+            return self._raise_action(state, pot_frac=random.uniform(0.6, 1.0))
         elif strength > 0.6:
             if call_amount == 0:
-                return self._raise_action(state, multiplier=random.uniform(1.5, 2.5))
+                return self._raise_action(state, pot_frac=random.uniform(0.4, 0.7))
             if strength > pot_odds + 0.15:
                 return Action.CALL, call_amount
             return Action.FOLD, 0
-
         elif strength > 0.4:
             if call_amount == 0:
-                # 세미 블러프 베팅
-                if random.random() < 0.4:
-                    return self._raise_action(state, multiplier=1.5)
+                if random.random() < 0.35:
+                    return self._raise_action(state, pot_frac=0.4)
                 return Action.CHECK, 0
             if strength > pot_odds:
                 return Action.CALL, call_amount
             return Action.FOLD, 0
-
         else:
-            # 블러프
             if call_amount == 0 and random.random() < bluff_freq:
-                return self._raise_action(state, multiplier=random.uniform(1.5, 2.5))
-            if call_amount > 0 and random.random() < bluff_freq * 0.5:
+                return self._raise_action(state, pot_frac=random.uniform(0.4, 0.7))
+            if call_amount > 0 and random.random() < bluff_freq * 0.4:
                 return Action.CALL, call_amount
             if call_amount == 0:
                 return Action.CHECK, 0
             return Action.FOLD, 0
 
     # ──────────────────────────────────────────
-    # 핸드 강도 평가 (0.0 ~ 1.0)
+    # 핸드 강도 평가
     # ──────────────────────────────────────────
 
     def _evaluate_hand_strength(self, state: dict) -> float:
-        """홀 카드 + 커뮤니티 카드 기반 핸드 강도 추정"""
         hole_cards = self.player.hole_cards
         community = state.get("community_cards", [])
 
         if not hole_cards:
             return 0.5
 
-        # 프리플랍: 홀 카드만으로 평가
         if not community:
             return self._preflop_strength(hole_cards)
 
-        # 포스트플랍: 간단한 핸드 강도 계산
-        from core.evaluator import HandEvaluator, HandRank
-        from core.card import Card, Suit, Rank as CardRank
-
         try:
-            # community_cards가 문자열 리스트일 경우 Card 객체로 변환
+            from core.evaluator import HandEvaluator
             comm_cards = self._parse_community_cards(state["community_cards"])
             all_cards = hole_cards + comm_cards
             result = HandEvaluator.evaluate(all_cards)
-            rank_value = result.hand_rank.rank_value  # 1~10
-            return min(rank_value / 10.0, 1.0)
+            # 핸드 랭크(1~10) 기반이지만 키커 정보도 반영
+            rank_val = result.hand_rank.rank_value
+            # 투페어 이상은 tiebreaker 최댓값으로 세분화
+            if rank_val >= 2 and result.tiebreakers:
+                sub = min(result.tiebreakers[0] / 14.0, 1.0) * 0.09
+                return min(rank_val / 10.0 + sub, 1.0)
+            return rank_val / 10.0
         except Exception:
             return self._preflop_strength(hole_cards)
 
     def _preflop_strength(self, hole_cards) -> float:
-        """프리플랍 홀 카드 강도 (0~1)"""
-        if len(hole_cards) < 2:
-            return 0.3
-
         r1 = hole_cards[0].rank.rank_value
         r2 = hole_cards[1].rank.rank_value
         suited = hole_cards[0].suit == hole_cards[1].suit
         paired = r1 == r2
+        high, low = max(r1, r2), min(r1, r2)
 
-        high = max(r1, r2)
-        low  = min(r1, r2)
-
-        score = (high + low) / 28.0  # 최대 14+14=28
-
-        if paired:
-            score += 0.2
-        if suited:
-            score += 0.05
-        if abs(r1 - r2) <= 2:  # 커넥터
-            score += 0.03
-
+        score = (high + low) / 28.0
+        if paired: score += 0.2
+        if suited:  score += 0.05
+        if abs(r1 - r2) <= 2: score += 0.03
         return min(score, 1.0)
 
-    def _parse_community_cards(self, card_strings: List[str]):
-        """문자열 리스트를 Card 객체로 변환"""
+    def _parse_community_cards(self, card_strings):
         from core.card import Card, Suit, Rank as CardRank
-
-        suit_map = {"♠": Suit.SPADES, "♥": Suit.HEARTS,
-                    "♦": Suit.DIAMONDS, "♣": Suit.CLUBS}
+        suit_map = {"♠": Suit.SPADES, "♥": Suit.HEARTS, "♦": Suit.DIAMONDS, "♣": Suit.CLUBS}
         rank_map = {r.symbol: r for r in CardRank}
-
         cards = []
         for s in card_strings:
-            rank_sym = s[:-1]
-            suit_sym = s[-1]
+            rank_sym, suit_sym = s[:-1], s[-1]
             if rank_sym in rank_map and suit_sym in suit_map:
                 cards.append(Card(rank_map[rank_sym], suit_map[suit_sym]))
         return cards
 
-    def _bluff_frequency(self, street: str) -> float:
-        """스트리트별 블러프 빈도"""
-        return {"프리플랍": 0.15, "플랍": 0.25, "턴": 0.20, "리버": 0.15}.get(street, 0.15)
-
-    def _raise_action(self, state: dict, multiplier: float) -> Tuple[Action, int]:
-        """레이즈 액션 계산"""
+    def _raise_action(self, state: dict, pot_frac: float = 0.5) -> Tuple[Action, int]:
+        """포스트플랍 레이즈: 팟 비율 기준"""
         pot = state["pot"]
-        min_raise = state.get("min_raise", 20)
         current_bet = state["current_bet"]
+        min_raise = state.get("min_raise", state.get("big_blind", 20))
+        max_chips = self.player.chips + self.player.current_bet
 
-        raise_to = int(current_bet + max(pot * multiplier * 0.33, min_raise))
-        raise_to = min(raise_to, self.player.chips + self.player.current_bet)
+        bet_size = max(int(pot * pot_frac), min_raise)
+        raise_to = current_bet + bet_size
+        raise_to = min(raise_to, max_chips)
 
-        if raise_to >= self.player.chips + self.player.current_bet:
+        if raise_to >= max_chips:
             return Action.ALL_IN, 0
-
         return Action.RAISE, raise_to

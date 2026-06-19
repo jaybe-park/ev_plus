@@ -322,7 +322,9 @@ class WebGameSession:
                 return
             bot = self.bots.get(player.name)
             if bot:
-                action, amount = bot.decide_action(self.game._get_game_state())
+                gs = self.game._get_game_state()
+                gs["action_log"] = self.action_log  # 봇이 레이즈 횟수 파악에 사용
+                action, amount = bot.decide_action(gs)
                 self._apply(player, action, amount)
             else:
                 self._apply(player, Action.CHECK, 0)
