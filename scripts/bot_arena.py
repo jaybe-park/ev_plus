@@ -21,7 +21,8 @@ import sys
 import os
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
 
 from core.game import Action
 from ai.bot import PokerBot, BotDifficulty
@@ -151,9 +152,14 @@ def run_arena(seats: list, hands: int, big_blind: int, seed=None, verbose=False)
         # 칩 총량 보존 검증 (엔진 퍼징) — 팟 분배 후 총합은 불변이어야 함
         total = sum(p.chips for p in session.game.players)
         expected = start_chips * len(session.game.players)
-        assert total == expected, (
-            f"칩 보존 위반! 핸드 {h+1}: 총 {total} != {expected} "
-            f"({ {p.name: p.chips for p in session.game.players} })")
+        if total != expected:
+            # 재현 정보를 파일로 보존 (그라인드 모드에서 로그가 흘러가도 남도록)
+            detail = (f"칩 보존 위반! 핸드 {h+1}/{hands}, seed={seed}, "
+                      f"seats={seats}, bb={big_blind}: 총 {total} != {expected} "
+                      f"({ {p.name: p.chips for p in session.game.players} })")
+            with open(os.path.join(ROOT_DIR, "chip_violations.log"), "a") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {detail}\n")
+            raise AssertionError(detail + " → chip_violations.log 기록됨")
 
         # 손익 기록 + 스택 리셋
         for p in session.game.players:
