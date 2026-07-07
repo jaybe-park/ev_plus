@@ -24,6 +24,7 @@ Ctrl+C로 언제든 중단해도 진행분은 저장되고, 다시 실행하면 
 """
 
 import argparse
+import sqlite3
 import sys
 import os
 import time
@@ -320,13 +321,27 @@ def main():
                 print(f"\n⏰ 시간 제한 도달 — {done_count}개 작업 완료")
                 break
 
-            job = next_exact_job(conn)
+            try:
+                job = next_exact_job(conn)
+            except sqlite3.OperationalError:
+                time.sleep(1.0)
+                continue
             if job:
-                print(process_exact(conn, job))
+                try:
+                    print(process_exact(conn, job))
+                except sqlite3.OperationalError:
+                    print("⏳ DB 쓰기 경합 — 1초 후 재시도")
+                    time.sleep(1.0)
+                    continue
             else:
                 job = next_mc_job(conn)
                 if job:
-                    print(process_mc(conn, job))
+                    try:
+                        print(process_mc(conn, job))
+                    except sqlite3.OperationalError:
+                        print("⏳ DB 쓰기 경합 — 1초 후 재시도")
+                        time.sleep(1.0)
+                    continue
                 else:
                     # 큐 소진 → 체계적 플랍 스윕으로 새 작업 생성
                     added = sweep_flop_batch(conn)

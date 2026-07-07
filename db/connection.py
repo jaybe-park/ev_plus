@@ -13,10 +13,11 @@ _DEFAULT_DB_PATH = os.path.join(
 
 def get_connection(db_path: str = _DEFAULT_DB_PATH) -> sqlite3.Connection:
     """DB 연결 반환. 없으면 자동 생성 및 마이그레이션."""
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")  # 동시 읽기 성능 향상
+    conn.execute("PRAGMA busy_timeout = 30000")  # 쓰기 락 경합 시 30초 대기
     _migrate(conn)
     return conn
 
