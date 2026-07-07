@@ -43,3 +43,4 @@ htmlcov/
 ssl/
 tuning_results.json
 chip_violations.log
+.claude/settings.local.json
