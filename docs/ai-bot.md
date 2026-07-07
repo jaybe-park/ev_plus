@@ -42,8 +42,9 @@ decide_action(game_state)
 
 ```bash
 python3 scripts/equity_worker.py               # 무한 실행 (Ctrl+C 안전)
-python3 scripts/equity_worker.py --minutes 30  # 시간 제한
-python3 scripts/equity_worker.py --status      # 현황
+python3 scripts/equity_worker.py --minutes 30       # 시간 제한
+python3 scripts/equity_worker.py --preflop-first    # 프리플랍 845스팟부터 (순수 워커용)
+python3 scripts/equity_worker.py --status           # 현황
 ```
 
 스팟 단위로 커밋하므로 언제 중단해도 진행분이 보존되고 재실행 시 이어서 계산한다.

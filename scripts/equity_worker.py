@@ -18,9 +18,10 @@ Ctrl+C로 언제든 중단해도 진행분은 저장되고, 다시 실행하면 
      진행 커서를 worker_meta에 저장해 중단/재개 안전.
 
 사용법:
-  python3 scripts/equity_worker.py                # 무한 실행 (Ctrl+C 중단)
-  python3 scripts/equity_worker.py --minutes 30   # 30분만 실행
-  python3 scripts/equity_worker.py --status       # 진행 현황만 출력
+  python3 scripts/equity_worker.py                  # 무한 실행 (Ctrl+C 중단)
+  python3 scripts/equity_worker.py --minutes 30     # 30분만 실행
+  python3 scripts/equity_worker.py --preflop-first  # 프리플랍 845스팟부터 채움
+  python3 scripts/equity_worker.py --status         # 진행 현황만 출력
 """
 
 import argparse
@@ -166,6 +167,19 @@ def sweep_flop_batch(conn) -> int:
     return added
 
 
+def next_preflop_job(conn):
+    """프리플랍 스팟만 (--preflop-first용) — 샘플 적은 것부터"""
+    return conn.execute(
+        """
+        SELECT id, street, spot_key, num_opponents, total FROM equity_cache
+        WHERE exact = 0 AND street = 'preflop' AND total < ?
+        ORDER BY total ASC, num_opponents ASC
+        LIMIT 1
+        """,
+        (PREFLOP_TARGET,),
+    ).fetchone()
+
+
 def next_mc_job(conn):
     """샘플 목표 미달 스팟 — 프리플랍 우선, 샘플 적은 것부터"""
     return conn.execute(
@@ -297,6 +311,8 @@ def show_status(conn) -> None:
 def main():
     parser = argparse.ArgumentParser(description="에퀴티 전수조사 워커")
     parser.add_argument("--minutes", type=float, default=None, help="실행 시간 제한(분)")
+    parser.add_argument("--preflop-first", action="store_true",
+                        help="프리플랍 845스팟 샘플링을 전수조사보다 우선")
     parser.add_argument("--status", action="store_true", help="진행 현황만 출력")
     args = parser.parse_args()
 
@@ -320,6 +336,23 @@ def main():
             if deadline and time.time() >= deadline:
                 print(f"\n⏰ 시간 제한 도달 — {done_count}개 작업 완료")
                 break
+
+            # --preflop-first: 프리플랍 샘플링을 최우선으로
+            if args.preflop_first:
+                try:
+                    job = next_preflop_job(conn)
+                except sqlite3.OperationalError:
+                    time.sleep(1.0)
+                    continue
+                if job:
+                    try:
+                        print(process_mc(conn, job))
+                    except sqlite3.OperationalError:
+                        print("⏳ DB 쓰기 경합 — 1초 후 재시도")
+                        time.sleep(1.0)
+                    done_count += 1
+                    continue
+                # 프리플랍 전부 목표 도달 → 일반 우선순위로 진행
 
             try:
                 job = next_exact_job(conn)
