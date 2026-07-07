@@ -169,7 +169,7 @@ class GameRecorder:
                 current_bet, call_amount,
                 action_str, amount, gto, equity, bot_profile, players_state
             )
-        conn.commit()
+        # 커밋은 finish_hand에서 1번 — 액션마다 커밋하면 쓰기 락 경합 유발
 
     def _record_preflop(
         self, conn, position, is_human, seq, s_seq,

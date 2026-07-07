@@ -12,6 +12,7 @@
 24가지 수트 치환 중 사전순 최소 키를 대표로 쓴다.
 """
 
+import atexit
 import random
 from itertools import combinations, permutations
 from typing import List, Optional, Tuple
@@ -232,11 +233,53 @@ def cache_lookup(spot_key: str, num_opponents: int) -> Optional[dict]:
         return None
 
 
+# MC 기여분 메모리 버퍼: (street, key, n_opp) → [wins, ties, total]
+# 봇 결정마다 커밋하면 그라인드에서 쓰기 락 경합이 나므로 배치 플러시한다.
+_contrib_buffer: dict = {}
+_CONTRIB_FLUSH_AT = 25  # 스팟 25개 쌓이면 플러시
+
+
+def _flush_contributions() -> None:
+    if not _contrib_buffer:
+        return
+    items = list(_contrib_buffer.items())
+    _contrib_buffer.clear()
+    try:
+        conn = _db()
+        for (street, key, n_opp), (w, t, n) in items:
+            conn.execute(
+                """
+                INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
+                VALUES(?,?,?,?,?,?,0)
+                ON CONFLICT(spot_key, num_opponents) DO UPDATE SET
+                    wins = equity_cache.wins + excluded.wins,
+                    ties = equity_cache.ties + excluded.ties,
+                    total = equity_cache.total + excluded.total,
+                    updated_at = datetime('now')
+                WHERE equity_cache.exact = 0
+                """,
+                (street, key, n_opp, w, t, n),
+            )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+atexit.register(lambda: _flush_contributions())
+
+
 def cache_contribute(
     street: str, spot_key: str, num_opponents: int,
     wins: float, ties: float, total: int, exact: bool = False,
 ) -> None:
-    """계산 결과를 캐시에 누적. exact=True면 기존 누적을 정확값으로 대체."""
+    """계산 결과를 캐시에 누적. MC 기여는 버퍼링 후 배치 플러시."""
+    if not exact:
+        buf = _contrib_buffer.setdefault((street, spot_key, num_opponents), [0.0, 0.0, 0])
+        buf[0] += wins; buf[1] += ties; buf[2] += total
+        if len(_contrib_buffer) >= _CONTRIB_FLUSH_AT:
+            _flush_contributions()
+        return
     try:
         conn = _db()
         if exact:

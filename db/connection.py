@@ -11,8 +11,11 @@ _DEFAULT_DB_PATH = os.path.join(
 )
 
 
-def get_connection(db_path: str = _DEFAULT_DB_PATH) -> sqlite3.Connection:
-    """DB 연결 반환. 없으면 자동 생성 및 마이그레이션."""
+def get_connection(db_path: str = None) -> sqlite3.Connection:
+    """DB 연결 반환. 없으면 자동 생성 및 마이그레이션.
+    db_path 미지정 시 환경변수 EV_PLUS_DB (테스트 격리용) → 기본 poker.db 순."""
+    if db_path is None:
+        db_path = os.environ.get("EV_PLUS_DB", _DEFAULT_DB_PATH)
     conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

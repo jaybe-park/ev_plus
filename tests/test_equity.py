@@ -106,7 +106,7 @@ def test_mc_sanity():
 
 def test_cache():
     print("\n[E-4] equity_cache DB 누적")
-    tmp = tempfile.mktemp(suffix=".db")
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
     eq.DB_PATH = tmp
     try:
         random.seed(1)
@@ -114,11 +114,13 @@ def test_cache():
         key = canonical_key(hole, board)
 
         smart_equity(hole, board, 1, 100, use_cache=True, contribute=True)
+        eq._flush_contributions()  # 기여는 배치 버퍼링 → 명시 플러시
         row = cache_lookup(key, 1)
-        check("MC 결과 캐시 저장", row is not None and row["total"] == 100,
+        check("MC 결과 캐시 저장 (플러시 후)", row is not None and row["total"] == 100,
               f"row={row}")
 
         smart_equity(hole, board, 1, 100, use_cache=True, contribute=True)
+        eq._flush_contributions()
         row = cache_lookup(key, 1)
         check("재호출 시 누적 (200)", row["total"] == 200, f"={row['total']}")
 
@@ -132,6 +134,7 @@ def test_cache():
 
         # exact 이후엔 MC가 덮어쓰지 않음
         smart_equity(hole_r, board_r, 1, 50, use_cache=True, contribute=True)
+        eq._flush_contributions()
         row = cache_lookup(canonical_key(hole_r, board_r), 1)
         check("exact 보호 (누적 안 됨)", row["total"] == 990, f"={row['total']}")
     finally:
@@ -178,7 +181,7 @@ def _make_bot(hole_specs, difficulty=BotDifficulty.MEDIUM):
 
 def test_bot_decisions():
     print("\n[E-6] 봇 의사결정")
-    eq.DB_PATH = tempfile.mktemp(suffix=".db")
+    eq.DB_PATH = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
     try:
         random.seed(7)
 

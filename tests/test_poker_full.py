@@ -9,7 +9,19 @@
 
 import sys
 import os
+import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ── 테스트 경량화 ──────────────────────────────────────────
+# 이 테스트의 목적은 포커 "로직" 검증이지 봇 실력이 아니다.
+# 실 DB(그라인드 데이터)와 격리하고, 봇 MC 샘플을 최소화해 수십 초 안에 끝낸다.
+os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+
+from ai.bot import POSTFLOP_PROFILES
+for _prof in POSTFLOP_PROFILES.values():
+    _prof.update({"sims": 20, "use_cache": False,
+                  "exact_river": False, "use_ranges": False})
+# ────────────────────────────────────────────────────────────
 
 from core.card import Card, Suit, Rank
 from core.deck import Deck
