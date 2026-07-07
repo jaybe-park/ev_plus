@@ -5,8 +5,11 @@
 ## 실행 방법
 
 ```bash
-# 정밀 검사 (42개)
+# 정밀 검사 (50개)
 python3 tests/test_poker_full.py
+
+# 에퀴티 엔진 + 봇 테스트 (36개)
+python3 tests/test_equity.py
 
 # 기본 유닛 테스트 (14개)
 python3 tests/test_poker.py
@@ -82,6 +85,21 @@ python3 tests/test_poker.py
 | 5-7 | 사람 홀카드 항상 공개 |
 | 5-8 | 핸드 진행 중 봇 홀카드 숨김 |
 | 5-9 | 쇼다운 시 봇 홀카드 공개 |
+
+---
+
+## 에퀴티 테스트 (test_equity.py, 36개)
+
+| 영역 | 항목 |
+|---|---|
+| E-1 | 수트 정규화 키 — 치환 불변 / AKs≠AKo / 순서 불변 / 디코딩 왕복 |
+| E-2 | 리버 전수조사 — 쿼드 equity=1.0, 990조합, 보드플레이 스플릿 |
+| E-3 | MC 근사 — AA≈0.85, 72o≈0.35, 멀티웨이 하락, 플러시드로우≈0.65 |
+| E-4 | equity_cache — 누적 저장, exact 플래그, exact 보호 |
+| E-5 | 보드 텍스처 — 드라이 < 웻, 모노톤 판정 |
+| E-6 | 봇 의사결정 — 넛 노폴드, 트래시 폴드/체크, 드로우 콜, 세미블러프, 포지션 점수 |
+| E-7 | made hand rank — 드로우 판별 |
+| E-8 | 레인지 기반 equity — RangeSampler 콤보/블록 회피, 레인지 조건부 하락 |
 
 ---
 

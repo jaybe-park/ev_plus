@@ -113,6 +113,37 @@ def get_vs_open_range(my_pos: str, opener_pos: str) -> Optional[dict]:
     return _cache.get((my_pos, opener_pos, "vs_open"))
 
 
+def get_raise_range(position: str) -> Optional[dict]:
+    """
+    포지션의 RFI 레이즈 레인지 (notation → 빈도).
+    상대가 오픈 레이즈했을 때 그 상대의 핸드 분포 추정에 사용.
+    """
+    _load_all()
+    data = _cache.get((position, None, "open"))
+    if data is None:
+        return None
+    weights = {}
+    for hand, freqs in data.get("hands", {}).items():
+        w = freqs.get("raise", 0.0) + freqs.get("allin", 0.0)
+        if w > 0.02:
+            weights[hand] = w
+    return weights or None
+
+
+def get_call_range(my_pos: str, opener_pos: str) -> Optional[dict]:
+    """오픈에 콜한 플레이어의 핸드 분포 (notation → 빈도)."""
+    _load_all()
+    data = _cache.get((my_pos, opener_pos, "vs_open"))
+    if data is None:
+        return None
+    weights = {}
+    for hand, freqs in data.get("hands", {}).items():
+        w = freqs.get("call", 0.0)
+        if w > 0.02:
+            weights[hand] = w
+    return weights or None
+
+
 def get_action_frequencies(range_data: dict, hand_notation: str) -> dict:
     """레인지 데이터에서 특정 핸드의 액션 빈도 반환. 없으면 fold 100%."""
     if range_data is None:
