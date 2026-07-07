@@ -41,3 +41,4 @@ htmlcov/
 
 # SSL 인증서 (로컬 자체 서명)
 ssl/
+tuning_results.json

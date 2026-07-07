@@ -102,10 +102,12 @@ class PokerBot:
         player: Player,
         difficulty: BotDifficulty = BotDifficulty.MEDIUM,
         persona: str = "balanced",
+        overrides: Optional[dict] = None,
     ):
         self.player = player
         self.difficulty = difficulty
         self.persona = persona if persona in PERSONAS else "balanced"
+        self.overrides = overrides or {}  # 프로파일 수치 직접 덮어쓰기 (튜닝용)
         self.last_equity = None  # 직전 결정의 equity (기록용, 프리플랍은 None)
 
     def _effective_profile(self) -> dict:
@@ -118,6 +120,7 @@ class PokerBot:
         prof["bluff_freq"] *= p.get("bluff_mult", 1.0)
         prof["semibluff_freq"] *= p.get("semibluff_mult", 1.0)
         prof["size_mult"] = p.get("size_mult", 1.0)
+        prof.update(self.overrides)  # 튜닝 오버라이드가 최우선
         return prof
 
     def decide_action(self, game_state: dict) -> Tuple[Action, int]:

@@ -78,10 +78,30 @@ PROFILE_MAP = {
 }
 
 
-def make_driver(profile: str, player) -> PokerBot:
-    if profile == "legacy":
-        return LegacyBot(player, BotDifficulty.MEDIUM)
-    return PokerBot(player, PROFILE_MAP[profile])
+def parse_seat(spec: str):
+    """
+    시트 문법: "hard" | "hard:persona=aggressive" | "hard:aggression_margin=0.12+bluff_freq=0.3"
+    반환: (base_profile, persona, overrides)
+    """
+    if ":" not in spec:
+        return spec, "balanced", {}
+    base, opts = spec.split(":", 1)
+    persona = "balanced"
+    overrides = {}
+    for kv in opts.split("+"):
+        k, v = kv.split("=")
+        if k == "persona":
+            persona = v
+        else:
+            overrides[k] = float(v)
+    return base, persona, overrides
+
+
+def make_driver(spec: str, player) -> PokerBot:
+    base, persona, overrides = parse_seat(spec)
+    if base == "legacy":
+        return LegacyBot(player, BotDifficulty.MEDIUM, persona=persona)
+    return PokerBot(player, PROFILE_MAP[base], persona=persona, overrides=overrides)
 
 
 def run_arena(seats: list, hands: int, big_blind: int, seed=None, verbose=False):
@@ -127,6 +147,13 @@ def run_arena(seats: list, hands: int, big_blind: int, seed=None, verbose=False)
             guard += 1
             if guard > 100:
                 raise RuntimeError("핸드가 끝나지 않음 (무한 루프 감지)")
+
+        # 칩 총량 보존 검증 (엔진 퍼징) — 팟 분배 후 총합은 불변이어야 함
+        total = sum(p.chips for p in session.game.players)
+        expected = start_chips * len(session.game.players)
+        assert total == expected, (
+            f"칩 보존 위반! 핸드 {h+1}: 총 {total} != {expected} "
+            f"({ {p.name: p.chips for p in session.game.players} })")
 
         # 손익 기록 + 스택 리셋
         for p in session.game.players:
@@ -183,8 +210,9 @@ def main():
     if not 2 <= len(seats) <= 6:
         sys.exit("좌석은 2~6개")
     for s in seats:
-        if s not in ("easy", "medium", "hard", "legacy"):
-            sys.exit(f"알 수 없는 프로파일: {s}")
+        base = s.split(":")[0]
+        if base not in ("easy", "medium", "hard", "legacy"):
+            sys.exit(f"알 수 없는 프로파일: {base}")
 
     print(f"아레나 시작: {seats}, {args.hands}핸드")
     profit, seat_profile = run_arena(
