@@ -14,6 +14,7 @@ from core.game import TexasHoldem, Action, Street
 from core.player import Player
 from ai.bot import PokerBot, BotDifficulty
 from gto.advisor import GTOAdvisor
+from db.recorder import GameRecorder
 
 STREETS = [Street.PREFLOP, Street.FLOP, Street.TURN, Street.RIVER]
 
@@ -38,14 +39,19 @@ class WebGameSession:
 
         self.human = Player(human_name, chips, is_human=True)
         bot_names = ["🤖 Alpha", "🤖 Beta", "🤖 Gamma", "🤖 Delta", "🤖 Epsilon"]
+        # 봇별 고정 페르소나 — 성향이 달라야 상대별 대응 재미가 생김
+        bot_personas = ["tight", "loose", "aggressive", "passive", "balanced"]
         bot_players = [Player(bot_names[i], chips, is_human=False) for i in range(min(num_bots, 5))]
 
         all_players = [self.human] + bot_players
         self.game = TexasHoldem(all_players, small_blind=small_blind, big_blind=small_blind * 2)
         self.bots: Dict[str, PokerBot] = {
-            p.name: PokerBot(p, difficulty_enum) for p in bot_players
+            p.name: PokerBot(p, difficulty_enum, persona=bot_personas[i])
+            for i, p in enumerate(bot_players)
         }
         self.gto = GTOAdvisor()
+        self.recorder = GameRecorder(big_blind=small_blind * 2)
+        self._hand_start_chips: Dict[str, int] = {}
 
         # 베팅 라운드 상태
         self._order: List[Player] = []
@@ -179,11 +185,24 @@ class WebGameSession:
         self.game.dealer_index = self.game.dealer_index % len(self.game.players)
 
         self.hand_number += 1
+        self._hand_start_chips = {p.name: p.chips for p in self.game.players}
         self.game.start_hand()
         self.game.current_street = Street.PREFLOP
         self.street_index = 0
 
         positions = self.game.get_positions()
+
+        # RL 학습 데이터: 핸드 기록 시작
+        try:
+            dealer_pos = positions.get(
+                self.game.players[self.game.dealer_index].name, "BTN")
+            self.recorder.start_hand(
+                self.game.players, dealer_pos,
+                {positions[p.name]: p.hole_cards for p in self.game.players},
+                small_blind=self.game.small_blind,
+            )
+        except Exception:
+            pass  # 기록 실패가 게임을 막지 않음
 
         # 1. 카드 딜 이벤트 먼저 — SB부터 시작해서 2라운드 딜링
         n = len(self.game.players)
@@ -280,7 +299,34 @@ class WebGameSession:
         # 콜 금액은 apply_action 전에 계산
         call_amt = max(0, self.game.current_bet - player.current_bet)
 
+        # RL 학습 데이터: 결정 직전 상태 캡처
+        import json as _json
+        _ctx = {
+            "pot": self.game.pot,
+            "current_bet": self.game.current_bet,
+            "stack_before": player.chips,
+        }
+        _players_state = _json.dumps([
+            {"pos": positions.get(p.name, ""), "chips": p.chips,
+             "bet": p.current_bet, "folded": p.is_folded, "allin": p.is_all_in}
+            for p in self.game.players
+        ])
+        _bot = self.bots.get(player.name)
+        _profile = (f"{_bot.difficulty.value}/{_bot.persona}"
+                    if _bot else "human")
+        _equity = _bot.last_equity if _bot else None
+
         self.game.apply_action(player, action, amount)
+
+        try:
+            self.recorder.record_action(
+                positions.get(player.name, "BTN"), player.is_human,
+                self.game.current_street, _ctx, action, amount,
+                call_amount=call_amt, equity=_equity,
+                bot_profile=_profile, players_state=_players_state,
+            )
+        except Exception:
+            pass
         self._acted.add(player.name)
         if action in (Action.RAISE, Action.ALL_IN):
             self._acted = {player.name}
@@ -450,7 +496,9 @@ class WebGameSession:
                 remainder = pot_amount % len(pot_winners)
                 for w in pot_winners:
                     w.chips += share
-                    all_winners.add(w.name)
+                    # 1명만 eligible한 팟 = 본인 초과 베팅 반환 → 승자 표시 안 함
+                    if len(eligible) > 1:
+                        all_winners.add(w.name)
                 if remainder:
                     pot_winners[0].chips += remainder
 
@@ -468,6 +516,21 @@ class WebGameSession:
                                  for w in self.game.players
                                  if w.name in all_winners},
             })
+
+        # RL 학습 데이터: 핸드 결과 + reward 역산
+        try:
+            positions = self.game.get_positions()
+            self.recorder.finish_hand(
+                self.game.community_cards,
+                self.game.pot,
+                [positions.get(w, "") for w in self.winners],
+                {positions.get(p.name, ""): {
+                    "start": self._hand_start_chips.get(p.name, p.chips),
+                    "end": p.chips}
+                 for p in self.game.players},
+            )
+        except Exception:
+            pass
 
         self.game.pot = 0
         self.game._advance_dealer()
