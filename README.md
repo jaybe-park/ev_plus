@@ -31,11 +31,11 @@ ev_plus/
 ├── core/          # 게임 엔진 (카드, 덱, 핸드 평가, 게임 로직)
 ├── ai/            # AI 봇 (Easy / Medium / Hard)
 ├── gto/           # GTO 어드바이저
-├── gto_data/      # 프리플랍 레인지 JSON 데이터
 ├── server/        # FastAPI 백엔드
 ├── web/           # React + Vite + Tailwind 프론트엔드
-├── db/            # SQLite 기록 모듈 (미연결)
-├── tests/         # 포커 로직 정밀 테스트 (42개)
+├── db/            # SQLite (게임 기록 + GTO 데이터 + 에퀴티 캐시)
+├── scripts/       # 에퀴티 워커, 봇 아레나, 그라인드 모드
+├── tests/         # 테스트 (포커 로직 50 + 에퀴티/봇 36)
 ├── start.sh       # 개발 모드 실행 (= dev.sh)
 ├── dev.sh         # 개발 모드 실행
 └── prod.sh        # 프로덕션 모드 실행
@@ -49,14 +49,17 @@ ev_plus/
 |---|---|
 | 텍사스 홀덤 게임 엔진 | ✅ 완료 |
 | 웹 UI + 단계별 애니메이션 | ✅ 완료 |
-| AI 봇 3단계 | ✅ 완료 |
+| AI 봇 3단계 | ✅ 난이도 = MC 샘플 수(판단 해상도) |
 | 프리플랍 GTO 힌트 | ✅ GTO Wizard 데이터 (RFI+vs_open+vs_3bet) |
 | GTO 패널 (레인지 그리드) | ✅ 오른쪽 탭 — 핸드별 색상 + 비교 |
 | 포커 로직 테스트 50개 | ✅ 전체 통과 |
 | GTO 데이터 DB화 | ✅ 완료 (SQLite, 55개 스팟) |
 | GTO Wizard Chrome 연동 | ✅ HTTPS API 직접 저장 |
-| 포스트플랍 GTO | ❌ 미구현 |
-| DB 기록 연결 | ❌ 미연결 |
+| AI 봇 equity 기반 재작성 | ✅ MC/전수조사 + 레인지 반영 + 페르소나 |
+| 에퀴티 전수조사 워커 | ✅ `scripts/equity_worker.py` (중단/재개 안전) |
+| 봇 아레나 / 그라인드 | ✅ bb/100 검증 + 캐시·학습데이터 동시 축적 |
+| RL 학습 데이터 기록 | ✅ 전 액션 DB 기록 (equity/reward 포함) |
+| 포스트플랍 GTO | ❌ 미구현 (봇은 equity 휴리스틱) |
 
 ---
 

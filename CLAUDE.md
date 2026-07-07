@@ -12,7 +12,10 @@ FastAPI 백엔드 + React 프론트엔드.
 ```bash
 ./start.sh          # 개발 모드
 ./prod.sh           # 프로덕션 모드
-python3 tests/test_poker_full.py  # 테스트 (50개)
+python3 tests/test_poker_full.py  # 포커 로직 테스트 (50개)
+python3 tests/test_equity.py       # 에퀴티/봇 테스트 (36개)
+python3 scripts/grind.py           # 아레나+워커 동시 실행 (캐시/학습데이터 축적)
+python3 scripts/equity_worker.py --status  # 에퀴티 캐시 현황
 cd web && npm run build            # 프론트 빌드 확인
 ```
 
