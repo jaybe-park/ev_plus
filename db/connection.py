@@ -4,7 +4,7 @@ DB 연결 및 마이그레이션 관리
 
 import sqlite3
 import os
-from .schema import ALL_STATEMENTS, SCHEMA_VERSION
+from .schema import ALL_STATEMENTS, SCHEMA_VERSION, MIGRATIONS
 
 _DEFAULT_DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "poker.db"
@@ -37,6 +37,9 @@ def _migrate(conn: sqlite3.Connection):
     current = row["v"] or 0
 
     if current < SCHEMA_VERSION:
+        for v in range(current + 1, SCHEMA_VERSION + 1):
+            for stmt in MIGRATIONS.get(v, []):
+                cur.executescript(stmt)
         for stmt in ALL_STATEMENTS:
             cur.executescript(stmt)
         cur.execute(

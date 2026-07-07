@@ -2,7 +2,7 @@
 poker_simulator DB 스키마 정의 및 마이그레이션
 """
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 6
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS games (
     num_players     INTEGER NOT NULL CHECK(num_players BETWEEN 2 AND 6),
     small_blind     INTEGER NOT NULL,
     big_blind       INTEGER NOT NULL,
-    dealer_pos      TEXT    NOT NULL CHECK(dealer_pos IN ('BTN','SB','BB','UTG','MP','CO')),
+    dealer_pos      TEXT    NOT NULL CHECK(dealer_pos IN ('BTN','SB','BB','UTG','HJ','MP','CO','BTN/SB')),
 
     -- 홀카드: 포지션 키 JSON {"BTN":"AsJh","SB":"KdQd",...}
     hole_cards      TEXT    NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS preflop_actions (
     street_seq      INTEGER NOT NULL,   -- 프리플랍 내 순서
 
     -- 플레이어
-    position        TEXT    NOT NULL CHECK(position IN ('BTN','SB','BB','UTG','MP','CO')),
+    position        TEXT    NOT NULL CHECK(position IN ('BTN','SB','BB','UTG','HJ','MP','CO','BTN/SB')),
     is_human        INTEGER NOT NULL CHECK(is_human IN (0,1)),
 
     -- 베팅 라운드: 현재 몇 번째 공격인지
@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS preflop_actions (
     action          TEXT    NOT NULL CHECK(action IN ('fold','call','raise','allin')),
     amount          INTEGER NOT NULL DEFAULT 0,
     amount_bb       REAL    NOT NULL DEFAULT 0,  -- BB 기준 환산 (2.5, 7.5, 22.0 ...)
+
+    -- RL 학습용 컨텍스트
+    equity          REAL,               -- 결정 시점 봇 계산 equity
+    bot_profile     TEXT,               -- "hard/balanced", "human" 등
+    players_state   TEXT,               -- 결정 직전 전원 상태 JSON
+    reward          REAL,               -- 핸드 종료 후 역산 (bb 단위)
 
     -- GTO 빈도 (베팅 라운드 내 액션 단위, 사이즈는 amount_bb로 기록)
     gto_fold        REAL    CHECK(gto_fold  BETWEEN 0 AND 1),
@@ -78,7 +84,7 @@ CREATE TABLE IF NOT EXISTS postflop_actions (
     street_seq      INTEGER NOT NULL,   -- 해당 스트리트 내 순서
 
     -- 플레이어
-    position        TEXT    NOT NULL CHECK(position IN ('BTN','SB','BB','UTG','MP','CO')),
+    position        TEXT    NOT NULL CHECK(position IN ('BTN','SB','BB','UTG','HJ','MP','CO','BTN/SB')),
     is_human        INTEGER NOT NULL CHECK(is_human IN (0,1)),
 
     -- 스트리트
@@ -93,6 +99,11 @@ CREATE TABLE IF NOT EXISTS postflop_actions (
     -- 액션
     action          TEXT    NOT NULL CHECK(action IN ('fold','check','call','raise','allin')),
     amount          INTEGER NOT NULL DEFAULT 0,
+
+    -- RL 학습용 컨텍스트
+    equity          REAL,
+    bot_profile     TEXT,
+    players_state   TEXT,
 
     -- GTO 빈도 (팟 기준 이산화)
     gto_fold        REAL    CHECK(gto_fold       BETWEEN 0 AND 1),
@@ -216,6 +227,41 @@ CREATE_GTO_MISSING_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_gto_missing_collected ON gto_missing_spots(collected);
 """
 
+CREATE_EQUITY_CACHE = """
+CREATE TABLE IF NOT EXISTS equity_cache (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    street          TEXT    NOT NULL,   -- preflop | flop | turn | river
+    spot_key        TEXT    NOT NULL,   -- 수트 정규화된 (홀카드|플랍|턴|리버) 키
+    num_opponents   INTEGER NOT NULL,
+    wins            REAL    NOT NULL DEFAULT 0,   -- 누적 승리 수
+    ties            REAL    NOT NULL DEFAULT 0,   -- 누적 무승부 수
+    total           INTEGER NOT NULL DEFAULT 0,   -- 누적 샘플 수 (0 = 계산 대기)
+    exact           INTEGER NOT NULL DEFAULT 0,   -- 1 = 전수조사 완료 (정확값)
+    updated_at      TEXT    DEFAULT (datetime('now')),
+    UNIQUE(spot_key, num_opponents)
+);
+"""
+
+CREATE_EQUITY_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_equity_street ON equity_cache(street, exact, total);
+"""
+
+CREATE_WORKER_META = """
+CREATE TABLE IF NOT EXISTS worker_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+# 버전별 1회성 마이그레이션 (connection._migrate가 현재버전 초과분만 실행)
+MIGRATIONS = {
+    6: [
+        "DROP TABLE IF EXISTS preflop_actions;",
+        "DROP TABLE IF EXISTS postflop_actions;",
+        "DROP TABLE IF EXISTS games;",
+    ],
+}
+
 ALL_STATEMENTS = [
     CREATE_GAMES,
     CREATE_PREFLOP_ACTIONS,
@@ -231,4 +277,9 @@ ALL_STATEMENTS = [
     # v3: 미수집 스팟 큐
     CREATE_GTO_MISSING_SPOTS,
     CREATE_GTO_MISSING_INDEX,
+    # v4: 에퀴티 캐시 (전수조사 워커 + 봇 런타임 공유)
+    CREATE_EQUITY_CACHE,
+    CREATE_EQUITY_INDEX,
+    # v5: 워커 진행 커서 (체계적 플랍 스윕 재개용)
+    CREATE_WORKER_META,
 ]

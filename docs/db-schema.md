@@ -1,7 +1,7 @@
 # DB 스키마
 
 SQLite 기반. `poker.db` 파일로 저장.  
-현재 스키마와 기록 모듈은 구현됐지만 **게임 세션과 연결이 안 된 상태**다.
+v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**된다 (RL 학습 데이터).
 
 ---
 
@@ -48,6 +48,10 @@ SQLite 기반. `poker.db` 파일로 저장.
 
 ---
 
+**v6 RL 컨텍스트 컬럼** (preflop/postflop 공통): `equity`(봇 결정 시점 계산값),
+`bot_profile`("hard/aggressive" 등), `players_state`(결정 직전 전원 상태 JSON),
+`reward`(핸드 종료 후 bb 단위 역산). 포지션 CHECK에 HJ/BTN-SB 허용.
+
 ### postflop_actions
 포스트플랍 액션 기록. RL 학습용 필드 포함.
 
@@ -58,6 +62,43 @@ SQLite 기반. `poker.db` 파일로 저장.
 | `gto_raise_33~150` | REAL | 팟 대비 사이즈별 GTO 빈도 |
 | `state_vector` | TEXT | JSON (RL 학습용, 미사용) |
 | `reward` | REAL | 핸드 종료 후 역산 보상 (미사용) |
+
+---
+
+### gto_missing_spots (v3)
+플레이 중 만난 GTO 데이터 없는 스팟 큐. 수집모드가 소비.
+
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| `street` | TEXT | 현재 preflop만 |
+| `position` | TEXT | 결정 주체 포지션 |
+| `vs_position` | TEXT | RFI=`''` / vs_open=`'UTG'` / vs_3bet=`'UTG/HJ'` |
+| `range_type` | TEXT | open / vs_open / vs_3bet |
+| `gto_wizard_url` | TEXT | 직접 이동 URL (사전 계산) |
+| `collected` | INTEGER | 수집 완료 여부 |
+
+---
+
+### equity_cache (v4)
+에퀴티 계산 결과 누적 저장소. 봇 런타임과 `scripts/equity_worker.py`가 공유.
+
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| `street` | TEXT | preflop / flop / turn / river |
+| `spot_key` | TEXT | 수트 정규화 키 `홀\|플랍\|턴\|리버` |
+| `num_opponents` | INTEGER | 상대 수 (1~5) |
+| `wins` / `ties` | REAL | 누적 승리/무승부 수 |
+| `total` | INTEGER | 누적 샘플 수 (0 = 계산 대기) |
+| `exact` | INTEGER | 1 = 전수조사 완료 (정확값, MC 누적 차단) |
+
+- equity = `(wins + 0.5×ties) / total`
+- 봇이 플레이 중 계산한 MC 결과가 자동 누적 → 만난 스팟이 워커 큐에 등록되는 효과
+- 워커가 리버→턴→플랍(1:1) 순으로 전수조사, 프리플랍/멀티웨이는 고정밀 샘플링 누적
+
+---
+
+### worker_meta (v5)
+에퀴티 워커의 플랍 스윕 진행 커서 저장 (key-value).
 
 ---
 
@@ -73,12 +114,12 @@ Card("10","♦") → "Td"
 
 ---
 
-## 연결 방법 (미구현)
+## 기록 흐름 (v6에서 연결 완료)
 
-`server/session.py`의 `_apply()` 메서드에서 각 액션 시 `db/recorder.py`를 호출하면 된다.
+`WebGameSession`이 `GameRecorder`를 내장:
+- `_start_new_hand` → `start_hand()` (전원 홀카드/시작칩/딜러)
+- `_apply` → `record_action()` (결정 직전 상태 + equity + 봇 프로파일)
+- `_do_showdown` → `finish_hand()` (보드/팟/승자 + reward 역산)
 
-```python
-# session.py _apply() 내부에서 호출 예시
-from db.recorder import record_action
-record_action(game_uuid, player, action, amount, gto_freqs)
-```
+기록 실패는 try/except로 무시되어 게임을 막지 않는다.
+아레나/그라인드(`scripts/`)도 같은 세션을 쓰므로 자동 기록된다.
