@@ -65,6 +65,11 @@ class GameRecorder:
         self.street_seqs: dict = {"preflop": 0, "flop": 0, "turn": 0, "river": 0}
         self._preflop_history: list = []  # bet_round 판별용
 
+        # record_action()은 DB에 쓰지 않고 여기 버퍼링만 한다.
+        # finish_hand()에서 한 트랜잭션으로 일괄 INSERT+commit.
+        self._pending_preflop: list = []
+        self._pending_postflop: list = []
+
     def _get_conn(self):
         if self._conn is None:
             self._conn = get_connection(self.db_path) if self.db_path else get_connection()
@@ -82,6 +87,10 @@ class GameRecorder:
         self.action_seq = 0
         self.street_seqs = {"preflop": 0, "flop": 0, "turn": 0, "river": 0}
         self._preflop_history = []
+        # 이전 핸드가 finish_hand() 없이 비정상 종료된 경우 남아있을 수 있는
+        # pending 버퍼를 버리고 새로 시작한다.
+        self._pending_preflop = []
+        self._pending_postflop = []
 
         # 홀카드 JSON 직렬화
         hole_cards_json = {
@@ -135,8 +144,12 @@ class GameRecorder:
         gto 예시:
           프리플랍: {"fold":0.0, "call":0.2, "raise":0.8, "allin":0.0}
           포스트플랍: {"fold":0.3, "check":0.0, "call":0.4, "raise_33":0.1, "raise_75":0.2, ...}
+
+        DB에는 접근하지 않는다 — 값만 계산해 pending 버퍼에 append하고,
+        실제 INSERT는 finish_hand()에서 한 트랜잭션으로 일괄 처리한다.
+        (액션마다 커밋하면 recorder 커넥션이 쓰기 트랜잭션을 장시간 점유해
+        다른 프로세스의 쓰기가 busy_timeout까지 블로킹되는 문제가 있었음)
         """
-        conn = self._get_conn()
         street_name = street.value  # "프리플랍" 등 한글 → 영문 매핑
         street_key = {
             "프리플랍": "preflop", "플랍": "flop",
@@ -155,40 +168,30 @@ class GameRecorder:
             call_amount = 0
 
         if street_key == "preflop":
-            self._record_preflop(
-                conn, position, is_human, seq, s_seq,
+            self._buffer_preflop(
+                position, is_human, seq, s_seq,
                 pot_before, game_state.get("stack_before", 0),
                 current_bet, call_amount,
                 action_str, amount, gto, equity, bot_profile, players_state
             )
             self._preflop_history.append({"action": action_str})
         else:
-            self._record_postflop(
-                conn, position, is_human, street_key, seq, s_seq,
+            self._buffer_postflop(
+                position, is_human, street_key, seq, s_seq,
                 pot_before, game_state.get("stack_before", 0),
                 current_bet, call_amount,
                 action_str, amount, gto, equity, bot_profile, players_state
             )
-        # 커밋은 finish_hand에서 1번 — 액션마다 커밋하면 쓰기 락 경합 유발
 
-    def _record_preflop(
-        self, conn, position, is_human, seq, s_seq,
+    def _buffer_preflop(
+        self, position, is_human, seq, s_seq,
         pot_before, stack_before, current_bet, call_amount,
         action, amount, gto, equity=None, bot_profile=None, players_state=None
     ):
         bet_round = _detect_bet_round(self._preflop_history, action)
         amount_bb = round(amount / self.big_blind, 2) if amount > 0 else 0.0
         g = gto or {}
-        conn.execute("""
-            INSERT INTO preflop_actions (
-                game_uuid, action_seq, street_seq,
-                position, is_human, bet_round,
-                pot_before, stack_before, current_bet, call_amount,
-                action, amount, amount_bb,
-                equity, bot_profile, players_state,
-                gto_fold, gto_call, gto_raise, gto_allin
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
+        self._pending_preflop.append((
             self.game_uuid, seq, s_seq,
             position, int(is_human), bet_round,
             pot_before, stack_before, current_bet, call_amount,
@@ -197,24 +200,13 @@ class GameRecorder:
             g.get("fold"), g.get("call"), g.get("raise"), g.get("allin"),
         ))
 
-    def _record_postflop(
-        self, conn, position, is_human, street, seq, s_seq,
+    def _buffer_postflop(
+        self, position, is_human, street, seq, s_seq,
         pot_before, stack_before, current_bet, call_amount,
         action, amount, gto, equity=None, bot_profile=None, players_state=None
     ):
         g = gto or {}
-        conn.execute("""
-            INSERT INTO postflop_actions (
-                game_uuid, action_seq, street_seq,
-                position, is_human, street,
-                pot_before, stack_before, current_bet, call_amount,
-                action, amount,
-                equity, bot_profile, players_state,
-                gto_fold, gto_check, gto_call,
-                gto_raise_33, gto_raise_50, gto_raise_75,
-                gto_raise_100, gto_raise_150, gto_allin
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
+        self._pending_postflop.append((
             self.game_uuid, seq, s_seq,
             position, int(is_human), street,
             pot_before, stack_before, current_bet, call_amount,
@@ -232,13 +224,43 @@ class GameRecorder:
         winner_positions: list[str],
         player_results: dict,   # {"BTN": {"start":1000,"end":1150}, ...}
     ):
-        """핸드 종료 — games 테이블 업데이트, postflop reward 역산"""
+        """
+        핸드 종료 — pending 액션 일괄 INSERT, games 테이블 업데이트,
+        postflop/preflop reward 역산까지 전부 한 트랜잭션으로 처리 후 commit.
+        """
         comm = cards_to_str(community_cards)
         flop  = comm[:3] if len(comm) >= 3 else [None, None, None]
         turn  = comm[3]  if len(comm) >= 4 else None
         river = comm[4]  if len(comm) >= 5 else None
 
         conn = self._get_conn()
+
+        if self._pending_preflop:
+            conn.executemany("""
+                INSERT INTO preflop_actions (
+                    game_uuid, action_seq, street_seq,
+                    position, is_human, bet_round,
+                    pot_before, stack_before, current_bet, call_amount,
+                    action, amount, amount_bb,
+                    equity, bot_profile, players_state,
+                    gto_fold, gto_call, gto_raise, gto_allin
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, self._pending_preflop)
+
+        if self._pending_postflop:
+            conn.executemany("""
+                INSERT INTO postflop_actions (
+                    game_uuid, action_seq, street_seq,
+                    position, is_human, street,
+                    pot_before, stack_before, current_bet, call_amount,
+                    action, amount,
+                    equity, bot_profile, players_state,
+                    gto_fold, gto_check, gto_call,
+                    gto_raise_33, gto_raise_50, gto_raise_75,
+                    gto_raise_100, gto_raise_150, gto_allin
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, self._pending_postflop)
+
         conn.execute("""
             UPDATE games SET
                 flop_1 = ?, flop_2 = ?, flop_3 = ?,
@@ -266,6 +288,10 @@ class GameRecorder:
                     (reward, self.game_uuid, pos))
 
         conn.commit()
+
+        # pending 버퍼 비우기
+        self._pending_preflop = []
+        self._pending_postflop = []
 
     def close(self):
         if self._conn:
