@@ -110,6 +110,13 @@
   - 검증: 개선 전 hard -39.1 → 개선 후 +19.4 bb/100 (600핸드, seed=99)
   - 대규모: 1500핸드에서 hard 평균 +94.1 vs legacy -44.7 bb/100 (두 hard 좌석 모두 플러스)
 
+- [x] **아레나 활용 인프라** (튜닝/회귀/퍼징)
+  - `scripts/tune_bot.py`: 파라미터 그리드 A/B + 진화(hill-climb) 튜닝 → tuning_results.json
+  - `scripts/ai_regression.py`: 신버전 vs legacy 고정 벤치마크 (FAIL 시 exit 1)
+  - 아레나 시트 문법 확장: `hard:persona=aggressive`, `hard:aggression_margin=0.12+bluff_freq=0.3`
+  - 아레나에 핸드별 칩 총량 보존 assert (엔진 퍼징)
+  - 남은 것: 튜닝 장시간 실행으로 실제 최적값 찾기 (수치는 아직 이론값)
+
 - [ ] **포스트플랍 베팅 레인지 반영** (B-2, 장기)
   - 현재는 프리플랍 레인지 + 어그레션 마진 근사
   - 포스트플랍 벳/레이즈 액션으로 레인지 추가 좁히기

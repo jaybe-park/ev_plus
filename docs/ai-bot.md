@@ -142,16 +142,27 @@ GTO 액션이 `"fold"`인데 콜 비용이 없으면 체크로 보정.
 
 ---
 
-## 검증 도구 (E단계)
+## 검증·튜닝 도구 (E단계)
 
 ```bash
-python3 scripts/bot_arena.py --hands 600 --seats hard,medium,legacy,legacy,medium,legacy --seed 99
+# 아레나: 프로파일 대전 (bb/100 비교)
+python3 scripts/bot_arena.py --hands 600 --seats hard,medium,legacy --seed 99
+# 시트 문법: 페르소나/파라미터 오버라이드 ("+"로 다중 오버라이드)
+python3 scripts/bot_arena.py --seats "hard:persona=aggressive,hard:aggression_margin=0.12+bluff_freq=0.3,legacy"
+
+# 회귀 테스트: 로직 변경 후 실행 — legacy보다 약해지면 FAIL(exit 1)
+python3 scripts/ai_regression.py [--hands 1000]
+
+# 파라미터 튜닝: 그리드 A/B 또는 진화(hill-climb). 결과는 tuning_results.json 누적
+python3 scripts/tune_bot.py --profile hard --param aggression_margin --values 0.04,0.08,0.12 --hands 2000 --seeds 3
+python3 scripts/tune_bot.py --profile hard --param semibluff_freq --evolve --start 0.55 --step 0.1 --rounds 5
 ```
 
-- 봇 프로파일들을 같은 테이블에 앉혀 bb/100 승률 비교
 - `legacy` = 개선 전 핸드랭크 휴리스틱 봇 (베이스라인, 아레나 스크립트에 보존)
-- 매 핸드 스택 100bb 리셋 (캐시게임 방식), 딜러 로테이션으로 포지션 공정
+- 매 핸드 스택 100bb 리셋 + **칩 총량 보존 assert** (엔진 퍼징 겸용)
 - 검증 결과 (600핸드, seed=99): legacy -19.3 vs medium +19.3 vs hard +19.4 bb/100
+- 튜닝 결과는 봇 코드에 자동 반영되지 않음 — 확인 후 `POSTFLOP_PROFILES` 수동 갱신
+- 분산 주의: 차이가 ±10~20 bb/100 이내면 노이즈로 간주하고 핸드 수를 늘릴 것
 
 ---
 
