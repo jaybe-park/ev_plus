@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 
-from server.schemas import StartGameRequest, ActionRequest, GameStateResponse
+from server.schemas import StartGameRequest, ActionRequest, GameStateResponse, SessionReviewResponse
 from server.session import WebGameSession
 
 app = FastAPI(title="Texas Hold'em Poker")
@@ -67,14 +67,14 @@ def next_hand(session_id: str):
     return session.get_state()
 
 
-@app.get("/session/{session_id}/review")
+@app.get("/session/{session_id}/review", response_model=SessionReviewResponse)
 def get_session_review(session_id: str):
     """세션 전체 누적 플레이 평가 요약."""
     session = sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
 
-    reviews = session.all_reviews
+    reviews = session.session_reviews
     total_actions = len(reviews)
 
     grade_counts: Dict[str, int] = {}

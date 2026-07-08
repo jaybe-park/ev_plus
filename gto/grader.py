@@ -75,7 +75,7 @@ def grade_postflop_call(equity: float, pot: int, call_amount: int, big_blind: in
     """콜 액션 평가. EV = equity*(pot+call) - call."""
     ev = equity * (pot + call_amount) - call_amount
     if ev < 0:
-        ev_loss_bb = ev / big_blind
+        ev_loss_bb = -ev / big_blind  # 손실 크기를 양수로 표현 (grade_postflop_fold와 부호 통일)
         reason = f"콜 EV={ev:.1f} (음수) — equity {equity*100:.1f}%로는 손해 콜"
         return GradeResult(street="", action="call", grade="🔴", reason=reason, ev_loss_bb=ev_loss_bb)
 
@@ -91,7 +91,7 @@ def grade_postflop_fold(
 
     if equity > pot_odds + margin:
         ev = equity * (pot + call_amount) - call_amount
-        ev_loss_bb = -(ev / big_blind)
+        ev_loss_bb = ev / big_blind  # 콜했다면 얻었을 EV = 폴드로 놓친 EV (양수)
         reason = f"equity {equity*100:.1f}%가 팟오즈 {pot_odds*100:.1f}%보다 충분히 높은데 폴드 — 놓친 EV"
         return GradeResult(street="", action="fold", grade="🔴", reason=reason, ev_loss_bb=ev_loss_bb)
 

@@ -117,6 +117,7 @@ def run_arena(seats: list, hands: int, big_blind: int, seed=None, verbose=False)
         num_bots=len(seats) - 1,
         difficulty="medium",
         small_blind=big_blind // 2,
+        equity_enabled=False,  # 아레나는 순수 시뮬레이션 — 사람 좌석도 봇 드라이버라 패널 불필요
     )
 
     # 좌석별 프로파일 배정

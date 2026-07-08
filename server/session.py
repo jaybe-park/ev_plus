@@ -12,8 +12,7 @@ from typing import List, Optional, Dict
 
 from core.game import TexasHoldem, Action, Street
 from core.player import Player
-from ai.bot import PokerBot, BotDifficulty, estimate_opponent_ranges
-from ai.bot import opponent_range_info
+from ai.bot import PokerBot, BotDifficulty, opponent_range_info
 from ai.equity import smart_equity, ranged_equity
 from gto.advisor import GTOAdvisor
 from gto.grader import (
@@ -34,8 +33,13 @@ class WebGameSession:
         num_bots: int,
         difficulty: str,
         small_blind: int,
+        equity_enabled: bool = True,
     ):
         self.session_id = session_id
+        # 에퀴티/플레이 평가 계산 스위치. 아레나처럼 순수 시뮬레이션 성능이 중요한
+        # 경우 False로 꺼서 사람 액션당 추가 MC 계산을 건너뛴다.
+        self.equity_enabled = equity_enabled
+
         diff_map = {
             "easy": BotDifficulty.EASY,
             "medium": BotDifficulty.MEDIUM,
@@ -59,14 +63,14 @@ class WebGameSession:
         self.recorder = GameRecorder(big_blind=small_blind * 2)
         self._hand_start_chips: Dict[str, int] = {}
 
-        # 에퀴티 패널 (Feature A)
+        # 에퀴티 패널 (Feature A): 스트리트+current_bet 단위 캐시(재계산 방지), 스트리트별 history
         self._equity_cache: Dict[tuple, dict] = {}
         self.equity_history: List[dict] = []
         self._equity_history_streets: set = set()
 
-        # 플레이 평가 (Feature B)
+        # 플레이 평가 (Feature B): 방금 끝난 핸드의 평가(get_state용) + 세션 전체 누적(요약 API용)
         self.hand_reviews: List[dict] = []
-        self.all_reviews: List[dict] = []
+        self.session_reviews: List[dict] = []
 
         # 베팅 라운드 상태
         self._order: List[Player] = []
@@ -173,7 +177,7 @@ class WebGameSession:
             "call_amount": call_amount,
             "min_raise_to": min_raise_to,
             "events": events,
-            "equity": self._get_equity_info() if waiting else None,
+            "equity": self._get_equity_info() if (waiting and self.equity_enabled) else None,
             "hand_review": self.hand_reviews if self.hand_over else None,
         }
 
@@ -194,11 +198,10 @@ class WebGameSession:
         self.showdown_hands = {}
         self.action_log = []
 
-        # 에퀴티/평가 상태 초기화 (새 핸드)
+        # 에퀴티/평가 상태 초기화 (새 핸드마다 리셋)
         self._equity_cache = {}
         self.equity_history = []
         self._equity_history_streets = set()
-        self.all_reviews.extend(self.hand_reviews)
         self.hand_reviews = []
 
         # 파산 플레이어 제거
@@ -342,46 +345,11 @@ class WebGameSession:
         _gto_for_record = None
 
         # 사람 액션: 적용 전 equity 계산 + 플레이 평가 (Feature B)
-        if player is self.human:
-            equity_info = self._get_equity_info(call_amt)
-            vs_random = equity_info["vs_random"] if equity_info else None
-            _equity = vs_random
-
-            if street == Street.PREFLOP.value:
-                gto_positions = self.game.get_positions()
-                my_pos = gto_positions.get(self.human.name, "")
-                game_state = self.game._get_game_state()
-                gto_rec = self.gto.get_recommendation(
-                    self.human.hole_cards, my_pos, gto_positions,
-                    game_state, self.game.big_blind,
-                )
-                grade = grade_preflop_action(action.value, gto_rec)
-                _gto_for_record = gto_rec["frequencies"] if gto_rec else None
-                gto_freq_out = gto_rec["frequencies"] if gto_rec else None
-            else:
-                pot = self.game.pot
-                big_blind = self.game.big_blind
-                if vs_random is None:
-                    grade = None
-                elif action == Action.CALL:
-                    grade = grade_postflop_call(vs_random, pot, call_amt, big_blind)
-                elif action == Action.FOLD:
-                    grade = grade_postflop_fold(vs_random, pot, call_amt, big_blind)
-                elif action in (Action.RAISE, Action.ALL_IN, Action.CHECK):
-                    grade = grade_postflop_bet_or_raise(vs_random, action.value)
-                else:
-                    grade = None
-                _gto_for_record = None
-                gto_freq_out = None
-
-            if grade is not None:
-                gd = grade.to_dict()
-                gd["street"] = street
-                gd["action"] = action.value
-                gd["pot_odds"] = equity_info["pot_odds"] if equity_info else None
-                gd["equity"] = vs_random
-                gd["gto_freq"] = gto_freq_out
-                self.hand_reviews.append(gd)
+        # (equity_enabled=False인 아레나 등에서는 건너뛰어 성능을 지킨다)
+        if player is self.human and self.equity_enabled:
+            _equity, _gto_for_record = self._grade_human_action(
+                player, action, amount, self.game.current_street, call_amt,
+            )
 
         self.game.apply_action(player, action, amount)
 
@@ -603,6 +571,9 @@ class WebGameSession:
         except Exception:
             pass
 
+        # 세션 전체 누적 (요약 API용) — 이번 핸드 평가를 합산
+        self.session_reviews.extend(self.hand_reviews)
+
         self.game.pot = 0
         self.game._advance_dealer()
         self.hand_over = True
@@ -690,7 +661,7 @@ class WebGameSession:
     # ──────────────────────────────────────────
 
     def _build_gs_for_ranges(self) -> dict:
-        """estimate_opponent_ranges에 넘길 state — game._get_game_state()에 action_log 부착"""
+        """opponent_range_info에 넘길 state — game._get_game_state()에 action_log 부착"""
         gs = self.game._get_game_state()
         gs["action_log"] = self.action_log
         return gs
@@ -707,7 +678,7 @@ class WebGameSession:
         """
         현재 결정 지점의 에퀴티 정보. waiting_for_action=True일 때만 의미있게 호출된다.
         사람이 폴드했거나 홀카드가 없으면 None.
-        같은 결정 지점(스트리트+현재벳) 재조회 시 캐시 재사용.
+        같은 결정 지점(스트리트+현재벳) 재조회 시 캐시 재사용 (재계산 방지).
         """
         if self.human.is_folded or len(self.human.hole_cards) < 2:
             return None
@@ -742,52 +713,43 @@ class WebGameSession:
 
         self._record_equity_history(vs_random)
 
-        # vs_range: 살아있는 모든 상대 레인지 반영 종합 승률
-        # estimate_opponent_ranges (모듈 레벨, ai/bot.py — PokerBot._opponent_ranges와 공용)로
-        # 샘플러 목록을 얻고, role까지 필요하므로 같은 정보를 담은 opponent_range_info도 함께 사용.
+        # vs_range: 살아있는 모든 상대 레인지 반영 종합 승률 (opponent_range_info 재사용)
         gs = self._build_gs_for_ranges()
         opp_dicts = [{"name": p.name, "is_folded": p.is_folded} for p in opponents]
-        try:
-            samplers = estimate_opponent_ranges(gs, opp_dicts)
-            samplers_with_roles = opponent_range_info(gs, opp_dicts)
-        except Exception:
-            samplers = None
-            samplers_with_roles = None
+        samplers_with_roles = opponent_range_info(gs, opp_dicts)
 
-        if samplers and any(samplers):
+        samplers = [s for s, _ in samplers_with_roles]
+        if any(samplers):
             vs_range = ranged_equity(hole, community, samplers, sims)
         else:
             vs_range = vs_random
 
-        if not samplers_with_roles:
-            samplers_with_roles = [(None, "unknown") for _ in opponents]
-
-        # 상대별 1:1 추정
+        # 상대별 1:1 추정 (곱해서 종합이 되지 않음 — 개별 지표로 유지)
         opponents_out = []
         for opp, (sampler, role) in zip(opponents, samplers_with_roles):
             if sampler is not None:
                 one_on_one = ranged_equity(hole, community, [sampler], sims)
             else:
-                # 정보 없음 → 추가 계산 없이 vs_random 재사용 (가장 저렴한 근사)
-                one_on_one = vs_random
-                role = "unknown"
+                # 정보 없음 → 랜덤 1:1로 근사 (n_opps 기준 vs_random과는 상대 수가 달라 별도 계산)
+                one_on_one = smart_equity(hole, community, 1, sims, use_cache=True, contribute=False)
             opponents_out.append({
                 "name": opp.name,
                 "position": self.game.get_positions().get(opp.name, ""),
                 "role": role,
                 "equity": round(one_on_one, 4),
             })
+        opponents_out.sort(key=lambda o: o["equity"])
 
-        pot_odds = call_amount / (pot + call_amount) if call_amount > 0 else None
+        pot_odds = call_amount / (pot + call_amount) if call_amount > 0 else 0.0
         call_ev_bb = None
-        if call_amount > 0:
+        if call_amount > 0 and big_blind:
             call_ev_bb = (vs_random * (pot + call_amount) - call_amount) / big_blind
 
         info = {
             "vs_random": round(vs_random, 4),
             "vs_range": round(vs_range, 4),
-            "pot_odds": round(pot_odds, 4) if pot_odds is not None else None,
-            "call_ev_bb": round(call_ev_bb, 4) if call_ev_bb is not None else None,
+            "pot_odds": round(pot_odds, 4),
+            "call_ev_bb": round(call_ev_bb, 2) if call_ev_bb is not None else None,
             "source": source,
             "samples": sims,
             "num_opponents": n_opps,
@@ -796,3 +758,58 @@ class WebGameSession:
         }
         self._equity_cache[cache_key] = info
         return info
+
+    # ──────────────────────────────────────────
+    # 플레이 평가 (Play Grader, Feature B)
+    # ──────────────────────────────────────────
+
+    def _grade_human_action(
+        self, player: Player, action: Action, amount: int, street: Street, call_amt: int,
+    ):
+        """
+        사람 액션을 GTO 빈도(프리플랍) / equity 기반 EV(포스트플랍)로 평가해
+        self.hand_reviews / self.session_reviews에 누적.
+        game.apply_action() 호출 '전'에 실행해야 한다 (팟/베팅이 액션 전 값이어야 함).
+
+        반환: (equity|None, gto_frequencies|None) — recorder.record_action에 채워 넣을 값.
+        """
+        try:
+            equity_info = self._get_equity_info(call_amt)
+            vs_random = equity_info["vs_random"] if equity_info else None
+            gto_freqs = None
+            grade = None
+
+            if street == Street.PREFLOP:
+                positions = self.game.get_positions()
+                my_pos = positions.get(self.human.name, "")
+                game_state = self.game._get_game_state()
+                game_state["action_log"] = self.action_log
+                gto_rec = self.gto.get_recommendation(
+                    self.human.hole_cards, my_pos, positions, game_state, self.game.big_blind,
+                )
+                grade = grade_preflop_action(action.value, gto_rec)
+                gto_freqs = gto_rec["frequencies"] if gto_rec else None
+            elif vs_random is not None:
+                pot = self.game.pot
+                big_blind = self.game.big_blind
+                if action == Action.CALL:
+                    grade = grade_postflop_call(vs_random, pot, call_amt, big_blind)
+                elif action == Action.FOLD:
+                    grade = grade_postflop_fold(vs_random, pot, call_amt, big_blind)
+                else:
+                    grade = grade_postflop_bet_or_raise(vs_random, action.value)
+
+            if grade is not None:
+                review = grade.to_dict()
+                review["street"] = street.value
+                review["action"] = action.value
+                review["equity"] = vs_random
+                review["pot_odds"] = equity_info["pot_odds"] if equity_info else None
+                review["gto_freq"] = (gto_freqs or {}).get(
+                    "raise" if action.value == "allin" else action.value
+                ) if gto_freqs else None
+                self.hand_reviews.append(review)
+
+            return vs_random, gto_freqs
+        except Exception:
+            return None, None

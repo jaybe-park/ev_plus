@@ -351,6 +351,67 @@ def test_made_hand_rank():
     check("투페어 = 3", r == 3, f"={r}")
 
 
+def test_grader():
+    print("\n[E-11] 플레이 평가 (Play Grader) 판정 규칙")
+    from gto.grader import (
+        grade_preflop_action, grade_postflop_call, grade_postflop_fold,
+        grade_postflop_bet_or_raise,
+    )
+
+    # 프리플랍: 데이터 없음 → ⬜
+    g = grade_preflop_action("call", None)
+    check("GTO 데이터 없음 → ⬜", g.grade == "⬜", f"={g.grade}")
+
+    # 프리플랍: 최빈 액션과 일치 → ✅
+    rec = {"frequencies": {"raise": 0.8, "fold": 0.2}}
+    g = grade_preflop_action("raise", rec)
+    check("최빈 액션 일치 → ✅", g.grade == "✅", f"={g.grade}")
+
+    # 프리플랍: 저빈도 액션 선택 → 🔴 (블런더)
+    g = grade_preflop_action("call", rec)  # call 빈도 0% (frequencies에 없음)
+    check("저빈도(<5%) 액션 → 🔴", g.grade == "🔴", f"={g.grade}")
+
+    # 프리플랍: 중간 빈도(5~25%) → 🟠
+    rec2 = {"frequencies": {"raise": 0.7, "call": 0.15, "fold": 0.15}}
+    g = grade_preflop_action("call", rec2)
+    check("중간 빈도(5~25%) → 🟠", g.grade == "🟠", f"={g.grade}")
+
+    # 프리플랍: 준수 빈도(>25%) → 🟡
+    rec3 = {"frequencies": {"raise": 0.6, "call": 0.4}}
+    g = grade_preflop_action("call", rec3)
+    check("준수 빈도(>25%) → 🟡", g.grade == "🟡", f"={g.grade}")
+
+    # 포스트플랍 콜: EV 양수 → ✅
+    g = grade_postflop_call(0.8, pot=100, call_amount=20, big_blind=20)
+    check("콜 EV 양수 → ✅", g.grade == "✅" and g.ev_loss_bb is None, f"={g.grade}")
+
+    # 포스트플랍 콜: EV 음수 → 🔴 + bb 손실 추정
+    g = grade_postflop_call(0.1, pot=100, call_amount=50, big_blind=20)
+    check("콜 EV 음수 → 🔴", g.grade == "🔴", f"={g.grade}")
+    check("bb 손실 추정치 존재(양수)", g.ev_loss_bb is not None and g.ev_loss_bb > 0, f"={g.ev_loss_bb}")
+
+    # 포스트플랍 폴드: equity 낮음(팟오즈 이하) → 적절한 폴드 ✅
+    g = grade_postflop_fold(0.1, pot=100, call_amount=20, big_blind=20)
+    check("적절한 폴드 → ✅", g.grade == "✅", f"={g.grade}")
+
+    # 포스트플랍 폴드: equity 높은데 폴드 → 놓친 EV 🔴
+    g = grade_postflop_fold(0.9, pot=100, call_amount=20, big_blind=20)
+    check("놓친 EV 폴드 → 🔴", g.grade == "🔴", f"={g.grade}")
+    check("놓친 EV bb 손실 추정치", g.ev_loss_bb is not None and g.ev_loss_bb > 0, f"={g.ev_loss_bb}")
+
+    # 넛급 핸드 체크 → 밸류 놓침 경고
+    g = grade_postflop_bet_or_raise(0.95, "check")
+    check("넛급 체크 → ⚠️ 밸류 놓침", g.grade == "⚠️", f"={g.grade}")
+
+    # 저 equity 레이즈 → 블러프 중립 🟡
+    g = grade_postflop_bet_or_raise(0.15, "raise")
+    check("저equity 레이즈 → 🟡 블러프", g.grade == "🟡", f"={g.grade}")
+
+    # 중간 equity 벳 → 데이터부족 ⬜ (v1 제한 판정)
+    g = grade_postflop_bet_or_raise(0.5, "raise")
+    check("중간 equity 벳 → ⬜ (제한 판정)", g.grade == "⬜", f"={g.grade}")
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("  에퀴티 엔진 + 봇 테스트")
@@ -366,6 +427,7 @@ if __name__ == "__main__":
     test_fast_evaluator()
     test_street_dp()
     test_made_hand_rank()
+    test_grader()
 
     print(f"\n{'='*50}")
     print(f"  결과: {PASS} 통과 / {FAIL} 실패")

@@ -60,7 +60,7 @@ class EquityHistoryEntry(BaseModel):
 class EquityInfo(BaseModel):
     vs_random: float                    # 랜덤 핸드 대비 승률 (캐시/MC)
     vs_range: float                     # 상대 레인지 반영 종합 승률
-    pot_odds: Optional[float] = None    # call / (pot + call), 벳 없으면 None
+    pot_odds: float = 0.0                # call / (pot + call), 벳 없으면 0
     call_ev_bb: Optional[float] = None  # 콜 EV (bb), 벳 직면 시만
     source: str                         # exact | mc:N
     samples: int                        # 계산에 쓰인 샘플 수
@@ -77,7 +77,15 @@ class HandReviewEntry(BaseModel):
     ev_loss_bb: Optional[float] = None
     pot_odds: Optional[float] = None
     equity: Optional[float] = None
-    gto_freq: Optional[Dict[str, Any]] = None
+    gto_freq: Optional[float] = None   # 선택한 액션의 GTO 빈도 (프리플랍만)
+
+
+class SessionReviewResponse(BaseModel):
+    """세션 전체 누적 플레이 평가 요약 (GET /session/{id}/review)"""
+    total_actions: int
+    grade_counts: Dict[str, int]              # 등급 기호 → 개수
+    total_ev_loss_bb: float
+    gto_match_rate: Optional[float] = None    # 프리플랍 GTO 데이터 있는 액션 중 최선(✅) 비율
 
 
 class GameStateResponse(BaseModel):

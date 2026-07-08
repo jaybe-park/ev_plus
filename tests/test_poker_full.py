@@ -742,6 +742,61 @@ def test_5_9_showdown_reveals_bot_cards():
                 assert p["hole_cards"] is not None, \
                     f"쇼다운 후 봇 카드가 숨겨져 있음: {p['name']}"
 
+def test_5_10_equity_panel_nut_hand():
+    """넛(포스트플랍 최강 핸드)에서 equity.vs_random이 0.85를 넘어야 함"""
+    from server.session import WebGameSession
+    sess = WebGameSession("f10", "Human", 1000, 1, "easy", 10)  # 헤즈업 (상대 1명)
+    stub_all_bots(sess)
+
+    # 프리플랍은 건너뛰고 플랍에서 사람이 완성된 넛(포켓에이스 + 보드 세트)로 액션하는 상황을 강제
+    sess.human.hole_cards = [c("A", "S"), c("A", "H")]
+    opp = next(p for p in sess.game.players if not p.is_human)
+    opp.hole_cards = [c("K", "S"), c("Q", "D")]
+    sess.game.community_cards = [c("A", "D"), c("A", "C"), c("2", "H")]  # 사람 쿼드 에이스
+    sess.game.current_street = Street.FLOP
+    sess.street_index = 1
+    sess._equity_cache = {}
+    sess.equity_history = []
+    sess._equity_history_streets = set()
+
+    equity = sess._get_equity_info()
+    assert equity is not None, "equity 계산 결과가 None"
+    assert equity["vs_random"] > 0.85, \
+        f"쿼드 에이스 equity가 너무 낮음: {equity['vs_random']}"
+    assert "vs_range" in equity and "pot_odds" in equity and "source" in equity
+    assert isinstance(equity["opponents"], list)
+    assert isinstance(equity["history"], list) and len(equity["history"]) >= 1
+
+def test_5_11_hand_review_after_hand_over():
+    """핸드 종료 후 get_state에 hand_review가 사람 액션 평가로 채워져야 함"""
+    from server.session import WebGameSession
+    sess = WebGameSession("f11", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
+
+    for _ in range(40):
+        state = sess.get_state()
+        if state["hand_over"]:
+            break
+        if state["waiting_for_action"]:
+            sess.submit_action("call", 0)
+
+    state = sess.get_state()
+    assert state["hand_over"], "40스텝 안에 핸드가 끝나지 않음"
+    assert state["hand_review"] is not None, "hand_over인데 hand_review가 None"
+    assert isinstance(state["hand_review"], list)
+    if state["hand_review"]:
+        item = state["hand_review"][0]
+        for key in ("street", "action", "grade", "reason"):
+            assert key in item, f"hand_review 항목에 {key} 필드 누락: {item}"
+
+def test_5_12_equity_disabled_flag():
+    """equity_enabled=False면 waiting=True여도 equity 필드가 계속 None"""
+    from server.session import WebGameSession
+    sess = WebGameSession("f12", "Human", 1000, 2, "easy", 10, equity_enabled=False)
+    stub_all_bots(sess)
+    state = sess.get_state()
+    assert state["equity"] is None, "equity_enabled=False인데 equity가 계산됨"
+
 
 # ═════════════════════════════════════════════════════════════
 # 영역 6 — 버그 픽스 검증 (헤즈업 + 사이드팟)
@@ -978,6 +1033,9 @@ ALL_TESTS = [
     ("5-7  사람 카드 항상 공개",              test_5_7_human_cards_always_visible),
     ("5-8  봇 카드 핸드 중 숨김",             test_5_8_bot_cards_hidden_during_hand),
     ("5-9  쇼다운 시 봇 카드 공개",           test_5_9_showdown_reveals_bot_cards),
+    ("5-10 에퀴티 패널 — 넛급 핸드",          test_5_10_equity_panel_nut_hand),
+    ("5-11 핸드 종료 후 hand_review 포함",    test_5_11_hand_review_after_hand_over),
+    ("5-12 equity_enabled=False 스위치",      test_5_12_equity_disabled_flag),
     # 영역 6 — 버그 픽스
     ("6-1  헤즈업 블라인드 포스팅 (BTN/SB=SB)", test_6_1_headsup_blind_posting),
     ("6-2  헤즈업 프리플랍 BTN/SB 선행동",     test_6_2_headsup_preflop_btnSB_acts_first),

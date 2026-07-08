@@ -111,7 +111,7 @@ PlayerState {
 EquityInfo {
   vs_random: number            // 랜덤 핸드 대비 승률 (0~1)
   vs_range: number             // 살아있는 상대 전원의 레인지를 반영한 종합 승률
-  pot_odds: number | null      // call_amount / (pot + call_amount), 콜할 게 없으면 null
+  pot_odds: number             // call_amount / (pot + call_amount), 콜할 게 없으면 0
   call_ev_bb: number | null    // 콜 EV (bb 단위), 콜할 게 없으면 null
   source: string                // "exact" (리버 1:1 전수조사) | "mc:1000" (몬테카를로)
   samples: number               // 계산에 사용한 시뮬레이션 샘플 수
@@ -138,10 +138,10 @@ HandReviewEntry {
   action: string                // "fold" | "check" | "call" | "raise" | "allin"
   grade: string                 // "✅" | "🟡" | "🟠" | "🔴" | "⬜" | "⚠️"
   reason: string                 // 한글 평가 설명
-  ev_loss_bb: number | null      // 손실 추정치 (bb, 음수). 손실 없으면 null
+  ev_loss_bb: number | null      // 손실 크기 추정치 (bb, 항상 0 이상 양수). 손실 없으면 null
   pot_odds: number | null
   equity: number | null
-  gto_freq: Record<string, number> | null  // 프리플랍만 값 존재 (GTO 빈도 딕셔너리)
+  gto_freq: number | null        // 선택한 액션의 GTO 빈도 (프리플랍만 값 존재, 0~1)
 }
 ```
 
@@ -155,7 +155,7 @@ HandReviewEntry {
 {
   total_actions: number            // 평가된 사람 액션 총 개수
   grade_counts: Record<string, number>  // 등급 기호별 개수, 예: {"✅": 12, "🔴": 3}
-  total_ev_loss_bb: number         // ev_loss_bb 합계 (음수 = 손실)
+  total_ev_loss_bb: number         // ev_loss_bb 합계 (항상 0 이상, bb 단위 손실 총량)
   gto_match_rate: number | null    // 프리플랍 액션 중 "✅" 비율 (GTO 데이터 있는 액션 기준)
                                     // 프리플랍 평가 데이터가 없으면 null
 }
