@@ -4,11 +4,41 @@
 
 ---
 
+## 🌙 퇴근 시 돌려놓기 (기획 불필요, 즉시 실행)
+
+```bash
+# 1순위: 그라인드 — 캐시 + RL 학습데이터 + 미수집 스팟 발견 동시 축적
+python3 scripts/grind.py
+
+# 또는: 프리플랍 equity 채우기 (845스팟, 순수 워커)
+python3 scripts/equity_worker.py --preflop-first
+
+# 또는: 파라미터 튜닝 캠페인 (봇이 스스로 강해짐, 결과는 tuning_results.json)
+python3 scripts/tune_bot.py --profile hard --param aggression_margin --values 0.04,0.08,0.12 --hands 3000 --seeds 3
+python3 scripts/tune_bot.py --profile hard --param semibluff_freq --evolve --start 0.55 --step 0.1 --rounds 5 --hands 2000
+
+# 다음날 아침 확인
+python3 scripts/equity_worker.py --status
+ls -lh poker.db chip_violations.log 2>/dev/null   # 위반 로그가 있으면 시드로 재현 가능
+```
+
+⚠️ 동시 실행 금지 조합: 워커 2개(중복 계산), 그라인드+튜닝(CPU/DB 경합)
+
+---
+
 ## 🐛 버그
 
-- [ ] **BB일 때 첫 블라인드 애니메이션 순서 버그**
-  - 내가 BB면 BB가 먼저 베팅하고 SB가 나중에 베팅하는 것처럼 보임
-  - SB → BB 순서로 나와야 함 (useEventQueue 블라인드 이벤트 순서 확인)
+- [ ] **BB일 때 첫 블라인드 애니메이션 순서 버그** — 실행 계획 (sonnet 에이전트 1개)
+  - 증상: 내가 BB면 첫 핸드 시작 시 BB가 먼저 베팅하고 SB가 나중에 베팅하는 것처럼 보임
+  - 원인 후보 (순서대로 조사):
+    1. `server/session.py` `_start_new_hand()`의 blind 이벤트 발행 순서 —
+       `for p in self.game.players` 순회라 좌석 순서대로 나감. 사람이 BB 좌석이면
+       사람(BB)이 SB보다 먼저 발행될 수 있음 → **SB 먼저, BB 나중으로 정렬해 발행**하면 해결 (유력)
+    2. 프론트 `web/src/hooks/useEventQueue.ts`의 blind 이벤트 처리 타이밍
+  - 검증: 백엔드 수정이면 세션 유닛으로 — 사람을 BB 좌석에 놓고 events 배열에서
+    blind 이벤트가 [SB, BB] 순인지 assert (tests/test_poker_full.py 영역 5에 추가).
+    프론트까지 의심되면 `./start.sh` 후 새 게임 반복해 육안 확인
+  - 커밋: 수정 파일 + 테스트 + TODO 이 항목 [x]. 한국어 메시지 + Co-Authored-By 트레일러, 푸시
 
 - [x] **test_poker_full.py 실행 시간 조사**
   - 원인 ①: `db/recorder.py` `GameRecorder`가 세션마다 자체 sqlite3 커넥션을
@@ -51,10 +81,15 @@
 
 ### GTO 개선
 
-- [ ] **GTO 힌트 토글**
-  - 현재: 항상 표시됨
-  - 변경: 버튼으로 on/off 전환 (기본값: off)
-  - 위치: ActionBar 또는 헤더에 토글 버튼 추가
+- [ ] **GTO 힌트 토글** — 실행 계획 (sonnet 에이전트 1개, 프론트 전용)
+  - 현재: GTO 패널/힌트가 항상 표시. 변경: 헤더에 👁 토글 버튼, **기본 off**
+  - 구현: `web/src/App.tsx`에 `showGto` 상태 (localStorage 저장해 새로고침 유지),
+    off면 오른쪽 GtoPanel 렌더 생략 + `get_state`의 gto_hint 표시 억제
+  - 주의: 서버는 건드릴 필요 없음 (표시만 제어). 플레이 평가 기능과 철학 일치 —
+    "플레이 중엔 힌트 없이, 끝나고 평가"가 기본 UX가 됨
+  - 검증: `cd web && npm run build` 통과 + 토글 동작/localStorage 유지 확인
+  - 커밋: web 수정분 + docs/architecture.md(해당 시) + TODO [x], 푸시 전 사용자 확인
+    (UI 변경은 커밋 규칙상 사용자 확인 후)
 
 - [x] **GTO 데이터 DB화**
   - `db/schema.py` v2: gto_preflop_situations/hands, gto_postflop_situations/hands 테이블 추가
@@ -88,7 +123,8 @@
   - `scripts/show_missing_spots.py`: 미수집 현황 CLI 조회
   - 수집모드: "수집모드 실행해줘" → Claude가 Chrome MCP로 자동 수집
 
-- [ ] **vs_3bet 나머지 4개 수집** (GTO Wizard 한도 리셋 후)
+- [ ] **vs_3bet 나머지 4개 수집** — 아래 "Playwright 완전 자동화" 3단계에서 함께 소진 예정
+  (자동화 전에 급하면: GTO Wizard 열고 "수집모드 실행해줘" — Chrome MCP 수동 수집)
   - BB vs [BTN open / SB 3bet]
   - BTN vs SB 3bet
   - BTN vs BB 3bet
@@ -192,13 +228,19 @@
   - 프리플랍 equity의 역할: GTO 레인지(주 전략)의 보조 —
     GTO 없는 스팟 폴백 / 4벳+ 판단 / 플레이 평가 EV 계산에 사용
 
-- [ ] **포스트플랍 베팅 레인지 반영** (B-2, 장기)
+- [ ] **포스트플랍 베팅 레인지 반영** (B-2, 장기) — 실행 노트
   - 현재는 프리플랍 레인지 + 어그레션 마진 근사
-  - 포스트플랍 벳/레이즈 액션으로 레인지 추가 좁히기
+  - 접근: 상대가 스트리트에서 벳/레이즈하면 RangeSampler 가중치에
+    "보드에서 made rank/equity 상위 X%만 남기기" 필터 적용 (간이 베이지안).
+    구현 위치: ai/bot.py `_opponent_ranges` 확장 + ai/equity.py 필터 함수
+  - 검증 필수: 아레나 A/B (필터 on vs off, 3000핸드+) — 개선 안 되면 되돌릴 것
+  - 선행: 없음. 난이도 높음 → opus급 에이전트 권장
 
-- [ ] **포스트플랍 GTO 어드바이저**
-  - 현재 포스트플랍은 봇/힌트 모두 휴리스틱
-  - 보드 텍스처, 포지션, 팟 오즈 기반 기본 레인지 추가
+- [ ] **포스트플랍 GTO 어드바이저** (장기) — 실행 노트
+  - 선행 조건: 포스트플랍 GTO 데이터 (GTO Wizard 유료 플랜 검토와 연결)
+    또는 equity_cache 기반 근사 힌트로 대체 가능 (플레이 평가의 EV 로직 재사용)
+  - 데이터 없이 시작한다면: "equity + 팟오즈 + 드로우 여부"를 힌트로 표시하는
+    경량판부터 (플레이 평가 1단계 산출물을 실시간 패널로 재노출)
 
 - [ ] **플레이 평가 기능 (Play Grader)** — 기획 확정 (2026-06)
 
@@ -233,21 +275,53 @@
   **한계 (정직하게)**: 포스트플랍 벳/레이즈는 근사 평가.
   GTO Wizard EV값 수집(2단계) 후 프리플랍부터 진짜 EV 손실로 업그레이드
 
-- [ ] **사이드팟별 승자 표시**
-  - 핸드 결과 모달에 메인팟/사이드팟 구분 표시 (금액 + 승자)
-  - 단독 eligible 팟(초과 베팅 반환)은 승자 아님 — session.py 수정분 워킹트리에 있음
+  **에이전트 실행 계획** (승인된 기획, 바로 위임 가능)
+  1. [백엔드 — sonnet] `gto/grader.py`(판정 엔진) + `server/session.py` human 액션 훅
+     + hand_review를 get_state에 포함 + DB 행의 equity/gto_* 채움
+     - 검증: 유닛 테스트(판정 규칙 픽스처) + `tests/run_all.py --full` 통과
+     - 커밋: 백엔드분만, 푸시
+  2. [프론트 — sonnet] HandResult 모달 "내 플레이" 섹션 + 헤더 세션 배지
+     - 검증: `npm run build` + `./start.sh` 실플레이 스크린샷
+     - 커밋 전 사용자 확인 (UI 변경 규칙)
+  3. [메인] 실플레이 검수 후 docs/ai-bot.md·api.md 갱신 여부 확인
 
-- [ ] **통계 화면**
-  - DB 연결 후 가능: 핸드 히스토리, VPIP/PFR
-  - GTO 권장 빈도 vs 실제 플레이 빈도 비교
+- [ ] **사이드팟별 승자 표시** — 실행 계획 (sonnet 에이전트 1개, 방향 승인됨)
+  - 백엔드: `server/session.py` `_do_showdown()`에서 `_calculate_side_pots()` 결과를
+    팟별로 `{"label": "메인팟"|"사이드팟N", "amount", "winners": [...]}` 목록으로
+    winner 이벤트와 get_state에 포함 (`pots_breakdown` 필드).
+    **단독 eligible 팟(초과 베팅 반환)은 winners를 빈 배열로** — 승자 아님
+    (이 버그 수정분은 이미 커밋됨 — winners 집계에서 len(eligible)>1 조건)
+  - 프론트: `web/src/components/HandResult.tsx`에 팟별 줄 표시
+    (예: "메인팟 800 → Player / 사이드팟 600 → 반환"), 사이드팟 없으면 기존 표시 유지
+  - `web/src/types.ts` GameState에 pots_breakdown 타입 추가
+  - 검증: 기존 사이드팟 테스트(6-5~6-8) 통과 + 3인 올인 시나리오 세션 테스트 1개 추가
+    + `npm run build`
+  - 커밋: UI 포함이므로 커밋 전 사용자 확인
 
-- [ ] **UI 개선**
-  - **스킵 모드** (토글 버튼, 오른쪽 위): 내가 폴드하면 바로 결과로 넘어감
-  - **결과 팝업 자동 진행**: 일정 시간 후 자동 다음 핸드
-    - 남은 시간 표시 (예: 다음 핸드 버튼에 "(3s 후 자동 진행)" 카운트다운)
-    - 마우스 오버 시 타이머 정지 (확인할 시간 확보)
+- [ ] **통계 화면** — 실행 계획 (백엔드 sonnet + 프론트 sonnet, RL 기록 연결로 데이터 준비됨)
+  - 백엔드: `server/main.py`에 `/stats/summary` (핸드 수, 포지션별 VPIP/PFR,
+    수익 bb/100 — preflop_actions/games 집계 쿼리) + `/stats/hands?limit=50`
+    (최근 핸드 목록: 보드/승자/내 손익)
+  - 프론트: 우측 패널에 "통계" 탭 추가 (GtoPanel과 탭 전환), 요약 카드 + 핸드 리스트
+  - VPIP = 자발적 팟 참여율(콜/레이즈), PFR = 프리플랍 레이즈율 — is_human=1 기준
+  - 플레이 평가(위)와 화면·데이터 공유가 크므로 **플레이 평가 다음에 하는 게 효율적**
+  - 검증: 아레나 몇 판 돌린 DB로 API 응답 눈검증 + `npm run build`
+  - 커밋 전 사용자 확인 (UI)
+
+- [ ] **UI 개선 — 스킵 모드 + 자동 진행** — 실행 계획 (sonnet 에이전트 1개, 프론트 전용)
+  - **스킵 모드** (memo 요청): 우상단 토글(⏭, localStorage 저장).
+    on일 때 내가 폴드한 핸드는 `useEventQueue`의 이벤트 재생을 건너뛰고
+    (큐 즉시 소진 = 기존 스킵 버튼 로직 재사용) 바로 결과 모달 표시
+  - **결과 팝업 자동 진행** (memo 요청): HandResult 모달에 타이머 —
+    기본 5초 후 자동 onNextHand, 버튼 라벨 "다음 핸드 (5s 후 자동 진행)" 카운트다운,
+    모달에 마우스 오버 중엔 타이머 일시정지, 스킵 모드와 독립 토글(설정 묶음 고려)
+  - game_over(파산/클리어)에서는 자동 진행 금지
+  - 검증: `npm run build` + 실플레이로 스킵/자동진행/호버정지 3케이스 확인
+  - 커밋 전 사용자 확인 (UI)
+
+- [ ] **UI 개선 — 기타** (필요 시 개별 기획)
   - 모바일 레이아웃 최적화
-  - 핸드 히스토리 패널
+  - 핸드 히스토리 패널 (통계 화면의 /stats/hands 재사용 가능)
 
 ---
 
