@@ -45,6 +45,41 @@ class GameEvent(BaseModel):
     winner_chips: Optional[Dict[str, int]] = None    # winner: 승자별 최종 칩
 
 
+class EquityOpponent(BaseModel):
+    name: str
+    position: str
+    role: str                          # raiser | caller | unknown
+    equity: Optional[float] = None     # 나 vs 이 상대 1:1 레인지 에퀴티
+
+
+class EquityHistoryEntry(BaseModel):
+    street: str               # 프리플랍 / 플랍 / 턴 / 리버
+    vs_random: float
+
+
+class EquityInfo(BaseModel):
+    vs_random: float                    # 랜덤 핸드 대비 승률 (캐시/MC)
+    vs_range: float                     # 상대 레인지 반영 종합 승률
+    pot_odds: Optional[float] = None    # call / (pot + call), 벳 없으면 None
+    call_ev_bb: Optional[float] = None  # 콜 EV (bb), 벳 직면 시만
+    source: str                         # exact | mc:N
+    samples: int                        # 계산에 쓰인 샘플 수
+    num_opponents: int
+    opponents: List[EquityOpponent] = []
+    history: List[EquityHistoryEntry] = []
+
+
+class HandReviewEntry(BaseModel):
+    street: str
+    action: str
+    grade: str                          # ✅ 🟡 🟠 🔴 ⬜ ⚠️
+    reason: str
+    ev_loss_bb: Optional[float] = None
+    pot_odds: Optional[float] = None
+    equity: Optional[float] = None
+    gto_freq: Optional[Dict[str, Any]] = None
+
+
 class GameStateResponse(BaseModel):
     session_id: str
     hand_number: int
@@ -66,3 +101,5 @@ class GameStateResponse(BaseModel):
     min_raise_to: int = 0
     events: List[GameEvent] = []   # 이번 응답에서 발생한 이벤트 목록
     gto_key: Optional[Dict[str, Any]] = None  # GTO 레인지 조회용 키 {position, vs_position, range_type}
+    equity: Optional[EquityInfo] = None       # 에퀴티 패널 (waiting_for_action=true일 때)
+    hand_review: Optional[List[HandReviewEntry]] = None  # 플레이 평가 (hand_over=true일 때)

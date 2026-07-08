@@ -65,6 +65,58 @@ class BotDifficulty(Enum):
     HARD   = "hard"
 
 
+def opponent_range_info(state: dict, opponents: list) -> list:
+    """
+    프리플랍 액션 로그로 살아있는 상대들의 핸드 레인지 추정.
+    반환: opponents 순서대로 [(RangeSampler|None, role)] — role: raiser|caller|unknown
+    레이저 → 그 포지션의 RFI 레이즈 레인지
+    콜러  → 오프너에 대한 콜 레인지
+    정보 없음(블라인드 체크 등) → sampler=None (랜덤 핸드)
+    봇(hard)과 세션 에퀴티 패널이 공용으로 사용.
+    """
+    positions = state.get("positions", {})
+    preflop_log = []
+    for entry in state.get("action_log", []):
+        if "──" in entry:
+            break
+        preflop_log.append(entry)
+
+    raisers, callers = [], []
+    for entry in preflop_log:
+        for name, pos in positions.items():
+            if name in entry:
+                if "레이즈" in entry or "올인" in entry:
+                    raisers.append((name, pos))
+                elif "콜" in entry:
+                    callers.append((name, pos))
+                break
+
+    opener_pos = raisers[0][1] if raisers else None
+    raiser_names = {n for n, _ in raisers}
+    caller_names = {n for n, _ in callers}
+
+    result = []
+    for opp in opponents:
+        name = opp["name"]
+        pos = positions.get(name, "")
+        weights = None
+        role = "unknown"
+        if name in raiser_names:
+            weights = get_raise_range(pos)
+            role = "raiser"
+        elif name in caller_names and opener_pos:
+            weights = get_call_range(pos, opener_pos)
+            role = "caller"
+        result.append((RangeSampler(weights) if weights else None, role))
+    return result
+
+
+def estimate_opponent_ranges(state: dict, opponents: list) -> Optional[list]:
+    """상대 레인지 샘플러 목록 (공용 opponent_range_info의 얇은 래퍼).
+    PokerBot._opponent_ranges와 server/session.py에서 공용으로 사용."""
+    return [s for s, _ in opponent_range_info(state, opponents)]
+
+
 def board_wetness(board: List[Card]) -> float:
     """
     보드 텍스처 0.0(드라이) ~ 1.0(웻).
@@ -362,44 +414,8 @@ class PokerBot:
         return Action.CHECK, 0
 
     def _opponent_ranges(self, state: dict, opponents: list) -> Optional[list]:
-        """
-        프리플랍 액션 로그로 살아있는 상대들의 핸드 레인지 추정.
-        레이저 → 그 포지션의 RFI 레이즈 레인지
-        콜러  → 오프너에 대한 콜 레인지
-        정보 없음(블라인드 체크 등) → None (랜덤 핸드)
-        """
-        positions = state.get("positions", {})
-        preflop_log = []
-        for entry in state.get("action_log", []):
-            if "──" in entry:
-                break
-            preflop_log.append(entry)
-
-        raisers, callers = [], []
-        for entry in preflop_log:
-            for name, pos in positions.items():
-                if name in entry:
-                    if "레이즈" in entry or "올인" in entry:
-                        raisers.append((name, pos))
-                    elif "콜" in entry:
-                        callers.append((name, pos))
-                    break
-
-        opener_pos = raisers[0][1] if raisers else None
-        raiser_names = {n for n, _ in raisers}
-        caller_names = {n for n, _ in callers}
-
-        samplers = []
-        for opp in opponents:
-            name = opp["name"]
-            pos = positions.get(name, "")
-            weights = None
-            if name in raiser_names:
-                weights = get_raise_range(pos)
-            elif name in caller_names and opener_pos:
-                weights = get_call_range(pos, opener_pos)
-            samplers.append(RangeSampler(weights) if weights else None)
-        return samplers
+        """상대 레인지 샘플러 목록 (모듈 레벨 estimate_opponent_ranges의 얇은 래퍼)"""
+        return estimate_opponent_ranges(state, opponents)
 
     def _check_or_fold(self, state: dict) -> Tuple[Action, int]:
         call_amount = max(0, state["current_bet"] - self.player.current_bet)

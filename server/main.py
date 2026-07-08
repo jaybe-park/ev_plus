@@ -67,6 +67,39 @@ def next_hand(session_id: str):
     return session.get_state()
 
 
+@app.get("/session/{session_id}/review")
+def get_session_review(session_id: str):
+    """세션 전체 누적 플레이 평가 요약."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+    reviews = session.all_reviews
+    total_actions = len(reviews)
+
+    grade_counts: Dict[str, int] = {}
+    for r in reviews:
+        g = r.get("grade", "⬜")
+        grade_counts[g] = grade_counts.get(g, 0) + 1
+
+    total_ev_loss_bb = sum(
+        r["ev_loss_bb"] for r in reviews if r.get("ev_loss_bb") is not None
+    )
+
+    preflop_reviews = [r for r in reviews if r.get("street") == "프리플랍" and r.get("grade") != "⬜"]
+    if preflop_reviews:
+        gto_match_rate = sum(1 for r in preflop_reviews if r.get("grade") == "✅") / len(preflop_reviews)
+    else:
+        gto_match_rate = None
+
+    return {
+        "total_actions": total_actions,
+        "grade_counts": grade_counts,
+        "total_ev_loss_bb": round(total_ev_loss_bb, 4),
+        "gto_match_rate": round(gto_match_rate, 4) if gto_match_rate is not None else None,
+    }
+
+
 # ──────────────────────────────────────────
 # GTO 데이터 관리 API
 # ──────────────────────────────────────────
