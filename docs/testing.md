@@ -4,16 +4,54 @@
 
 ## 실행 방법
 
+대표 명령은 `tests/run_all.py`. subprocess로 각 파일을 순차 실행하며
+실시간 출력 릴레이 + 통합 요약(파일별 통과/실패, 총 소요 시간)을 제공하고,
+하나라도 실패하면 exit code 1을 반환한다.
+
 ```bash
-# 정밀 검사 (50개)
-python3 tests/test_poker_full.py
+# 대표 명령 — 로직 검증만 (기본값, 수초 이내)
+python3 tests/run_all.py
+python3 tests/run_all.py --fast     # 위와 동일 (test_poker_full.py만)
 
-# 에퀴티 엔진 + 봇 테스트 (39개)
-python3 tests/test_equity.py
-
-# 기본 유닛 테스트 (14개)
-python3 tests/test_poker.py
+# 대표 명령 — 로직 + 에퀴티/봇 검증 (89개)
+python3 tests/run_all.py --full     # test_poker_full.py + test_equity.py
 ```
+
+개별 실행도 가능하다 (디버깅 시 특정 파일만 빠르게 돌릴 때 유용):
+
+```bash
+python3 tests/test_poker_full.py    # 정밀 검사 (50개)
+python3 tests/test_equity.py        # 에퀴티 엔진 + 봇 테스트 (39개)
+python3 tests/test_poker.py         # 기본 유닛 테스트 (14개)
+```
+
+### StubBot 방침
+
+`test_poker_full.py`는 포커 **로직**(핸드 평가/베팅/팟 분배/게임 흐름)을
+검증하는 것이지 봇의 실력을 검증하는 게 아니다. 그래서 `ai.bot.PokerBot`을
+모듈 임포트 시점에 패치해 모든 봇 결정을 "콜 금액 있으면 콜, 없으면 체크"의
+단순 스텁으로 대체한다 (equity 계산/GTO DB 조회/실제 AI 판단 전혀 없음).
+폴드 등 특정 액션 시퀀스가 필요한 테스트는 `StubBot(player, scripted_actions=[...])`로
+행동을 직접 주입한다.
+
+AI 봇의 실제 판단력 검증(equity 정확도, GTO 준수, 페르소나별 성향 등)은
+`test_equity.py`와 `scripts/ai_regression.py`가 담당한다. 즉:
+
+- **로직 테스트** (`test_poker_full.py`) → AI 없이 스텁 봇, 목표는 게임 엔진 정합성
+- **AI 검증** (`test_equity.py`, `ai_regression.py`) → 실제 equity/GTO 로직 검증
+
+### 시간 버짓
+
+`test_poker_full.py`는 총 실행 시간이 `TIME_BUDGET_SEC`(30초)를 넘으면
+실패 처리하지 않고 "⚠️ 시간 버짓 초과" 경고만 출력한다 — 성능 회귀를
+조기에 알아차리기 위한 가드다. StubBot 적용 후 정상 실행 시간은 1초 미만.
+
+또한 테스트마다 독립된 임시 SQLite DB 파일을 사용한다. `WebGameSession`
+생성 시마다 `GameRecorder`가 자체 커넥션을 열고 닫지 않기 때문에, 모든
+테스트가 DB 파일 하나를 공유하면 테스트가 누적될수록 SQLite 쓰기 락
+경합이 심해져 결국 busy_timeout(30초)까지 블로킹된다. 그래서 `run()`
+헬퍼가 테스트 함수 실행 직전마다 `EV_PLUS_DB` 환경변수를 새 임시 파일로
+갱신해 커넥션이 서로 충돌하지 않게 격리한다.
 
 ---
 

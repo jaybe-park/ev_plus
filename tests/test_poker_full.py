@@ -9,25 +9,84 @@
 
 import sys
 import os
+import time
 import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# ── 테스트 경량화 ──────────────────────────────────────────
+# ── 테스트 격리 ──────────────────────────────────────────
 # 이 테스트의 목적은 포커 "로직" 검증이지 봇 실력이 아니다.
-# 실 DB(그라인드 데이터)와 격리하고, 봇 MC 샘플을 최소화해 수십 초 안에 끝낸다.
+# 실 DB(그라인드 데이터)와 격리한다. (봇 자체는 StubBot으로 대체되어
+# equity/GTO 계산을 하지 않으므로 별도 경량화 패치는 불필요)
 os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-
-from ai.bot import POSTFLOP_PROFILES
-for _prof in POSTFLOP_PROFILES.values():
-    _prof.update({"sims": 20, "use_cache": False,
-                  "exact_river": False, "use_ranges": False})
-# ────────────────────────────────────────────────────────────
 
 from core.card import Card, Suit, Rank
 from core.deck import Deck
 from core.evaluator import HandEvaluator, HandRank
 from core.player import Player
 from core.game import TexasHoldem, Action, Street
+from ai.bot import PokerBot
+
+TIME_BUDGET_SEC = 30.0
+
+
+class StubBot(PokerBot):
+    """로직 테스트 전용 스텁 봇.
+
+    ai.bot.PokerBot을 상속하지만 equity/GTO/DB 접근을 전혀 하지 않는다.
+    기본 동작: 콜 금액이 있으면 콜, 없으면 체크.
+    필요 시 scripted_actions로 특정 순서의 행동을 주입할 수 있다
+    (예: 폴드를 유도해야 하는 테스트).
+
+    scripted_actions: [(Action, amount), ...] — decide_action 호출마다 하나씩 소비.
+    소진되면 기본 콜/체크 동작으로 폴백한다.
+    """
+
+    def __init__(self, player, scripted_actions=None):
+        # PokerBot.__init__은 GTOAdvisor 등 무거운 의존성을 만들지 않으므로 안전하게 호출 가능
+        super().__init__(player)
+        self._scripted = list(scripted_actions) if scripted_actions else []
+
+    def decide_action(self, game_state: dict):
+        if self._scripted:
+            return self._scripted.pop(0)
+        call_amount = game_state["current_bet"] - self.player.current_bet
+        if call_amount > 0:
+            return Action.CALL, call_amount
+        return Action.CHECK, 0
+
+
+def _stub_decide_action(self, game_state: dict):
+    """PokerBot.decide_action을 대체하는 전역 패치 함수.
+
+    WebGameSession.__init__()은 생성자 안에서 곧바로 첫 핸드를 진행시키므로
+    (_start_new_hand() 호출), 세션 생성 '이후'에 봇 인스턴스를 StubBot으로
+    바꿔치기해도 이미 첫 핸드의 봇 결정은 실제 PokerBot 로직(equity/GTO)으로
+    끝난 뒤다. 그래서 클래스 메서드 자체를 모듈 임포트 시점에 패치해
+    세션 생성 시점부터 스텁 동작이 적용되게 한다.
+    기본 동작은 StubBot과 동일: 콜 금액 있으면 콜, 없으면 체크.
+    """
+    call_amount = game_state["current_bet"] - self.player.current_bet
+    if call_amount > 0:
+        return Action.CALL, call_amount
+    return Action.CHECK, 0
+
+
+# 모든 테스트에서 PokerBot이 절대 equity/GTO 계산을 하지 않도록 클래스 자체를 패치.
+# WebGameSession 생성자가 즉시 첫 핸드를 진행시키기 때문에, 인스턴스 단위 교체로는
+# 그 시점을 놓친다. StubBot/stub_all_bots는 scripted_actions로 특정 행동 순서를
+# 주입해야 하는 테스트를 위해 유지한다.
+PokerBot.decide_action = _stub_decide_action
+
+
+def stub_all_bots(session):
+    """WebGameSession의 모든 봇을 StubBot으로 교체 (player 객체는 재사용)
+
+    PokerBot.decide_action이 이미 전역 패치되어 있으므로 이 함수 자체는
+    필수는 아니지만, scripted_actions를 주입해야 하는 테스트를 위해
+    StubBot 인스턴스로 명시적으로 교체하는 용도로 계속 사용한다.
+    """
+    for name, bot in list(session.bots.items()):
+        session.bots[name] = StubBot(bot.player)
 
 # ─────────────────────────────────────────────────────────────
 # 헬퍼
@@ -65,15 +124,37 @@ def simple_action_sequence(game, actions):
 
 
 results = []
+durations = {}
+
+SLOW_THRESHOLD_SEC = 0.5
+
 
 def run(name, fn):
+    # 테스트마다 새 임시 DB 파일 사용.
+    # 이유: WebGameSession마다 GameRecorder가 자체 sqlite3 커넥션을 열고
+    # 절대 닫지 않는다. 모든 테스트가 같은 DB 파일을 공유하면 테스트가
+    # 누적될수록 살아있는 커넥션 수가 늘어나 SQLite 쓰기 락 경합이 심해지고,
+    # 결국 busy_timeout(30s)까지 블로킹되는 현상이 발생한다
+    # (예: 34개 테스트 후 단순 세션 생성이 31초 걸림).
+    # 테스트별로 격리된 파일을 쓰면 커넥션이 서로 충돌하지 않는다.
+    os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    start = time.perf_counter()
     try:
         fn()
-        results.append(("✅", name))
+        elapsed = time.perf_counter() - start
+        durations[name] = elapsed
+        suffix = f"  ({elapsed:.1f}s)" if elapsed >= SLOW_THRESHOLD_SEC else ""
+        results.append(("✅", f"{name}{suffix}"))
     except AssertionError as e:
+        elapsed = time.perf_counter() - start
+        durations[name] = elapsed
         results.append(("❌", f"{name}  →  {e}"))
     except Exception as e:
+        elapsed = time.perf_counter() - start
+        durations[name] = elapsed
         results.append(("💥", f"{name}  →  {type(e).__name__}: {e}"))
+    icon, label = results[-1]
+    print(f"  {icon} {label}", flush=True)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -180,6 +261,7 @@ def test_2_1_bb_option_check():
     """프리플랍: 아무도 레이즈 안 했을 때 BB가 체크 옵션을 가져야 함"""
     from server.session import WebGameSession
     sess = WebGameSession("t", "Human", 1000, 2, "medium", 10)
+    stub_all_bots(sess)
     # 게임 시작 직후 — 아직 사람 차례인지 확인
     state = sess.get_state()
     # 사람이 BTN이면 UTG이므로 먼저 액션, BB 포지션이면 마지막
@@ -191,6 +273,7 @@ def test_2_2_bb_gets_option_after_calls():
     from server.session import WebGameSession
     # 3인 게임: P0=Human(BTN), P1=SB, P2=BB
     sess = WebGameSession("t2", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
     state = sess.get_state()
     positions = {p["name"]: p["position"] for p in state["players"]}
     human_pos = positions.get("Human", "")
@@ -277,6 +360,7 @@ def test_3_1_pot_conservation():
     import random
 
     sess = WebGameSession("sim", "Human", 500, 5, "medium", 10)
+    stub_all_bots(sess)
     # 초기값: 플레이어 칩 + 현재 팟 (블라인드가 이미 팟에 들어간 상태)
     total_initial = sum(p.chips for p in sess.game.players) + sess.game.pot
     assert total_initial == 3000, f"초기 총합이 3000(6×500)이어야 함: {total_initial}"
@@ -394,6 +478,7 @@ def test_4_1_dealer_rotation():
     """딜러 버튼이 매 핸드마다 한 칸씩 이동"""
     from server.session import WebGameSession
     sess = WebGameSession("dr", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
 
     dealer_indices = []
     for _ in range(5):
@@ -419,6 +504,7 @@ def test_4_2_bankrupt_player_removed():
     """파산 플레이어는 다음 핸드에서 제거됨"""
     from server.session import WebGameSession
     sess = WebGameSession("bk", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
 
     # 봇 한 명 강제 파산
     for p in sess.game.players:
@@ -470,6 +556,7 @@ def test_4_5_game_over_when_human_busted():
     """사람 파산 시 next_hand() 호출 시점에 game_over 처리"""
     from server.session import WebGameSession
     sess = WebGameSession("go", "Human", 30, 2, "easy", 10)
+    stub_all_bots(sess)
     # 사람 칩 강제 소진 후 핸드 종료 상태로 세팅
     sess.human.chips = 0
     sess.hand_over = True
@@ -528,6 +615,7 @@ def test_5_1_fold_then_bots_complete():
     """사람 폴드 후 봇들이 핸드를 끝까지 진행해야 함"""
     from server.session import WebGameSession
     sess = WebGameSession("f1", "Human", 1000, 3, "easy", 10)
+    stub_all_bots(sess)
     state = sess.get_state()
     assert state["waiting_for_action"]
 
@@ -542,6 +630,7 @@ def test_5_2_action_ignored_when_hand_over():
     """핸드 종료 후 submit_action은 무시됨"""
     from server.session import WebGameSession
     sess = WebGameSession("f2", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
 
     # 핸드 강제 종료
     sess.hand_over = True
@@ -556,6 +645,7 @@ def test_5_3_waiting_flag_is_human_turn():
     """waiting_for_action=True 일 때 항상 human이 다음 액션자여야 함"""
     from server.session import WebGameSession
     sess = WebGameSession("f3", "Human", 1000, 3, "medium", 10)
+    stub_all_bots(sess)
     state = sess.get_state()
     if state["waiting_for_action"]:
         next_actor = sess._next_to_act()
@@ -566,6 +656,7 @@ def test_5_4_chips_decrease_on_call():
     """콜 시 칩이 실제로 감소하는지"""
     from server.session import WebGameSession
     sess = WebGameSession("f4", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
     state = sess.get_state()
 
     if not state["waiting_for_action"] or state["call_amount"] == 0:
@@ -594,6 +685,7 @@ def test_5_6_state_has_required_fields():
     """get_state() 반환값에 필수 필드가 모두 있는지"""
     from server.session import WebGameSession
     sess = WebGameSession("f6", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
     state = sess.get_state()
 
     required = [
@@ -609,6 +701,7 @@ def test_5_7_human_cards_always_visible():
     """사람 홀카드는 항상 반환되어야 함 (핸드 중/폴드 후 모두)"""
     from server.session import WebGameSession
     sess = WebGameSession("f7", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
     state = sess.get_state()
 
     human_state = next(p for p in state["players"] if p["is_human"])
@@ -619,6 +712,7 @@ def test_5_8_bot_cards_hidden_during_hand():
     """핸드 진행 중 봇 홀카드는 숨겨져야 함"""
     from server.session import WebGameSession
     sess = WebGameSession("f8", "Human", 1000, 3, "easy", 10)
+    stub_all_bots(sess)
     state = sess.get_state()
 
     if not state["hand_over"]:
@@ -631,6 +725,7 @@ def test_5_9_showdown_reveals_bot_cards():
     """쇼다운 시 봇 카드가 공개됨"""
     from server.session import WebGameSession
     sess = WebGameSession("f9", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
 
     # 핸드 빠르게 쇼다운까지
     for _ in range(30):
@@ -698,6 +793,7 @@ def test_6_4_headsup_chip_conservation():
     """헤즈업 20핸드 칩 총량 보존"""
     from server.session import WebGameSession
     sess = WebGameSession("hu", "Human", 500, 1, "easy", 10)
+    stub_all_bots(sess)
     total = sum(p.chips for p in sess.game.players) + sess.game.pot
     assert total == 1000, f"초기 총합 1000이어야 함: {total}"
 
@@ -725,6 +821,7 @@ def test_6_5_sidepot_shortstack_wins_mainpot_only():
     """
     from server.session import WebGameSession
     sess = WebGameSession("sp1", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
 
     p0 = sess.human
     p1 = sess.game.players[1]
@@ -754,6 +851,7 @@ def test_6_6_sidepot_three_allins():
     """3명 다른 올인 → 팟이 3개로 정확히 분리"""
     from server.session import WebGameSession
     sess = WebGameSession("sp2", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
 
     p0, p1, p2 = sess.human, sess.game.players[1], sess.game.players[2]
 
@@ -771,6 +869,7 @@ def test_6_7_sidepot_folded_player_contribution():
     """폴드한 플레이어의 기여분은 팟에 포함되지만 수령 불가"""
     from server.session import WebGameSession
     sess = WebGameSession("sp3", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
 
     p0, p1, p2 = sess.human, sess.game.players[1], sess.game.players[2]
 
@@ -802,6 +901,7 @@ def test_6_8_sidepot_conservation():
     """
     from server.session import WebGameSession
     sess = WebGameSession("sp4", "Human", 1000, 2, "easy", 10)
+    stub_all_bots(sess)
 
     p0, p1, p2 = sess.human, sess.game.players[1], sess.game.players[2]
 
@@ -890,42 +990,59 @@ ALL_TESTS = [
 ]
 
 
+AREA_LABELS = {
+    "1": "영역 1 — 핸드 평가",
+    "2": "영역 2 — 베팅 라운드",
+    "3": "영역 3 — 팟 분배",
+    "4": "영역 4 — 게임 흐름",
+    "5": "영역 5 — 웹 세션",
+    "6": "영역 6 — 버그 픽스",
+}
+AREA_ORDER = ["1", "2", "3", "4", "5", "6"]
+
+
 if __name__ == "__main__":
-    print("\n" + "═" * 60)
-    print("  포커 로직 정밀 검사")
-    print("═" * 60)
+    print("\n" + "═" * 60, flush=True)
+    print("  포커 로직 정밀 검사", flush=True)
+    print("═" * 60, flush=True)
 
+    suite_start = time.perf_counter()
+    area = ""
     for name, fn in ALL_TESTS:
+        new_area = name.split("-")[0].strip()
+        if new_area != area:
+            area = new_area
+            idx = AREA_ORDER.index(area) + 1 if area in AREA_ORDER else "?"
+            print(f"\n[영역 {idx}/{len(AREA_ORDER)}] {AREA_LABELS.get(area, area)}", flush=True)
+            print("  " + "─" * 40, flush=True)
         run(name, fn)
+    total_elapsed = time.perf_counter() - suite_start
 
-    print()
+    print(flush=True)
     passed = [r for r in results if r[0] == "✅"]
     failed  = [r for r in results if r[0] == "❌"]
     errors  = [r for r in results if r[0] == "💥"]
 
-    area = ""
-    for icon, name in results:
-        new_area = name.split("-")[0].strip()
-        if new_area != area:
-            area = new_area
-            labels = {
-                "1": "영역 1 — 핸드 평가",
-                "2": "영역 2 — 베팅 라운드",
-                "3": "영역 3 — 팟 분배",
-                "4": "영역 4 — 게임 흐름",
-                "5": "영역 5 — 웹 세션",
-                "6": "영역 6 — 버그 픽스",
-            }
-            print(f"\n  {labels.get(area, '')}")
-            print("  " + "─" * 40)
-        print(f"  {icon} {name}")
-
-    print()
-    print("═" * 60)
-    print(f"  결과: {len(passed)} 통과 / {len(failed)} 실패 / {len(errors)} 에러  (총 {len(results)})")
-    print("═" * 60)
+    print("═" * 60, flush=True)
+    print(f"  결과: {len(passed)} 통과 / {len(failed)} 실패 / {len(errors)} 에러  (총 {len(results)})", flush=True)
+    print(f"  총 소요 시간: {total_elapsed:.2f}s", flush=True)
+    print("═" * 60, flush=True)
 
     if failed or errors:
-        print("\n  실패/에러 목록:")
+        print("\n  실패/에러 목록:", flush=True)
         for icon, name in failed + errors:
-            print(f"  {icon} {name}")
+            print(f"  {icon} {name}", flush=True)
+
+    # 느린 테스트 TOP 5
+    slowest = sorted(durations.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    if slowest:
+        print("\n  느린 테스트 TOP 5:", flush=True)
+        for name, dur in slowest:
+            print(f"    {dur:.2f}s  {name}", flush=True)
+
+    # 시간 버짓 가드 (작업 F) — 실패 처리는 하지 않고 경고만
+    if total_elapsed > TIME_BUDGET_SEC:
+        print(f"\n  ⚠️ 시간 버짓 초과({TIME_BUDGET_SEC:.0f}s): 성능 회귀 의심 (실제 {total_elapsed:.2f}s)", flush=True)
+
+    if failed or errors:
+        sys.exit(1)

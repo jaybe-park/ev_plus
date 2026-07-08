@@ -10,9 +10,21 @@
   - 내가 BB면 BB가 먼저 베팅하고 SB가 나중에 베팅하는 것처럼 보임
   - SB → BB 순서로 나와야 함 (useEventQueue 블라인드 이벤트 순서 확인)
 
-- [ ] **test_poker_full.py 실행 시간 조사**
-  - 봇 경량화(sims=20) + 임시 DB 적용 후에도 여전히 느림 — 원인 프로파일링 필요
-  - 후보: 프리플랍 advisor의 스팟당 DB 커넥션 생성, 미수집 스팟 INSERT
+- [x] **test_poker_full.py 실행 시간 조사**
+  - 원인 ①: `db/recorder.py` `GameRecorder`가 세션마다 자체 sqlite3 커넥션을
+    열고 절대 닫지 않음 → 모든 테스트가 같은 임시 DB 파일을 공유하면
+    테스트가 누적될수록 살아있는 커넥션 수가 늘어나 SQLite 쓰기 락 경합이
+    심해져 busy_timeout(30초)까지 블로킹 (예: 34개 테스트 후 세션 생성 1건이 31초)
+  - 원인 ②: 로직 테스트가 실제 AI 봇(`ai.bot.PokerBot`)을 사용해
+    매 액션마다 equity/GTO 계산을 수행함
+  - 해결 ①: `run()` 헬퍼가 테스트 함수 실행 직전마다 `EV_PLUS_DB`를
+    새 임시 파일로 갱신해 커넥션 충돌 자체를 제거 (recorder 버퍼화 커밋 358343a와 별개 이슈)
+  - 해결 ②: `tests/test_poker_full.py`에 StubBot 도입 —
+    `ai.bot.PokerBot.decide_action`을 모듈 임포트 시점에 콜/체크만 하는
+    스텁으로 전역 패치 (equity/GTO 호출 0회 확인). 특정 액션 시퀀스가
+    필요한 테스트는 `StubBot(player, scripted_actions=[...])`로 주입
+  - 결과: 50개 전체 통과, 실행 시간 30초+ → 1초 미만
+  - 대표 실행: `tests/run_all.py` 신규 (`--fast`/`--full`)
 
 - [x] **사이드팟 미구현**
   - `server/session.py` `_calculate_side_pots()` 추가, `_do_showdown()` 개편
