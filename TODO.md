@@ -85,6 +85,46 @@
 - [ ] **GTO 데이터 확장** (미존재 스팟)
   - 포스트플랍 레인지 (장기)
 
+- [ ] **GTO 수집 Playwright 완전 자동화** — 기획 확정 (2026-07), 이 항목만 보고 실행 가능
+
+  **목표**: 수집을 Claude 개입(토큰) 없는 로컬 스크립트로 전환.
+  기존 방식은 Chrome MCP로 스팟마다 이동/추출 → 토큰 비쌈.
+
+  **핵심 설계 결정**
+  - 로그인 재사용: 사용자가 크롬을 디버그 포트로 실행 → 스크립트가 CDP로 접속
+    `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222`
+    (`playwright.chromium.connect_over_cdp("http://localhost:9222")`)
+  - 추출 이중화: XHR 솔루션 JSON 가로채기 1순위(정확 + EV 포함 가능성 → 플레이 평가
+    2단계와 직결) / 검증된 CSS background-size 파싱 폴백
+
+  **단계별 실행 계획** (코딩은 서브에이전트, 메모리 정책 참고)
+  1. [정찰 — sonnet 에이전트 + Chrome MCP, GTO Wizard 열린 상태 필요]
+     - 스팟 로드 시 XHR 응답 구조 조사: endpoint URL 패턴, JSON 스키마, EV 포함 여부
+     - CSS 셀렉터 현행 확인(폴백용), SPA 라우팅 시 리로드 여부
+     - 일일 한도(100스팟) 도달 신호(배너/응답코드) 확인 → 스크립트 중단 조건
+     - 산출물: docs/gto-data.md에 "자동 수집 정찰 노트" 섹션 커밋
+  2. [구현 — sonnet 에이전트] `scripts/collect_gto.py` 작성+커밋
+     - CDP 연결 (실패 시 크롬 실행법 안내 출력)
+     - 대상: gto_missing_spots(collected=0) + vs_3bet 잔여 4개 시딩, gto_wizard_url 재사용
+     - 추출(XHR 우선/CSS 폴백) → gto_preflop_situations/hands upsert → collected=1
+       (스팟 단위 커밋 = 중단 안전)
+     - 안전장치: --limit N(기본 95, 일일 한도 보호) / --dry-run / 한도 감지 자동 중단
+     - XHR에 EV 있으면 스키마 v7: gto_preflop_hands에 ev_* 컬럼 추가
+     - 파싱 함수 픽스처 테스트, requirements에 playwright 추가
+  3. [소량 검증 — 메인 + 사용자]
+     - 사용자: 디버그 크롬 실행 + GTO Wizard 로그인 확인
+     - --limit 3 --dry-run 눈검증 → **회귀 대조**: 이미 수집된 스팟(UTG RFI 등)
+       재수집해서 DB 기존 값과 비교 = 파서 정확성 자동 증명
+     - 통과 시 --limit 95 실전 1회 (vs_3bet 4개 + 미수집 큐 소진)
+  4. [운영 통합 — haiku 에이전트]
+     - 프로젝트 스킬 `.claude/skills/collect-gto/SKILL.md` (/collect-gto):
+       크롬 실행 안내 → 스크립트 실행 → 결과 보고 절차
+     - docs/gto-data.md 수집 방법 갱신, 이 TODO 항목 완료 처리, 커밋
+
+  **리스크**: GTO Wizard 렌더 구조 변경 시 CSS 폴백 취약(그래서 XHR 우선),
+  CDP는 크롬을 디버그 플래그로 재시작해야 하는 1회 불편.
+  브라우저 밖 API 직접 호출(토큰 탈취)은 약관 리스크로 금지.
+
 ### AI 봇 개선
 
 - [x] **에퀴티 엔진 알고리즘 최적화** (2026-06)
