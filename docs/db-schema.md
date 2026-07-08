@@ -95,6 +95,16 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 - 봇이 플레이 중 계산한 MC 결과가 자동 누적 → 만난 스팟이 워커 큐에 등록되는 효과
 - 워커가 리버→턴→플랍(1:1) 순으로 전수조사, 프리플랍/멀티웨이는 고정밀 샘플링 누적
 
+**인덱스 (v7)** — 행 수가 커져도(700만+) 작업 선택 쿼리가 느려지지 않도록
+대기 중인 행만 담는 부분 인덱스 2개 추가:
+- `idx_equity_pending(street, total, id) WHERE exact=0 AND num_opponents=1`
+  — 1:1 전수조사 대기 큐 (`next_exact_job`)
+- `idx_equity_multiway_pending(total) WHERE exact=0 AND num_opponents>1`
+  — 멀티웨이 샘플링 대기 큐 (`next_mc_job`)
+
+`exact=1`로 승격되거나 목표 샘플에 도달하면 조건에서 빠지므로 인덱스는 항상 작게 유지된다.
+작업 선택 쿼리는 스트리트/조건별로 단순 쿼리를 나눠 실행 (CASE 표현식 정렬 회피).
+
 ---
 
 ### worker_meta (v5)

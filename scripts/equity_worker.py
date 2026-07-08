@@ -89,20 +89,28 @@ def seed_preflop_spots(conn) -> int:
     return added
 
 
+_EXACT_JOB_STREET_SQL = """
+    SELECT id, street, spot_key FROM equity_cache
+    WHERE exact = 0 AND num_opponents = 1 AND street = ?
+    ORDER BY (total > 0) DESC, id
+    LIMIT 1
+"""
+
+
 def next_exact_job(conn):
     """
     1:1 포스트플랍 스팟 중 미완료 — 리버 → 턴 → 플랍 순.
     같은 스트리트에선 게임에서 만난 스팟(total>0)이 스윕 등록분(total=0)보다 우선.
+
+    CASE 표현식 정렬 대신 스트리트별 단순 쿼리 3번으로 분리 —
+    idx_equity_pending 부분 인덱스(street, total, id)를 그대로 활용해
+    각 쿼리가 인덱스만으로 즉시 첫 행을 찾는다 (대량 스캔 회피).
     """
-    return conn.execute(
-        """
-        SELECT id, street, spot_key FROM equity_cache
-        WHERE exact = 0 AND num_opponents = 1 AND street != 'preflop'
-        ORDER BY CASE street WHEN 'river' THEN 0 WHEN 'turn' THEN 1 ELSE 2 END,
-                 (total > 0) DESC, id
-        LIMIT 1
-        """
-    ).fetchone()
+    for street in ("river", "turn", "flop"):
+        row = conn.execute(_EXACT_JOB_STREET_SQL, (street,)).fetchone()
+        if row:
+            return row
+    return None
 
 
 # ──────────────────────────────────────────
@@ -189,18 +197,32 @@ def next_preflop_job(conn):
 
 
 def next_mc_job(conn):
-    """샘플 목표 미달 스팟 — 프리플랍 우선, 샘플 적은 것부터"""
+    """
+    샘플 목표 미달 스팟 — 프리플랍 우선, 샘플 적은 것부터.
+
+    기존엔 OR 조건 + 표현식 정렬 단일 쿼리라 인덱스를 못 타고 760만 행을
+    스캔했다. 프리플랍(845행)과 멀티웨이(부분 인덱스 idx_equity_multiway_pending)
+    쿼리 2개로 나눠 각각 인덱스로 즉시 첫 행을 찾도록 재구성.
+    """
+    row = conn.execute(
+        """
+        SELECT id, street, spot_key, num_opponents, total FROM equity_cache
+        WHERE exact = 0 AND street = 'preflop' AND total < ?
+        ORDER BY total ASC, num_opponents ASC
+        LIMIT 1
+        """,
+        (PREFLOP_TARGET,),
+    ).fetchone()
+    if row:
+        return row
     return conn.execute(
         """
         SELECT id, street, spot_key, num_opponents, total FROM equity_cache
-        WHERE exact = 0 AND (
-            (street = 'preflop' AND total < ?) OR
-            (num_opponents > 1 AND total < ?)
-        )
-        ORDER BY (street = 'preflop') DESC, total ASC
+        WHERE exact = 0 AND num_opponents > 1 AND total < ?
+        ORDER BY total ASC
         LIMIT 1
         """,
-        (PREFLOP_TARGET, MULTIWAY_TARGET),
+        (MULTIWAY_TARGET,),
     ).fetchone()
 
 

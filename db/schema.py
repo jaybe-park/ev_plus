@@ -2,7 +2,7 @@
 poker_simulator DB 스키마 정의 및 마이그레이션
 """
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -246,6 +246,19 @@ CREATE_EQUITY_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_equity_street ON equity_cache(street, exact, total);
 """
 
+# v7: exact=0 & num_opponents=1 대기 행만 담는 부분 인덱스.
+# exact=1로 승격되면 인덱스에서 자동 제거되어 항상 작게 유지됨 (760만 행 스캔 회피).
+CREATE_EQUITY_PENDING_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_equity_pending
+ON equity_cache(street, total, id) WHERE exact = 0 AND num_opponents = 1;
+"""
+
+# v7: 멀티웨이(상대 2명+) 샘플링 대상 대기 행 전용 부분 인덱스 (next_mc_job 병목 해소)
+CREATE_EQUITY_MULTIWAY_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_equity_multiway_pending
+ON equity_cache(total) WHERE exact = 0 AND num_opponents > 1;
+"""
+
 CREATE_WORKER_META = """
 CREATE TABLE IF NOT EXISTS worker_meta (
     key   TEXT PRIMARY KEY,
@@ -259,6 +272,10 @@ MIGRATIONS = {
         "DROP TABLE IF EXISTS preflop_actions;",
         "DROP TABLE IF EXISTS postflop_actions;",
         "DROP TABLE IF EXISTS games;",
+    ],
+    7: [
+        CREATE_EQUITY_PENDING_INDEX,
+        CREATE_EQUITY_MULTIWAY_INDEX,
     ],
 }
 
@@ -282,4 +299,7 @@ ALL_STATEMENTS = [
     CREATE_EQUITY_INDEX,
     # v5: 워커 진행 커서 (체계적 플랍 스윕 재개용)
     CREATE_WORKER_META,
+    # v7: 대기 행 전용 부분 인덱스 (next_exact_job / next_mc_job 병목 해소)
+    CREATE_EQUITY_PENDING_INDEX,
+    CREATE_EQUITY_MULTIWAY_INDEX,
 ]

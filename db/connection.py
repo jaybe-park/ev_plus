@@ -41,9 +41,14 @@ def _migrate(conn: sqlite3.Connection):
     current = row["v"] or 0
 
     if current < SCHEMA_VERSION:
-        for v in range(current + 1, SCHEMA_VERSION + 1):
-            for stmt in MIGRATIONS.get(v, []):
-                cur.executescript(stmt)
+        # 기존 DB(버전 이력 있음)에서만 1회성 마이그레이션 실행.
+        # 신규 DB(current == 0)는 ALL_STATEMENTS가 최종 상태를 그대로 만들므로
+        # 마이그레이션(예: 이전 테이블 DROP, 특정 테이블 대상 인덱스 생성)을
+        # 실행하면 안 됨 — 아직 테이블이 없거나 불필요한 삭제가 발생할 수 있음.
+        if current > 0:
+            for v in range(current + 1, SCHEMA_VERSION + 1):
+                for stmt in MIGRATIONS.get(v, []):
+                    cur.executescript(stmt)
         for stmt in ALL_STATEMENTS:
             cur.executescript(stmt)
         cur.execute(
