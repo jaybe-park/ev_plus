@@ -46,6 +46,14 @@ MULTIWAY_TARGET = 100_000
 # 한 번에 누적하는 샘플 청크 (청크마다 커밋)
 MC_CHUNK = 25_000
 
+# 스트리트별 전체 고유 스팟 수 (수트 대칭 제거, 홀2장+보드)
+SPOT_SPACE = {
+    "preflop": 169,
+    "flop": 1_286_792,
+    "turn": 55_190_538,
+    "river": 2_428_287_420,
+}
+
 _STREET_PRIORITY = {"river": 0, "turn": 1, "flop": 2}
 
 
@@ -338,6 +346,7 @@ def show_status(conn) -> None:
         print("  (비어있음 — 게임을 플레이하거나 워커를 실행하면 채워집니다)")
 
     print("\n  [카테고리별 진행률]")
+    prev_street = None
     for r in rows:
         target = PREFLOP_TARGET if r["street"] == "preflop" else MULTIWAY_TARGET
         if r["street"] != "preflop" and r["num_opponents"] == 1:
@@ -350,6 +359,30 @@ def show_status(conn) -> None:
             detail = f"평균 {r['avg_samples']:,.0f}/{target:,} 샘플"
         print(f"  {r['street']:8s} vs{r['num_opponents']}  {_bar(pct)} "
               f"{pct*100:5.1f}%  스팟 {r['spots']:4d}개  {detail}")
+
+        # 스트리트별 전체 공간 대비 발견율 (vs1, 각 스트리트당 한 번만)
+        if prev_street != r["street"] and r["street"] in SPOT_SPACE and r["num_opponents"] == 1:
+            if r["street"] == "preflop":
+                # 프리플랍: 169개 스팟 모두 발견되면 "전체 완료" 느낌
+                discovered = r["spots"]  # 실제 스팟 수
+                total_space = SPOT_SPACE["preflop"]
+                coverage_pct = (discovered / total_space * 100) if total_space else 0
+                if coverage_pct < 1:
+                    coverage_str = f"{coverage_pct:.2f}%"
+                else:
+                    coverage_str = f"{coverage_pct:.1f}%"
+                print(f"              발견 {discovered:,} / 전체 {total_space:,} ({coverage_str})")
+            else:
+                # 포스트플랍 vs1: 정확값 기반 발견율
+                discovered = int(r["exact_done"])
+                total_space = SPOT_SPACE[r["street"]]
+                coverage_pct = (discovered / total_space * 100) if total_space else 0
+                if coverage_pct < 1:
+                    coverage_str = f"{coverage_pct:.2f}%"
+                else:
+                    coverage_str = f"{coverage_pct:.1f}%"
+                print(f"              발견 {discovered:,} / 전체 {total_space:,} ({coverage_str})")
+            prev_street = r["street"]
 
     # 대기 큐: 전수조사 남은 스팟 (게임 유입 vs 스윕 구분)
     queue = conn.execute(
