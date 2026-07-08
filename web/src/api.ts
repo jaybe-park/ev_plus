@@ -1,4 +1,4 @@
-import type { GameState, SetupConfig, GtoKey, GtoRange } from "./types";
+import type { GameState, SetupConfig, GtoKey, GtoRange, SessionReview } from "./types";
 
 const BASE = "https://localhost:8765";
 
@@ -37,4 +37,7 @@ export const api = {
     }
     return request(`/gto/preflop/range?${params}`);
   },
+
+  getSessionReview: (id: string): Promise<SessionReview> =>
+    request(`/session/${id}/review`),
 };

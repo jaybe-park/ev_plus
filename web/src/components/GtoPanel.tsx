@@ -68,7 +68,7 @@ export default function GtoPanel({ gtoKey, gtoRange, myHand, isLoading }: Props)
   const myHandFreqs = myHand ? hands[myHand] : null;
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
+    <div className="flex flex-col">
       {/* 상황 헤더 */}
       <div className="px-3 pt-2 pb-1.5 border-b border-gray-700 shrink-0">
         <div className="text-xs font-semibold text-green-400 truncate">

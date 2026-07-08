@@ -30,6 +30,52 @@ export interface GameState {
   min_raise_to: number;
   events: GameEvent[];
   gto_key: GtoKey | null;
+  equity: EquityInfo | null;
+  hand_review: HandReviewEntry[] | null;
+}
+
+// ── 에퀴티 패널 / 플레이 평가 ──────────────────────────
+
+export interface EquityOpponent {
+  name: string;
+  position: string;
+  role: "raiser" | "caller" | "unknown";
+  equity: number | null;
+}
+
+export interface EquityHistoryEntry {
+  street: string;
+  vs_random: number;
+}
+
+export interface EquityInfo {
+  vs_random: number;
+  vs_range: number;
+  pot_odds: number;
+  call_ev_bb: number | null;
+  source: string;
+  samples: number;
+  num_opponents: number;
+  opponents: EquityOpponent[];
+  history: EquityHistoryEntry[];
+}
+
+export interface HandReviewEntry {
+  street: string;
+  action: string;
+  grade: string;
+  reason: string;
+  ev_loss_bb: number | null;
+  pot_odds: number | null;
+  equity: number | null;
+  gto_freq: number | null;
+}
+
+export interface SessionReview {
+  total_actions: number;
+  grade_counts: Record<string, number>;
+  total_ev_loss_bb: number;
+  gto_match_rate: number | null;
 }
 
 // ── 애니메이션 이벤트 ──────────────────────────────

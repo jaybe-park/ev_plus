@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { GameState, SetupConfig, GtoRange } from "./types";
+import type { GameState, SetupConfig, GtoRange, SessionReview } from "./types";
 import { api } from "./api";
 import { useEventQueue } from "./hooks/useEventQueue";
 import SetupForm from "./components/SetupForm";
@@ -8,15 +8,22 @@ import ActionBar from "./components/ActionBar";
 import ActionLog from "./components/ActionLog";
 import HandResult from "./components/HandResult";
 import GtoPanel from "./components/GtoPanel";
+import EquityPanel from "./components/EquityPanel";
+
+const HINT_STORAGE_KEY = "ev_plus_hint_enabled";
 
 export default function App() {
   const [state, setState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [myCardsRevealed, setMyCardsRevealed] = useState(false);
-  const [rightTab, setRightTab] = useState<"log" | "gto">("log");
+  const [rightTab, setRightTab] = useState<"log" | "hint">("log");
   const [gtoRange, setGtoRange] = useState<GtoRange | null>(null);
   const [gtoLoading, setGtoLoading] = useState(false);
+  const [hintEnabled, setHintEnabled] = useState<boolean>(
+    () => localStorage.getItem(HINT_STORAGE_KEY) === "true"
+  );
+  const [sessionReview, setSessionReview] = useState<SessionReview | null>(null);
 
   const prevHandNumber = useRef<number>(0);
 
@@ -99,6 +106,24 @@ export default function App() {
     return () => { cancelled = true; };
   }, [state?.gto_key?.position, state?.gto_key?.vs_position, state?.gto_key?.range_type]);
 
+  // 핸드 종료 시마다 세션 평가 요약 페치
+  useEffect(() => {
+    if (!state?.hand_over || !state.session_id) return;
+    let cancelled = false;
+    api.getSessionReview(state.session_id)
+      .then(r => { if (!cancelled) setSessionReview(r); })
+      .catch(() => { if (!cancelled) setSessionReview(null); });
+    return () => { cancelled = true; };
+  }, [state?.hand_over, state?.hand_number, state?.session_id]);
+
+  const toggleHint = () => {
+    setHintEnabled((v) => {
+      const next = !v;
+      localStorage.setItem(HINT_STORAGE_KEY, String(next));
+      return next;
+    });
+  };
+
   const handleStart    = (config: SetupConfig) => run(() => api.startGame(config));
   const handleAction   = (action: string, amount = 0) => {
     if (!state) return;
@@ -147,6 +172,24 @@ export default function App() {
             <span className="text-yellow-400 font-bold">
               {human?.name}: {(isReplaying && human ? (displayedChips.get(human.name) ?? human.chips) : human?.chips ?? 0).toLocaleString()} 칩
             </span>
+            {sessionReview && (
+              <span className="text-gray-400 text-xs">
+                GTO {sessionReview.gto_match_rate != null ? `${(sessionReview.gto_match_rate * 100).toFixed(0)}%` : "—"}
+                {" · "}
+                EV {sessionReview.total_ev_loss_bb >= 0 ? "+" : ""}
+                {sessionReview.total_ev_loss_bb.toFixed(1)}bb
+              </span>
+            )}
+            <button
+              onClick={toggleHint}
+              className={`text-xs border rounded px-2 py-0.5 transition-colors ${
+                hintEnabled
+                  ? "text-green-400 border-green-600 bg-green-900/30"
+                  : "text-gray-500 border-gray-600"
+              }`}
+            >
+              힌트 👁
+            </button>
             {isReplaying && (
               <button
                 onClick={skip}
@@ -213,11 +256,11 @@ export default function App() {
         )}
       </div>
 
-      {/* 사이드패널 — 로그 / GTO 탭 */}
+      {/* 사이드패널 — 로그 / 힌트 탭 */}
       <div className="lg:w-72 shrink-0 flex flex-col border-t lg:border-t-0 lg:border-l border-gray-800">
         {/* 탭 헤더 */}
         <div className="flex border-b border-gray-700 shrink-0">
-          {(["log", "gto"] as const).map(t => (
+          {(["log", "hint"] as const).map(t => (
             <button
               key={t}
               onClick={() => setRightTab(t)}
@@ -227,8 +270,8 @@ export default function App() {
                   : "text-gray-500 hover:text-gray-300"
               }`}
             >
-              {t === "log" ? "📋 로그" : "📊 GTO"}
-              {t === "gto" && state.gto_key && (
+              {t === "log" ? "📋 로그" : "💡 힌트"}
+              {t === "hint" && hintEnabled && state.gto_key && (
                 <span className="ml-1 text-[10px]">
                   {gtoRange?.found ? "🟢" : "🔴"}
                 </span>
@@ -246,15 +289,31 @@ export default function App() {
                   : state.action_log}
               />
             </div>
+          ) : hintEnabled ? (
+            <div className="h-full overflow-y-auto">
+              {/* 에퀴티 */}
+              <div className="border-b border-gray-800">
+                <div className="px-3 pt-2 text-xs font-medium text-gray-400">📈 에퀴티</div>
+                <EquityPanel
+                  equity={state.equity}
+                  callAmount={state.call_amount}
+                  isMyTurn={state.waiting_for_action && !isReplaying}
+                />
+              </div>
+              {/* GTO */}
+              <GtoPanel
+                gtoKey={state.gto_key}
+                gtoRange={gtoRange}
+                myHand={toGtoHand(
+                  state.players.find(p => p.is_human)?.hole_cards ?? null
+                )}
+                isLoading={gtoLoading}
+              />
+            </div>
           ) : (
-            <GtoPanel
-              gtoKey={state.gto_key}
-              gtoRange={gtoRange}
-              myHand={toGtoHand(
-                state.players.find(p => p.is_human)?.hole_cards ?? null
-              )}
-              isLoading={gtoLoading}
-            />
+            <div className="flex items-center justify-center h-32 text-gray-600 text-sm text-center px-4">
+              힌트가 꺼져 있습니다 — 헤더의 👁 버튼으로 켜세요
+            </div>
           )}
         </div>
       </div>

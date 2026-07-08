@@ -7,7 +7,7 @@ interface Props {
 }
 
 export default function HandResult({ state, onNextHand, onNewGame }: Props) {
-  const { winners, showdown_hands, game_over, players, hand_number } = state;
+  const { winners, showdown_hands, game_over, players, hand_number, hand_review } = state;
   const human = players.find((p) => p.is_human);
   const humanWon = human ? winners.includes(human.name) : false;
 
@@ -56,6 +56,27 @@ export default function HandResult({ state, onNextHand, onNewGame }: Props) {
             <div className="text-gray-400 text-sm mb-4">
               내 칩: <span className="text-white font-bold">{human?.chips.toLocaleString()}</span>
             </div>
+
+            {hand_review && hand_review.length > 0 && (
+              <div className="bg-gray-900 rounded-lg p-3 mb-4 text-left space-y-1.5 max-h-48 overflow-y-auto">
+                <div className="text-xs text-gray-500 mb-1">내 플레이</div>
+                {hand_review.map((r, i) => (
+                  <div key={i} className="text-xs">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-500 w-10 shrink-0">{r.street}</span>
+                      <span className="text-gray-300 shrink-0">{r.action}</span>
+                      <span className="shrink-0">{r.grade}</span>
+                      {r.ev_loss_bb != null && r.ev_loss_bb < 0 && (
+                        <span className="text-red-400 font-medium shrink-0">
+                          {r.ev_loss_bb.toFixed(1)}bb
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-gray-500 text-[10px] pl-[3.2rem]">{r.reason}</div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <button
               onClick={onNextHand}
