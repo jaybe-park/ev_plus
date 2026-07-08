@@ -303,6 +303,46 @@ def test_ranged_equity():
         print("  ⏭  UTG RFI 데이터 없음 — GTO 연동 테스트 스킵")
 
 
+def test_fast_evaluator():
+    print("\n[E-9] 고속 7카드 평가기 등가성")
+    from core.evaluator import HandEvaluator, evaluate_rank
+    from core.card import Card as _C
+    full = [Card(r, s) for r in Rank for s in Suit]
+    random.seed(77)
+    mismatch = 0
+    for i in range(3000):
+        n = 7 if i % 10 < 8 else (6 if i % 10 == 8 else 5)
+        hand = random.sample(full, n)
+        old = HandEvaluator.evaluate(hand)
+        if (old.hand_rank.rank_value, old.tiebreakers) != evaluate_rank(hand):
+            mismatch += 1
+    check("랜덤 3000세트 완전 일치", mismatch == 0, f"불일치={mismatch}")
+
+
+def test_street_dp():
+    print("\n[E-10] 스트리트 분해 DP 정합성")
+    import importlib
+    from db.connection import get_connection
+    w = importlib.import_module("scripts.equity_worker")
+    from ai.equity import exact_counts_turn
+
+    hole = cards("Ah", "Kd")
+    board4 = cards("Kh", "9s", "2c", "7d")
+    direct = exact_counts_turn(hole, board4)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    conn = get_connection(tmp)
+    try:
+        W, T, N, hits = w.exact_turn_dp(conn, hole, board4)
+        conn.commit()
+        check("턴 DP == 직접 열거", (W, T, N) == direct, f"{(W,T,N)} vs {direct}")
+        W2, T2, N2, hits2 = w.exact_turn_dp(conn, hole, board4)
+        check("웜 캐시 46/46 적중 + 동일값", hits2 == 46 and (W2, T2, N2) == direct)
+    finally:
+        conn.close()
+        os.remove(tmp)
+
+
 def test_made_hand_rank():
     print("\n[E-7] made hand rank (드로우 판별)")
     r = made_hand_rank(cards("Ah", "5h"), cards("Kh", "9h", "2s"))
@@ -323,6 +363,8 @@ if __name__ == "__main__":
     test_board_wetness()
     test_bot_decisions()
     test_ranged_equity()
+    test_fast_evaluator()
+    test_street_dp()
     test_made_hand_rank()
 
     print(f"\n{'='*50}")

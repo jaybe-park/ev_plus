@@ -18,7 +18,7 @@ from itertools import combinations, permutations
 from typing import List, Optional, Tuple
 
 from core.card import Card, Suit, Rank
-from core.evaluator import HandEvaluator
+from core.evaluator import HandEvaluator, evaluate_rank
 
 _FULL_DECK = [Card(r, s) for r in Rank for s in Suit]
 _SUITS = [Suit.SPADES, Suit.HEARTS, Suit.DIAMONDS, Suit.CLUBS]
@@ -107,12 +107,12 @@ def mc_counts(
     for _ in range(num_simulations):
         drawn = random.sample(deck, draw_count)
         full = board + drawn[:need]
-        mine = HandEvaluator.evaluate(hole_cards + full)
+        mine = evaluate_rank(hole_cards + full)
 
         best_opp = None
         for i in range(num_opponents):
             start = need + 2 * i
-            opp = HandEvaluator.evaluate(list(drawn[start:start + 2]) + full)
+            opp = evaluate_rank(list(drawn[start:start + 2]) + full)
             if best_opp is None or opp > best_opp:
                 best_opp = opp
 
@@ -144,12 +144,12 @@ def exact_counts_river(hole: List[Card], board: List[Card]) -> Tuple[float, floa
     """리버: 상대 홀카드 C(45,2)=990 조합 전부 판정. <1초."""
     known = set(hole) | set(board)
     deck = [c for c in _FULL_DECK if c not in known]
-    mine = HandEvaluator.evaluate(hole + board)
+    mine = evaluate_rank(hole + board)
 
     wins = ties = 0.0
     total = 0
     for opp_pair in combinations(deck, 2):
-        opp = HandEvaluator.evaluate(list(opp_pair) + board)
+        opp = evaluate_rank(list(opp_pair) + board)
         if mine > opp:
             wins += 1
         elif mine == opp:
@@ -167,10 +167,10 @@ def exact_counts_turn(hole: List[Card], board: List[Card]) -> Tuple[float, float
     total = 0
     for river in deck:
         full = board + [river]
-        mine = HandEvaluator.evaluate(hole + full)
+        mine = evaluate_rank(hole + full)
         rest = [c for c in deck if c != river]
         for opp_pair in combinations(rest, 2):
-            opp = HandEvaluator.evaluate(list(opp_pair) + full)
+            opp = evaluate_rank(list(opp_pair) + full)
             if mine > opp:
                 wins += 1
             elif mine == opp:
@@ -188,11 +188,11 @@ def exact_counts_flop(hole: List[Card], board: List[Card]) -> Tuple[float, float
     total = 0
     for tr in combinations(deck, 2):
         full = board + list(tr)
-        mine = HandEvaluator.evaluate(hole + full)
+        mine = evaluate_rank(hole + full)
         tr_set = set(tr)
         rest = [c for c in deck if c not in tr_set]
         for opp_pair in combinations(rest, 2):
-            opp = HandEvaluator.evaluate(list(opp_pair) + full)
+            opp = evaluate_rank(list(opp_pair) + full)
             if mine > opp:
                 wins += 1
             elif mine == opp:
@@ -466,10 +466,10 @@ def mc_counts_ranged(
         board_fill = random.sample(avail, need) if need else []
         full = board + board_fill
 
-        mine = HandEvaluator.evaluate(hole_cards + full)
+        mine = evaluate_rank(hole_cards + full)
         best_opp = None
         for pair in opp_holes:
-            opp = HandEvaluator.evaluate(list(pair) + full)
+            opp = evaluate_rank(list(pair) + full)
             if best_opp is None or opp > best_opp:
                 best_opp = opp
 
@@ -500,4 +500,4 @@ def made_hand_rank(hole_cards: List[Card], community_cards: List[Card]) -> int:
     """
     if len(hole_cards) < 2 or len(community_cards) < 3:
         return 1
-    return HandEvaluator.evaluate(hole_cards + community_cards).hand_rank.rank_value
+    return evaluate_rank(hole_cards + community_cards)[0]

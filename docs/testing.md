@@ -8,7 +8,7 @@
 # 정밀 검사 (50개)
 python3 tests/test_poker_full.py
 
-# 에퀴티 엔진 + 봇 테스트 (36개)
+# 에퀴티 엔진 + 봇 테스트 (39개)
 python3 tests/test_equity.py
 
 # 기본 유닛 테스트 (14개)
@@ -88,7 +88,7 @@ python3 tests/test_poker.py
 
 ---
 
-## 에퀴티 테스트 (test_equity.py, 36개)
+## 에퀴티 테스트 (test_equity.py, 39개)
 
 | 영역 | 항목 |
 |---|---|
@@ -100,6 +100,8 @@ python3 tests/test_poker.py
 | E-6 | 봇 의사결정 — 넛 노폴드, 트래시 폴드/체크, 드로우 콜, 세미블러프, 포지션 점수 |
 | E-7 | made hand rank — 드로우 판별 |
 | E-8 | 레인지 기반 equity — RangeSampler 콤보/블록 회피, 레인지 조건부 하락 |
+| E-9 | 고속 7카드 평가기 — 기존 평가기와 랜덤 3000세트 완전 일치 |
+| E-10 | 스트리트 분해 DP — 턴 DP == 직접 열거, 웜 캐시 46/46 적중 |
 
 ---
 

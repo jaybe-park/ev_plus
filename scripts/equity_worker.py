@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.card import Card, Suit, Rank
 from ai.equity import (
     canonical_key, decode_key, mc_counts,
-    EXACT_FUNCS, street_of,
+    exact_counts_river, street_of, _FULL_DECK,
 )
 from db.connection import get_connection
 
@@ -196,10 +196,89 @@ def next_mc_job(conn):
     ).fetchone()
 
 
+def _upsert_exact(conn, street: str, spot_key: str, w: float, t: float, n: int) -> None:
+    """자식 스팟의 정확값 저장 (커밋은 호출자가)"""
+    conn.execute(
+        """
+        INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
+        VALUES(?,?,1,?,?,?,1)
+        ON CONFLICT(spot_key, num_opponents) DO UPDATE SET
+            wins=excluded.wins, ties=excluded.ties, total=excluded.total,
+            exact=1, updated_at=datetime('now')
+        """,
+        (street, spot_key, w, t, n),
+    )
+
+
+def _lookup_exact(conn, spot_key: str):
+    return conn.execute(
+        "SELECT wins, ties, total FROM equity_cache "
+        "WHERE spot_key=? AND num_opponents=1 AND exact=1",
+        (spot_key,),
+    ).fetchone()
+
+
+def exact_turn_dp(conn, hole, board4) -> tuple:
+    """
+    턴 전수조사 — 스트리트 분해 DP.
+    turn = 46개 리버 자식의 합 (수학적으로 직접 열거와 동일).
+    자식 리버가 캐시에 있으면 재사용, 없으면 계산 후 저장 → 캐시가 풍부해짐.
+    """
+    known = set(hole) | set(board4)
+    deck = [c for c in _FULL_DECK if c not in known]
+    W = T = 0.0
+    N = 0
+    hits = 0
+    for river in deck:
+        b5 = board4 + [river]
+        ck = canonical_key(hole, b5)
+        row = _lookup_exact(conn, ck)
+        if row:
+            w, t, n = row["wins"], row["ties"], row["total"]
+            hits += 1
+        else:
+            w, t, n = exact_counts_river(hole, b5)
+            _upsert_exact(conn, "river", ck, w, t, n)
+        W += w; T += t; N += n
+    return W, T, N, hits
+
+
+def exact_flop_dp(conn, hole, board3) -> tuple:
+    """
+    플랍 전수조사 — turn DP를 재귀 사용 (flop = 47개 턴 자식의 합).
+    턴 자식마다 커밋 → 플랍 작업 도중 중단해도 자식 진행분은 보존.
+    참고: 완성 조합을 순서쌍으로 세므로 total이 직접 열거의 2배지만 비율은 동일.
+    """
+    known = set(hole) | set(board3)
+    deck = [c for c in _FULL_DECK if c not in known]
+    W = T = 0.0
+    N = 0
+    hits = 0
+    for turn in deck:
+        b4 = board3 + [turn]
+        ck = canonical_key(hole, b4)
+        row = _lookup_exact(conn, ck)
+        if row:
+            w, t, n = row["wins"], row["ties"], row["total"]
+            hits += 1
+        else:
+            w, t, n, _ = exact_turn_dp(conn, hole, b4)
+            _upsert_exact(conn, "turn", ck, w, t, n)
+        conn.commit()  # 턴 자식 단위로 진행분 보존
+        W += w; T += t; N += n
+    return W, T, N, hits
+
+
 def process_exact(conn, job) -> str:
     hole, board = decode_key(job["spot_key"])
     t0 = time.time()
-    wins, ties, total = EXACT_FUNCS[job["street"]](hole, board)
+    hits = 0
+    if job["street"] == "river":
+        wins, ties, total = exact_counts_river(hole, board)
+    elif job["street"] == "turn":
+        wins, ties, total, hits = exact_turn_dp(conn, hole, board)
+    else:
+        wins, ties, total, hits = exact_flop_dp(conn, hole, board)
     conn.execute(
         "UPDATE equity_cache SET wins=?, ties=?, total=?, exact=1, "
         "updated_at=datetime('now') WHERE id=?",
@@ -207,8 +286,9 @@ def process_exact(conn, job) -> str:
     )
     conn.commit()
     eq = (wins + 0.5 * ties) / total
+    hit_info = f", 캐시적중 {hits}" if hits else ""
     return (f"✅ [전수] {job['street']:6s} {job['spot_key']:24s} "
-            f"equity={eq:.4f} ({total:,}조합, {time.time()-t0:.1f}s)")
+            f"equity={eq:.4f} ({total:,}조합, {time.time()-t0:.1f}s{hit_info})")
 
 
 def process_mc(conn, job) -> str:
