@@ -362,26 +362,22 @@ def show_status(conn) -> None:
 
         # 스트리트별 전체 공간 대비 발견율 (vs1, 각 스트리트당 한 번만)
         if prev_street != r["street"] and r["street"] in SPOT_SPACE and r["num_opponents"] == 1:
+            discovered = r["spots"]  # 발견 = DB에 등록된 스팟 수
+            total_space = SPOT_SPACE[r["street"]]
+            coverage_pct = (discovered / total_space * 100) if total_space else 0
+            coverage_str = f"{coverage_pct:.2f}%" if coverage_pct < 1 else f"{coverage_pct:.1f}%"
             if r["street"] == "preflop":
-                # 프리플랍: 169개 스팟 모두 발견되면 "전체 완료" 느낌
-                discovered = r["spots"]  # 실제 스팟 수
-                total_space = SPOT_SPACE["preflop"]
-                coverage_pct = (discovered / total_space * 100) if total_space else 0
-                if coverage_pct < 1:
-                    coverage_str = f"{coverage_pct:.2f}%"
-                else:
-                    coverage_str = f"{coverage_pct:.1f}%"
-                print(f"              발견 {discovered:,} / 전체 {total_space:,} ({coverage_str})")
+                # 프리플랍은 샘플링 대상 — 목표 샘플 도달 스팟 수 표시
+                reached = conn.execute(
+                    "SELECT COUNT(*) AS n FROM equity_cache "
+                    "WHERE street='preflop' AND num_opponents=1 AND total >= ?",
+                    (PREFLOP_TARGET,),
+                ).fetchone()["n"]
+                extra = f"목표 샘플 도달 {reached:,}"
             else:
-                # 포스트플랍 vs1: 정확값 기반 발견율
-                discovered = int(r["exact_done"])
-                total_space = SPOT_SPACE[r["street"]]
-                coverage_pct = (discovered / total_space * 100) if total_space else 0
-                if coverage_pct < 1:
-                    coverage_str = f"{coverage_pct:.2f}%"
-                else:
-                    coverage_str = f"{coverage_pct:.1f}%"
-                print(f"              발견 {discovered:,} / 전체 {total_space:,} ({coverage_str})")
+                extra = f"정확값 {int(r['exact_done']):,}"
+            print(f"              발견 {discovered:,} / 전체 {total_space:,} "
+                  f"({coverage_str}) · {extra}")
             prev_street = r["street"]
 
     # 대기 큐: 전수조사 남은 스팟 (게임 유입 vs 스윕 구분)
