@@ -458,6 +458,10 @@ def main():
     if added:
         print(f"프리플랍 스팟 {added}개 큐에 등록")
 
+    print("통계 갱신 중...")
+    conn.execute("ANALYZE")
+    conn.commit()
+
     deadline = time.time() + args.minutes * 60 if args.minutes else None
     done_count = 0
     print("워커 시작 — Ctrl+C로 언제든 중단 가능 (진행분은 저장됨)\n")

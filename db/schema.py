@@ -2,7 +2,7 @@
 poker_simulator DB 스키마 정의 및 마이그레이션
 """
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -134,14 +134,19 @@ CREATE TABLE IF NOT EXISTS schema_version (
 """
 
 CREATE_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_preflop_game  ON preflop_actions(game_uuid);
 CREATE INDEX IF NOT EXISTS idx_preflop_pos   ON preflop_actions(position);
 CREATE INDEX IF NOT EXISTS idx_preflop_human ON preflop_actions(is_human);
-CREATE INDEX IF NOT EXISTS idx_postflop_game   ON postflop_actions(game_uuid);
 CREATE INDEX IF NOT EXISTS idx_postflop_street ON postflop_actions(street);
 CREATE INDEX IF NOT EXISTS idx_postflop_pos    ON postflop_actions(position);
 CREATE INDEX IF NOT EXISTS idx_postflop_human  ON postflop_actions(is_human);
 CREATE INDEX IF NOT EXISTS idx_games_played    ON games(played_at);
+"""
+
+# v8: game_uuid 단일 컬럼 인덱스를 (game_uuid, position) 복합 인덱스로 대체.
+# reward 역산 UPDATE(WHERE game_uuid=? AND position=?)가 왼쪽 접두로 이 인덱스를 탄다.
+CREATE_GAME_POS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_preflop_game_pos  ON preflop_actions(game_uuid, position);
+CREATE INDEX IF NOT EXISTS idx_postflop_game_pos ON postflop_actions(game_uuid, position);
 """
 
 CREATE_GTO_PREFLOP_SITUATIONS = """
@@ -242,9 +247,8 @@ CREATE TABLE IF NOT EXISTS equity_cache (
 );
 """
 
-CREATE_EQUITY_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_equity_street ON equity_cache(street, exact, total);
-"""
+# v8: idx_equity_street(766만 행 전체 인덱스) 제거됨 — idx_equity_pending 부분 인덱스가
+# 대기 조회를 전담하므로 잉여. 쓰기 비용만 유발해 DROP.
 
 # v7: exact=0 & num_opponents=1 대기 행만 담는 부분 인덱스.
 # exact=1로 승격되면 인덱스에서 자동 제거되어 항상 작게 유지됨 (760만 행 스캔 회피).
@@ -277,6 +281,15 @@ MIGRATIONS = {
         CREATE_EQUITY_PENDING_INDEX,
         CREATE_EQUITY_MULTIWAY_INDEX,
     ],
+    8: [
+        # 저선택도 idx_preflop_pos/idx_postflop_pos 위 game_uuid 단일 인덱스는
+        # 복합 인덱스(game_uuid, position)가 왼쪽 접두로 대체 → DROP
+        "DROP INDEX IF EXISTS idx_preflop_game;",
+        "DROP INDEX IF EXISTS idx_postflop_game;",
+        CREATE_GAME_POS_INDEXES,
+        # idx_equity_street(766만 행 전체 인덱스) 잉여 — idx_equity_pending이 대기 조회 전담
+        "DROP INDEX IF EXISTS idx_equity_street;",
+    ],
 }
 
 ALL_STATEMENTS = [
@@ -296,10 +309,11 @@ ALL_STATEMENTS = [
     CREATE_GTO_MISSING_INDEX,
     # v4: 에퀴티 캐시 (전수조사 워커 + 봇 런타임 공유)
     CREATE_EQUITY_CACHE,
-    CREATE_EQUITY_INDEX,
     # v5: 워커 진행 커서 (체계적 플랍 스윕 재개용)
     CREATE_WORKER_META,
     # v7: 대기 행 전용 부분 인덱스 (next_exact_job / next_mc_job 병목 해소)
     CREATE_EQUITY_PENDING_INDEX,
     CREATE_EQUITY_MULTIWAY_INDEX,
+    # v8: (game_uuid, position) 복합 인덱스 — reward 역산 UPDATE 최적화
+    CREATE_GAME_POS_INDEXES,
 ]

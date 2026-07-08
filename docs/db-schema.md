@@ -52,6 +52,13 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 `bot_profile`("hard/aggressive" 등), `players_state`(결정 직전 전원 상태 JSON),
 `reward`(핸드 종료 후 bb 단위 역산). 포지션 CHECK에 HJ/BTN-SB 허용.
 
+**인덱스 (v8)** — reward 역산 UPDATE(`WHERE game_uuid=? AND position=?`)가 저선택도
+`idx_preflop_pos`/`idx_postflop_pos`(position 단일 인덱스)를 잘못 타던 문제를 해결하기 위해
+복합 인덱스 `idx_preflop_game_pos`/`idx_postflop_game_pos (game_uuid, position)`로 교체.
+기존 `idx_preflop_game`/`idx_postflop_game`(game_uuid 단일)은 복합 인덱스가 왼쪽 접두로
+대체하므로 제거. `idx_preflop_pos`/`idx_postflop_pos`, `idx_preflop_human`/`idx_postflop_human`은
+포지션별 VPIP/PFR 통계 집계용으로 유지.
+
 ### postflop_actions
 포스트플랍 액션 기록. RL 학습용 필드 포함.
 
@@ -104,6 +111,11 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 
 `exact=1`로 승격되거나 목표 샘플에 도달하면 조건에서 빠지므로 인덱스는 항상 작게 유지된다.
 작업 선택 쿼리는 스트리트/조건별로 단순 쿼리를 나눠 실행 (CASE 표현식 정렬 회피).
+
+**인덱스 정리 (v8)** — `idx_equity_street(street, exact, total)` 전체 인덱스(766만 행) 제거.
+`idx_equity_pending` 부분 인덱스가 대기 조회를 전담하므로 잉여였고, 쓰기 비용만 유발했다.
+`scripts/equity_worker.py` 실행 시작 시 `ANALYZE`를 1회 실행해 플래너 통계를 갱신한다
+(`db/connection.py`에는 넣지 않음 — 모든 연결마다 돌면 안 되므로 워커 진입점에만 배치).
 
 ---
 
