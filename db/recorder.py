@@ -58,7 +58,6 @@ class GameRecorder:
     def __init__(self, db_path: Optional[str] = None, big_blind: int = 20):
         self.big_blind = big_blind
         self.db_path = db_path
-        self._conn = None
 
         self.game_uuid: str = ""
         self.action_seq: int = 0
@@ -69,11 +68,6 @@ class GameRecorder:
         # finish_hand()에서 한 트랜잭션으로 일괄 INSERT+commit.
         self._pending_preflop: list = []
         self._pending_postflop: list = []
-
-    def _get_conn(self):
-        if self._conn is None:
-            self._conn = get_connection(self.db_path) if self.db_path else get_connection()
-        return self._conn
 
     def start_hand(
         self,
@@ -104,26 +98,29 @@ class GameRecorder:
             for p in players
         }
 
-        conn = self._get_conn()
-        conn.execute("""
-            INSERT INTO games (
-                game_uuid, played_at, num_players,
-                small_blind, big_blind, dealer_pos,
-                hole_cards, pot_total, winner_pos, player_results
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)
-        """, (
-            self.game_uuid,
-            datetime.now().isoformat(),
-            len(players),
-            small_blind,
-            self.big_blind,
-            dealer_pos,
-            json.dumps(hole_cards_json),
-            0,           # 나중에 finish_hand에서 업데이트
-            json.dumps([]),
-            json.dumps(player_results),
-        ))
-        conn.commit()
+        conn = get_connection(self.db_path) if self.db_path else get_connection()
+        try:
+            conn.execute("""
+                INSERT INTO games (
+                    game_uuid, played_at, num_players,
+                    small_blind, big_blind, dealer_pos,
+                    hole_cards, pot_total, winner_pos, player_results
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, (
+                self.game_uuid,
+                datetime.now().isoformat(),
+                len(players),
+                small_blind,
+                self.big_blind,
+                dealer_pos,
+                json.dumps(hole_cards_json),
+                0,           # 나중에 finish_hand에서 업데이트
+                json.dumps([]),
+                json.dumps(player_results),
+            ))
+            conn.commit()
+        finally:
+            conn.close()
 
     def record_action(
         self,
@@ -233,67 +230,68 @@ class GameRecorder:
         turn  = comm[3]  if len(comm) >= 4 else None
         river = comm[4]  if len(comm) >= 5 else None
 
-        conn = self._get_conn()
+        conn = get_connection(self.db_path) if self.db_path else get_connection()
+        try:
+            if self._pending_preflop:
+                conn.executemany("""
+                    INSERT INTO preflop_actions (
+                        game_uuid, action_seq, street_seq,
+                        position, is_human, bet_round,
+                        pot_before, stack_before, current_bet, call_amount,
+                        action, amount, amount_bb,
+                        equity, bot_profile, players_state,
+                        gto_fold, gto_call, gto_raise, gto_allin
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, self._pending_preflop)
 
-        if self._pending_preflop:
-            conn.executemany("""
-                INSERT INTO preflop_actions (
-                    game_uuid, action_seq, street_seq,
-                    position, is_human, bet_round,
-                    pot_before, stack_before, current_bet, call_amount,
-                    action, amount, amount_bb,
-                    equity, bot_profile, players_state,
-                    gto_fold, gto_call, gto_raise, gto_allin
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, self._pending_preflop)
+            if self._pending_postflop:
+                conn.executemany("""
+                    INSERT INTO postflop_actions (
+                        game_uuid, action_seq, street_seq,
+                        position, is_human, street,
+                        pot_before, stack_before, current_bet, call_amount,
+                        action, amount,
+                        equity, bot_profile, players_state,
+                        gto_fold, gto_check, gto_call,
+                        gto_raise_33, gto_raise_50, gto_raise_75,
+                        gto_raise_100, gto_raise_150, gto_allin
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, self._pending_postflop)
 
-        if self._pending_postflop:
-            conn.executemany("""
-                INSERT INTO postflop_actions (
-                    game_uuid, action_seq, street_seq,
-                    position, is_human, street,
-                    pot_before, stack_before, current_bet, call_amount,
-                    action, amount,
-                    equity, bot_profile, players_state,
-                    gto_fold, gto_check, gto_call,
-                    gto_raise_33, gto_raise_50, gto_raise_75,
-                    gto_raise_100, gto_raise_150, gto_allin
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, self._pending_postflop)
+            conn.execute("""
+                UPDATE games SET
+                    flop_1 = ?, flop_2 = ?, flop_3 = ?,
+                    turn_card = ?, river_card = ?,
+                    pot_total = ?,
+                    winner_pos = ?,
+                    player_results = ?
+                WHERE game_uuid = ?
+            """, (
+                flop[0], flop[1], flop[2],
+                turn, river,
+                pot_total,
+                json.dumps(winner_positions),
+                json.dumps(player_results),
+                self.game_uuid,
+            ))
 
-        conn.execute("""
-            UPDATE games SET
-                flop_1 = ?, flop_2 = ?, flop_3 = ?,
-                turn_card = ?, river_card = ?,
-                pot_total = ?,
-                winner_pos = ?,
-                player_results = ?
-            WHERE game_uuid = ?
-        """, (
-            flop[0], flop[1], flop[2],
-            turn, river,
-            pot_total,
-            json.dumps(winner_positions),
-            json.dumps(player_results),
-            self.game_uuid,
-        ))
+            # postflop reward 역산: 포지션별 손익 / big_blind
+            for pos, result in player_results.items():
+                reward = (result["end"] - result["start"]) / self.big_blind
+                for table in ("postflop_actions", "preflop_actions"):
+                    conn.execute(
+                        f"UPDATE {table} SET reward = ? "
+                        "WHERE game_uuid = ? AND position = ?",
+                        (reward, self.game_uuid, pos))
 
-        # postflop reward 역산: 포지션별 손익 / big_blind
-        for pos, result in player_results.items():
-            reward = (result["end"] - result["start"]) / self.big_blind
-            for table in ("postflop_actions", "preflop_actions"):
-                conn.execute(
-                    f"UPDATE {table} SET reward = ? "
-                    "WHERE game_uuid = ? AND position = ?",
-                    (reward, self.game_uuid, pos))
-
-        conn.commit()
+            conn.commit()
+        finally:
+            conn.close()
 
         # pending 버퍼 비우기
         self._pending_preflop = []
         self._pending_postflop = []
 
     def close(self):
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        """하위호환용 no-op. 커넥션을 더 이상 영속 보관하지 않는다."""
+        pass
