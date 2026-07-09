@@ -8,16 +8,19 @@
 
 ```bash
 # 1순위: 그라인드 — 캐시 + RL 학습데이터 + 미수집 스팟 발견 동시 축적
-python3 scripts/grind.py
+# pypy3로 실행하면 grind.py가 sys.executable로 워커/아레나를 서브프로세스로
+# 띄우므로 워커도 자동으로 PyPy를 씀 (워커 처리량 3.7배, PyPy 미설치면 python3로 대체)
+pypy3 scripts/grind.py
 
-# 또는: 프리플랍 equity 채우기 (845스팟, 순수 워커)
-python3 scripts/equity_worker.py --preflop-first
+# 또는: 프리플랍 equity 채우기 (845스팟, 순수 워커) — pypy3 권장
+pypy3 scripts/equity_worker.py --preflop-first
 
 # 또는: 파라미터 튜닝 캠페인 (봇이 스스로 강해짐, 결과는 tuning_results.json)
+# 튜닝은 아레나 다수 실행이라 PyPy 이득이 크지 않음 — python3 유지
 python3 scripts/tune_bot.py --profile hard --param aggression_margin --values 0.04,0.08,0.12 --hands 3000 --seeds 3
 python3 scripts/tune_bot.py --profile hard --param semibluff_freq --evolve --start 0.55 --step 0.1 --rounds 5 --hands 2000
 
-# 다음날 아침 확인
+# 다음날 아침 확인 (--status는 python3/pypy3 상관없음)
 python3 scripts/equity_worker.py --status
 ls -lh poker.db chip_violations.log 2>/dev/null   # 위반 로그가 있으면 시드로 재현 가능
 ```
