@@ -342,7 +342,7 @@ def next_mc_job(conn):
         """
         SELECT id, street, spot_key, num_opponents, total FROM equity_cache
         WHERE exact = 0 AND num_opponents > 1 AND total < ?
-        ORDER BY total ASC
+        ORDER BY num_opponents ASC, total ASC
         LIMIT 1
         """,
         (MULTIWAY_TARGET,),
@@ -532,7 +532,7 @@ def next_mc_batch(conn, limit: int = 200):
         """
         SELECT id, street, spot_key, num_opponents, total FROM equity_cache
         WHERE exact = 0 AND num_opponents > 1 AND total < ?
-        ORDER BY total ASC
+        ORDER BY num_opponents ASC, total ASC
         LIMIT ?
         """,
         (MULTIWAY_TARGET, limit),
