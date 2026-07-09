@@ -62,6 +62,25 @@ python3 scripts/equity_worker.py --status           # 현황
 등록·전수조사하는 무한 작업 저장고다. 진행 커서는 `worker_meta`에 저장되어
 재시작해도 이어진다. 게임에서 새 스팟을 만나면 스윕보다 항상 먼저 처리된다.
 
+**장시간 워커는 `pypy3` 권장** (약 3.7배, 플랍 전수조사 스팟 기준 실측):
+
+```bash
+pypy3 scripts/equity_worker.py --minutes 60   # CPython과 동일하게 사용
+```
+
+- 측정(2026-07-09, 동일 머신): 플랍 전수조사 1스팟(캐시적중 1) 평균
+  CPython 6.4s → PyPy 1.7s (약 3.7배). 분당 완료 작업 수는 큐 구성(리버/턴 등
+  값싼 작업 소진 여부)에 따라 달라져 직접 비교는 부정확하므로, 같은 종류의
+  작업 소요 시간으로 비교했다.
+- PyPy의 `sqlite3`는 CPython보다 엄격해 `conn.execute(...)`가 반환한 커서를
+  소비/close하지 않고 `conn.commit()`을 호출하면
+  `cannot commit transaction - SQL statements in progress` 에러가 난다.
+  `scripts/equity_worker.py`, `db/connection.py`, `db/recorder.py`,
+  `ai/equity.py`는 이 문제를 피하도록 커서를 명시적으로 닫아 두어 CPython/PyPy
+  양쪽에서 동일하게 동작한다.
+- `pyarrow` 등 워커가 안 쓰는 C 확장은 무관. `sqlite3`는 표준 라이브러리라
+  PyPy에도 포함되어 별도 설치 없이 동작한다 (`brew install pypy3`).
+
 ---
 
 ## 난이도 프로파일

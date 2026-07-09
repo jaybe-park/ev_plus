@@ -247,7 +247,7 @@ def _flush_contributions() -> None:
     try:
         conn = _db()
         for (street, key, n_opp), (w, t, n) in items:
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
                 VALUES(?,?,?,?,?,?,0)
@@ -260,6 +260,7 @@ def _flush_contributions() -> None:
                 """,
                 (street, key, n_opp, w, t, n),
             )
+            cur.close()
         conn.commit()
         conn.close()
     except Exception:
@@ -283,7 +284,7 @@ def cache_contribute(
     try:
         conn = _db()
         if exact:
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
                 VALUES(?,?,?,?,?,?,1)
@@ -295,7 +296,7 @@ def cache_contribute(
                 (street, spot_key, num_opponents, wins, ties, total),
             )
         else:
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
                 VALUES(?,?,?,?,?,?,0)
@@ -308,6 +309,7 @@ def cache_contribute(
                 """,
                 (street, spot_key, num_opponents, wins, ties, total),
             )
+        cur.close()
         conn.commit()
         conn.close()
     except Exception:

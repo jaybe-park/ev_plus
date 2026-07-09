@@ -100,7 +100,7 @@ class GameRecorder:
 
         conn = get_connection(self.db_path) if self.db_path else get_connection()
         try:
-            conn.execute("""
+            cur = conn.execute("""
                 INSERT INTO games (
                     game_uuid, played_at, num_players,
                     small_blind, big_blind, dealer_pos,
@@ -118,6 +118,7 @@ class GameRecorder:
                 json.dumps([]),
                 json.dumps(player_results),
             ))
+            cur.close()
             conn.commit()
         finally:
             conn.close()
@@ -233,7 +234,7 @@ class GameRecorder:
         conn = get_connection(self.db_path) if self.db_path else get_connection()
         try:
             if self._pending_preflop:
-                conn.executemany("""
+                cur = conn.executemany("""
                     INSERT INTO preflop_actions (
                         game_uuid, action_seq, street_seq,
                         position, is_human, bet_round,
@@ -243,9 +244,10 @@ class GameRecorder:
                         gto_fold, gto_call, gto_raise, gto_allin
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, self._pending_preflop)
+                cur.close()
 
             if self._pending_postflop:
-                conn.executemany("""
+                cur = conn.executemany("""
                     INSERT INTO postflop_actions (
                         game_uuid, action_seq, street_seq,
                         position, is_human, street,
@@ -257,8 +259,9 @@ class GameRecorder:
                         gto_raise_100, gto_raise_150, gto_allin
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, self._pending_postflop)
+                cur.close()
 
-            conn.execute("""
+            cur = conn.execute("""
                 UPDATE games SET
                     flop_1 = ?, flop_2 = ?, flop_3 = ?,
                     turn_card = ?, river_card = ?,
@@ -274,15 +277,17 @@ class GameRecorder:
                 json.dumps(player_results),
                 self.game_uuid,
             ))
+            cur.close()
 
             # postflop reward 역산: 포지션별 손익 / big_blind
             for pos, result in player_results.items():
                 reward = (result["end"] - result["start"]) / self.big_blind
                 for table in ("postflop_actions", "preflop_actions"):
-                    conn.execute(
+                    cur = conn.execute(
                         f"UPDATE {table} SET reward = ? "
                         "WHERE game_uuid = ? AND position = ?",
                         (reward, self.game_uuid, pos))
+                    cur.close()
 
             conn.commit()
         finally:

@@ -85,6 +85,7 @@ def seed_preflop_spots(conn) -> int:
                 (key, n_opp),
             )
             added += cur.rowcount
+            cur.close()
     conn.commit()
     return added
 
@@ -107,7 +108,9 @@ def next_exact_job(conn):
     각 쿼리가 인덱스만으로 즉시 첫 행을 찾는다 (대량 스캔 회피).
     """
     for street in ("river", "turn", "flop"):
-        row = conn.execute(_EXACT_JOB_STREET_SQL, (street,)).fetchone()
+        cur = conn.execute(_EXACT_JOB_STREET_SQL, (street,))
+        row = cur.fetchone()
+        cur.close()
         if row:
             return row
     return None
@@ -121,9 +124,11 @@ SWEEP_BATCH = 50  # 한 번에 등록하는 스팟 수
 
 
 def _get_cursor(conn) -> tuple:
-    row = conn.execute(
+    cur = conn.execute(
         "SELECT value FROM worker_meta WHERE key = 'flop_sweep_cursor'"
-    ).fetchone()
+    )
+    row = cur.fetchone()
+    cur.close()
     if row is None:
         return 0, 0
     h, f = row["value"].split(":")
@@ -131,11 +136,12 @@ def _get_cursor(conn) -> tuple:
 
 
 def _set_cursor(conn, hand_idx: int, flop_idx: int) -> None:
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO worker_meta(key, value) VALUES('flop_sweep_cursor', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (f"{hand_idx}:{flop_idx}",),
     )
+    cur.close()
 
 
 def sweep_flop_batch(conn) -> int:
@@ -167,6 +173,7 @@ def sweep_flop_batch(conn) -> int:
                 (key,),
             )
             added += cur.rowcount
+            cur.close()
             flop_idx += 1
             scanned += 1
             if scanned > 20000:  # 중복 구간에서 무한 스캔 방지
@@ -185,7 +192,7 @@ def sweep_flop_batch(conn) -> int:
 
 def next_preflop_job(conn):
     """프리플랍 스팟만 (--preflop-first용) — 샘플 적은 것부터"""
-    return conn.execute(
+    cur = conn.execute(
         """
         SELECT id, street, spot_key, num_opponents, total FROM equity_cache
         WHERE exact = 0 AND street = 'preflop' AND total < ?
@@ -193,7 +200,10 @@ def next_preflop_job(conn):
         LIMIT 1
         """,
         (PREFLOP_TARGET,),
-    ).fetchone()
+    )
+    row = cur.fetchone()
+    cur.close()
+    return row
 
 
 def next_mc_job(conn):
@@ -204,7 +214,7 @@ def next_mc_job(conn):
     스캔했다. 프리플랍(845행)과 멀티웨이(부분 인덱스 idx_equity_multiway_pending)
     쿼리 2개로 나눠 각각 인덱스로 즉시 첫 행을 찾도록 재구성.
     """
-    row = conn.execute(
+    cur = conn.execute(
         """
         SELECT id, street, spot_key, num_opponents, total FROM equity_cache
         WHERE exact = 0 AND street = 'preflop' AND total < ?
@@ -212,10 +222,12 @@ def next_mc_job(conn):
         LIMIT 1
         """,
         (PREFLOP_TARGET,),
-    ).fetchone()
+    )
+    row = cur.fetchone()
+    cur.close()
     if row:
         return row
-    return conn.execute(
+    cur = conn.execute(
         """
         SELECT id, street, spot_key, num_opponents, total FROM equity_cache
         WHERE exact = 0 AND num_opponents > 1 AND total < ?
@@ -223,12 +235,15 @@ def next_mc_job(conn):
         LIMIT 1
         """,
         (MULTIWAY_TARGET,),
-    ).fetchone()
+    )
+    row = cur.fetchone()
+    cur.close()
+    return row
 
 
 def _upsert_exact(conn, street: str, spot_key: str, w: float, t: float, n: int) -> None:
     """자식 스팟의 정확값 저장 (커밋은 호출자가)"""
-    conn.execute(
+    cur = conn.execute(
         """
         INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
         VALUES(?,?,1,?,?,?,1)
@@ -238,14 +253,18 @@ def _upsert_exact(conn, street: str, spot_key: str, w: float, t: float, n: int) 
         """,
         (street, spot_key, w, t, n),
     )
+    cur.close()
 
 
 def _lookup_exact(conn, spot_key: str):
-    return conn.execute(
+    cur = conn.execute(
         "SELECT wins, ties, total FROM equity_cache "
         "WHERE spot_key=? AND num_opponents=1 AND exact=1",
         (spot_key,),
-    ).fetchone()
+    )
+    row = cur.fetchone()
+    cur.close()
+    return row
 
 
 def exact_turn_dp(conn, hole, board4) -> tuple:
@@ -309,11 +328,12 @@ def process_exact(conn, job) -> str:
         wins, ties, total, hits = exact_turn_dp(conn, hole, board)
     else:
         wins, ties, total, hits = exact_flop_dp(conn, hole, board)
-    conn.execute(
+    cur = conn.execute(
         "UPDATE equity_cache SET wins=?, ties=?, total=?, exact=1, "
         "updated_at=datetime('now') WHERE id=?",
         (wins, ties, total, job["id"]),
     )
+    cur.close()
     conn.commit()
     eq = (wins + 0.5 * ties) / total
     hit_info = f", 캐시적중 {hits}" if hits else ""
@@ -325,15 +345,18 @@ def process_mc(conn, job) -> str:
     hole, board = decode_key(job["spot_key"])
     t0 = time.time()
     wins, ties, total = mc_counts(hole, board, job["num_opponents"], MC_CHUNK)
-    conn.execute(
+    cur = conn.execute(
         "UPDATE equity_cache SET wins=wins+?, ties=ties+?, total=total+?, "
         "updated_at=datetime('now') WHERE id=? AND exact=0",
         (wins, ties, total, job["id"]),
     )
+    cur.close()
     conn.commit()
-    row = conn.execute(
+    cur = conn.execute(
         "SELECT wins, ties, total FROM equity_cache WHERE id=?", (job["id"],)
-    ).fetchone()
+    )
+    row = cur.fetchone()
+    cur.close()
     eq = (row["wins"] + 0.5 * row["ties"]) / row["total"]
     target = PREFLOP_TARGET if job["street"] == "preflop" else MULTIWAY_TARGET
     return (f"📈 [샘플] {job['street']:7s} {job['spot_key']:24s} vs{job['num_opponents']} "
@@ -459,7 +482,8 @@ def main():
         print(f"프리플랍 스팟 {added}개 큐에 등록")
 
     print("통계 갱신 중...")
-    conn.execute("ANALYZE")
+    cur = conn.execute("ANALYZE")
+    cur.close()
     conn.commit()
 
     deadline = time.time() + args.minutes * 60 if args.minutes else None
