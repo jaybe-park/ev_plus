@@ -13,9 +13,10 @@
 """
 
 import atexit
+import bisect
 import random
 from itertools import combinations, permutations
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from core.card import Card, Suit, Rank
 from core.evaluator import HandEvaluator, evaluate_rank
@@ -198,6 +199,71 @@ def exact_counts_flop(hole: List[Card], board: List[Card]) -> Tuple[float, float
             elif mine == opp:
                 ties += 1
             total += 1
+    return wins, ties, total
+
+
+def board_rank_table(board: List[Card]) -> dict:
+    """
+    보드 B(5장) 공유 리버 스팟들을 위한 랭크 테이블.
+
+    B와 겹치지 않는 47장에서 만들 수 있는 모든 2장 조합(C(47,2)=1081개)의
+    "보드+그 2장" 핸드 랭크를 한 번만 계산해 정렬 리스트(bisect용)와
+    카드별 부분 리스트(블로커 보정용)로 반환한다.
+    """
+    known = set(board)
+    deck = [c for c in _FULL_DECK if c not in known]
+
+    full_sorted: List[tuple] = []
+    card_ranks: Dict[Card, List[tuple]] = {c: [] for c in deck}
+    pair_rank: Dict[frozenset, tuple] = {}
+
+    for c1, c2 in combinations(deck, 2):
+        r = evaluate_rank([c1, c2] + board)
+        full_sorted.append(r)
+        card_ranks[c1].append(r)
+        card_ranks[c2].append(r)
+        pair_rank[frozenset((c1, c2))] = r
+
+    full_sorted.sort()
+    return {
+        "board": list(board),
+        "deck": deck,
+        "full_sorted": full_sorted,
+        "card_ranks": card_ranks,
+        "pair_rank": pair_rank,
+    }
+
+
+def equity_via_board_table(
+    hole: List[Card], board: List[Card], table: dict,
+) -> Tuple[float, float, int]:
+    """
+    board_rank_table 결과를 이용한 리버 equity 계산.
+    exact_counts_river와 동일한 반환 형식 (wins, ties, total=990).
+
+    아이디어: 1081개 전체 조합 중 "나보다 약한/타이" 개수를 이진탐색으로 구하고,
+    내 홀카드 2장을 포함하는 91개 조합(상대가 실제로 만들 수 없는 조합)의
+    약한/타이 개수를 빼서 정확한 990조합 기준값을 만든다.
+    """
+    a, b = hole
+    mine = evaluate_rank(list(hole) + list(board))
+
+    full_sorted = table["full_sorted"]
+    lo = bisect.bisect_left(full_sorted, mine)
+    hi = bisect.bisect_right(full_sorted, mine)
+    full_weaker = lo
+    full_tie = hi - lo
+
+    ab_rank = table["pair_rank"][frozenset((a, b))]
+    excluded = list(table["card_ranks"][a]) + list(table["card_ranks"][b])
+    excluded.remove(ab_rank)  # a·b 조합 자체는 두 리스트에 각 1회씩 중복 → 1회만 제거
+
+    exc_weaker = sum(1 for r in excluded if r < mine)
+    exc_tie = sum(1 for r in excluded if r == mine)
+
+    wins = float(full_weaker - exc_weaker)
+    ties = float(full_tie - exc_tie)
+    total = 990
     return wins, ties, total
 
 

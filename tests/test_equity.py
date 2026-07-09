@@ -412,6 +412,29 @@ def test_grader():
     check("중간 equity 벳 → ⬜ (제한 판정)", g.grade == "⬜", f"={g.grade}")
 
 
+def test_board_rank_table():
+    print("\n[E-12] 보드 중심 리버 계산 (board_rank_table) 정합성")
+    from ai.equity import board_rank_table, equity_via_board_table
+
+    full = [Card(r, s) for r in Rank for s in Suit]
+    random.seed(2026)
+    mismatch = 0
+    cases = 0
+    for _ in range(100):
+        board = random.sample(full, 5)
+        table = board_rank_table(board)
+        rest = [c for c in full if c not in board]
+        for _ in range(5):
+            hole = random.sample(rest, 2)
+            direct = exact_counts_river(hole, board)
+            via_table = equity_via_board_table(hole, board, table)
+            cases += 1
+            if direct != via_table:
+                mismatch += 1
+    check(f"랜덤 보드 100 × 홀 5 = {cases}케이스 완전 일치", mismatch == 0,
+          f"불일치={mismatch}")
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("  에퀴티 엔진 + 봇 테스트")
@@ -428,6 +451,7 @@ if __name__ == "__main__":
     test_street_dp()
     test_made_hand_rank()
     test_grader()
+    test_board_rank_table()
 
     print(f"\n{'='*50}")
     print(f"  결과: {PASS} 통과 / {FAIL} 실패")
