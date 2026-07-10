@@ -180,6 +180,30 @@ pypy3 scripts/equity_worker.py --minutes 60   # CPython과 동일하게 사용
 - `pyarrow` 등 워커가 안 쓰는 C 확장은 무관. `sqlite3`는 표준 라이브러리라
   PyPy에도 포함되어 별도 설치 없이 동작한다 (`brew install pypy3`).
 
+### `--status` 증분 통계 테이블 전환 (2026-07-10)
+
+`--status`의 카테고리별 진행률 쿼리가 equity_cache(9,600만 행+) 전체를 `GROUP BY`로
+풀스캔해 **59초** 걸리던 문제를 `equity_cache_stats` 요약 테이블(스키마 v9,
+`docs/db-schema.md` 참고)로 해결했다. equity_cache에 쓰는 모든 경로
+(`ai/equity.py`의 MC 기여/exact 기여, `scripts/equity_worker.py`의 신규 스팟
+등록/exact 승격/MC 배치)가 같은 트랜잭션 안에서 `bump_equity_stats`로 델타를
+증분 반영한다. `--status`는 이제 이 작은 테이블만 읽어 **행 수와 무관하게 즉시
+응답**(실측 0.09초, 656배 개선).
+
+검증(2026-07-10, 동일 DB):
+- `--rebuild-stats` 백필 직후 `equity_cache_stats` 합계가 실제 `equity_cache`
+  풀스캔 `GROUP BY` 집계와 완전 일치(20개 카테고리 전부, COUNT/SUM 모두 일치).
+- 워커 2분 실행(`--workers 2`) 후 재대조에서 드리프트 발견 — `_batch_upsert_exact`가
+  같은 배치 안에 캐노니컬 키가 중복될 때(수트 정규화로 다른 실제 카드가 같은
+  키로 겹치는 경우, `exact_turn_dp_parallel`의 46개 리버 자식 배치에서 흔함)
+  델타를 중복 반영했음. 배치 내 마지막 값 기준으로만 델타를 계산하도록 수정 후
+  재검증 → 이후 두 차례 추가 워커 실행 + 실시간 봇 MC/exact 기여 경로 직접 실행
+  모두 드리프트 없음 확인.
+- `tests/run_all.py --full` 통과(31/31, 총 15.99s).
+
+`--rebuild-stats`는 1회성 백필/복구용 서브커맨드로, 이후로는 증분 갱신만으로
+정합성이 유지된다.
+
 ---
 
 ## 난이도 프로파일

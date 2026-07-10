@@ -2,7 +2,7 @@
 poker_simulator DB 스키마 정의 및 마이그레이션
 """
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -263,6 +263,20 @@ CREATE INDEX IF NOT EXISTS idx_equity_multiway_pending
 ON equity_cache(total) WHERE exact = 0 AND num_opponents > 1;
 """
 
+# v9: equity_cache(9,600만 행+) 풀스캔 GROUP BY가 --status에서 59초 걸리는 문제 해결.
+# (street, num_opponents)별 요약을 쓰기 시점마다 증분 갱신해 --status가 이 작은
+# 테이블만 읽도록 한다 (행 수 무관 즉시 응답). 정합성은 반드시 실제 풀스캔과 대조 검증.
+CREATE_EQUITY_CACHE_STATS = """
+CREATE TABLE IF NOT EXISTS equity_cache_stats (
+    street          TEXT    NOT NULL,
+    num_opponents   INTEGER NOT NULL,
+    spots           INTEGER NOT NULL DEFAULT 0,
+    exact_done      INTEGER NOT NULL DEFAULT 0,
+    total_sum       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(street, num_opponents)
+);
+"""
+
 CREATE_WORKER_META = """
 CREATE TABLE IF NOT EXISTS worker_meta (
     key   TEXT PRIMARY KEY,
@@ -290,6 +304,9 @@ MIGRATIONS = {
         # idx_equity_street(766만 행 전체 인덱스) 잉여 — idx_equity_pending이 대기 조회 전담
         "DROP INDEX IF EXISTS idx_equity_street;",
     ],
+    9: [
+        CREATE_EQUITY_CACHE_STATS,
+    ],
 }
 
 ALL_STATEMENTS = [
@@ -316,4 +333,6 @@ ALL_STATEMENTS = [
     CREATE_EQUITY_MULTIWAY_INDEX,
     # v8: (game_uuid, position) 복합 인덱스 — reward 역산 UPDATE 최적화
     CREATE_GAME_POS_INDEXES,
+    # v9: equity_cache 집계 요약 테이블 (--status 풀스캔 회피)
+    CREATE_EQUITY_CACHE_STATS,
 ]

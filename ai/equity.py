@@ -283,6 +283,31 @@ def _db():
     return get_connection(DB_PATH or _DEFAULT_DB_PATH)
 
 
+def bump_equity_stats(
+    conn, street: str, num_opponents: int,
+    d_spots: int = 0, d_exact: int = 0, d_total: int = 0,
+) -> None:
+    """
+    equity_cache_stats(street, num_opponents)별 요약을 원자적으로 증분 갱신.
+    --status가 equity_cache 풀스캔 대신 이 작은 테이블만 읽도록 하기 위함.
+    호출자의 트랜잭션 안에서 호출해야 한다(같은 commit으로 묶여야 정합성 보장).
+    """
+    if d_spots == 0 and d_exact == 0 and d_total == 0:
+        return
+    cur = conn.execute(
+        """
+        INSERT INTO equity_cache_stats(street, num_opponents, spots, exact_done, total_sum)
+        VALUES(?,?,?,?,?)
+        ON CONFLICT(street, num_opponents) DO UPDATE SET
+            spots = spots + excluded.spots,
+            exact_done = exact_done + excluded.exact_done,
+            total_sum = total_sum + excluded.total_sum
+        """,
+        (street, num_opponents, d_spots, d_exact, d_total),
+    )
+    cur.close()
+
+
 def cache_lookup(spot_key: str, num_opponents: int) -> Optional[dict]:
     try:
         conn = _db()
@@ -313,6 +338,13 @@ def _flush_contributions() -> None:
     try:
         conn = _db()
         for (street, key, n_opp), (w, t, n) in items:
+            # 델타 정확성을 위해 쓰기 전 상태를 먼저 확인 — 신규 스팟인지,
+            # 이미 exact=1이라 이번 기여가 WHERE절에 막혀 무시되는지 판별.
+            old = conn.execute(
+                "SELECT total, exact FROM equity_cache "
+                "WHERE spot_key = ? AND num_opponents = ?",
+                (key, n_opp),
+            ).fetchone()
             cur = conn.execute(
                 """
                 INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
@@ -327,6 +359,11 @@ def _flush_contributions() -> None:
                 (street, key, n_opp, w, t, n),
             )
             cur.close()
+            if old is None:
+                bump_equity_stats(conn, street, n_opp, d_spots=1, d_total=n)
+            elif old["exact"] == 0:
+                bump_equity_stats(conn, street, n_opp, d_total=n)
+            # old["exact"] == 1 이면 WHERE절에 막혀 실제로는 아무 변화 없음 → 델타 없음
         conn.commit()
         conn.close()
     except Exception:
@@ -349,6 +386,11 @@ def cache_contribute(
         return
     try:
         conn = _db()
+        old = conn.execute(
+            "SELECT total, exact FROM equity_cache "
+            "WHERE spot_key = ? AND num_opponents = ?",
+            (spot_key, num_opponents),
+        ).fetchone()
         if exact:
             cur = conn.execute(
                 """
@@ -361,6 +403,16 @@ def cache_contribute(
                 """,
                 (street, spot_key, num_opponents, wins, ties, total),
             )
+            cur.close()
+            if old is None:
+                bump_equity_stats(conn, street, num_opponents,
+                                   d_spots=1, d_exact=1, d_total=total)
+            else:
+                bump_equity_stats(
+                    conn, street, num_opponents,
+                    d_exact=(1 if old["exact"] == 0 else 0),
+                    d_total=total - old["total"],
+                )
         else:
             cur = conn.execute(
                 """
@@ -375,7 +427,12 @@ def cache_contribute(
                 """,
                 (street, spot_key, num_opponents, wins, ties, total),
             )
-        cur.close()
+            cur.close()
+            if old is None:
+                bump_equity_stats(conn, street, num_opponents, d_spots=1, d_total=total)
+            elif old["exact"] == 0:
+                bump_equity_stats(conn, street, num_opponents, d_total=total)
+            # old["exact"] == 1 이면 WHERE절에 막혀 실제 변화 없음 → 델타 없음
         conn.commit()
         conn.close()
     except Exception:

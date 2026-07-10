@@ -40,6 +40,7 @@ from ai.equity import (
     canonical_key, decode_key, mc_counts,
     exact_counts_river, street_of, _FULL_DECK,
     board_rank_table, equity_via_board_table,
+    bump_equity_stats,
 )
 
 # 기본 워커 수: CPU-2 (그라인드의 아레나 프로세스 몫 배려). --workers 1이면
@@ -98,7 +99,9 @@ def seed_preflop_spots(conn) -> int:
                 "(street, spot_key, num_opponents) VALUES('preflop', ?, ?)",
                 (key, n_opp),
             )
-            added += cur.rowcount
+            if cur.rowcount:
+                added += cur.rowcount
+                bump_equity_stats(conn, "preflop", n_opp, d_spots=cur.rowcount)
             cur.close()
     conn.commit()
     return added
@@ -175,12 +178,16 @@ def next_exact_batch(conn):
     return None, []
 
 
-def _flush_exact_updates(conn, updates: list) -> int:
+def _flush_exact_updates(conn, street: str, updates: list) -> int:
     """
     (wins, ties, total, id) 튜플 리스트를 BATCH_COMMIT 단위로 executemany 커밋.
     WHERE id=? AND exact=0 으로 멱등 유지 (동시 실행 중인 다른 프로세스가
     이미 처리한 행은 rowcount=0으로 조용히 skip).
     반환: 실제 커밋한 건수.
+
+    통계 델타는 "우리가 실제로 갱신했다"는 가정 대신, 갱신 직전/직후의 실제
+    (total, exact) 상태를 비교해 계산한다 — 동시 실행 중인 다른 프로세스가
+    먼저 처리해 우리 UPDATE가 조용히 skip된 경우에도 이중 집계되지 않는다.
     """
     if not updates:
         return 0
@@ -191,9 +198,35 @@ def _flush_exact_updates(conn, updates: list) -> int:
     )
     for i in range(0, len(updates), BATCH_COMMIT):
         chunk = updates[i:i + BATCH_COMMIT]
+        ids = [row[3] for row in chunk]
+        placeholders = ",".join("?" * len(ids))
+        before = {
+            r["id"]: (r["total"], r["exact"])
+            for r in conn.execute(
+                f"SELECT id, total, exact FROM equity_cache WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        }
+
         cur = conn.executemany(sql, chunk)
         done += cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(chunk)
         cur.close()
+
+        after = {
+            r["id"]: (r["total"], r["exact"])
+            for r in conn.execute(
+                f"SELECT id, total, exact FROM equity_cache WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        }
+        d_exact = d_total = 0
+        for i2 in ids:
+            old_total, old_exact = before.get(i2, (0, 0))
+            new_total, new_exact = after.get(i2, (old_total, old_exact))
+            if old_exact == 0 and new_exact == 1:
+                d_exact += 1
+                d_total += new_total - old_total
+        bump_equity_stats(conn, street, 1, d_exact=d_exact, d_total=d_total)
         conn.commit()
     return done
 
@@ -223,7 +256,7 @@ def process_river_batch(conn, jobs) -> list:
             w, t, n = equity_via_board_table(hole, board, table)
             updates.append((w, t, n, job["id"]))
 
-    saved = _flush_exact_updates(conn, updates)
+    saved = _flush_exact_updates(conn, "river", updates)
     dt = time.time() - t0
     logs.append(
         f"✅ [배치-리버] {len(jobs)}스팟 → 실제보드 {len(groups)}그룹 "
@@ -298,7 +331,7 @@ def process_river_batch_parallel(conn, jobs, pool) -> list:
     t0 = time.time()
     group_results = pool.map(_river_group_job, tasks)
     updates = [row for group in group_results for row in group]
-    saved = _flush_exact_updates(conn, updates)
+    saved = _flush_exact_updates(conn, "river", updates)
     dt = time.time() - t0
     return [
         f"✅ [배치-리버-병렬] {len(jobs)}스팟 → 실제보드 {len(groups)}그룹 "
@@ -325,9 +358,36 @@ def _batch_lookup_exact(conn, spot_keys: list) -> dict:
 
 
 def _batch_upsert_exact(conn, street: str, rows: list) -> None:
-    """(spot_key, wins, ties, total) 리스트를 한 번에 upsert (커밋은 호출자가)."""
+    """
+    (spot_key, wins, ties, total) 리스트를 한 번에 upsert (커밋은 호출자가).
+
+    주의: 같은 배치 안에 동일 spot_key가 중복으로 나타날 수 있다 — canonical_key는
+    수트를 정규화하므로, 서로 다른 실제 카드(예: 보드/홀카드에 안 나온 "새 수트"
+    리버 두 장)가 같은 캐노니컬 키로 겹치는 경우가 흔하다(exact_turn_dp_parallel이
+    46개 리버 자식을 한 번에 Pool로 계산할 때 특히 그렇다). executemany에선 나중
+    항목이 이전 항목을 덮어써 DB에는 마지막 값만 남으므로, 통계 델타도 spot_key당
+    "배치 내 마지막 값"만 반영해야 한다 — 그러지 않으면 같은 신규 스팟을 spots/
+    total_sum에 여러 번 더해 드리프트가 생긴다(실측 확인됨).
+    """
     if not rows:
         return
+    # spot_key당 배치 내 마지막 값만 남긴다 (순서 보존, dict는 마지막 대입이 이김)
+    last_by_key = {}
+    for ck, w, t, n in rows:
+        last_by_key[ck] = (w, t, n)
+    unique_keys = list(last_by_key.keys())
+
+    # 델타 계산을 위해 upsert 전에 기존 상태(총합/exact 여부)를 일괄 조회.
+    placeholders = ",".join("?" * len(unique_keys))
+    old_map = {
+        r["spot_key"]: (r["total"], r["exact"])
+        for r in conn.execute(
+            f"SELECT spot_key, total, exact FROM equity_cache "
+            f"WHERE spot_key IN ({placeholders}) AND num_opponents=1",
+            unique_keys,
+        ).fetchall()
+    }
+
     sql = (
         "INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact) "
         "VALUES(?,?,1,?,?,?,1) "
@@ -335,9 +395,26 @@ def _batch_upsert_exact(conn, street: str, rows: list) -> None:
         "wins=excluded.wins, ties=excluded.ties, total=excluded.total, "
         "exact=1, updated_at=datetime('now')"
     )
-    params = [(street, ck, w, t, n) for ck, w, t, n in rows]
+    # 중복 제거된 목록으로 실행 — DB 최종 상태는 원래 rows로 executemany하는 것과
+    # 동일(마지막 값이 이김)하면서 쓰기 횟수만 줄어든다.
+    params = [(street, ck, w, t, n) for ck, (w, t, n) in last_by_key.items()]
     cur = conn.executemany(sql, params)
     cur.close()
+
+    d_spots = d_exact = 0
+    d_total = 0
+    for ck, (_w, _t, n) in last_by_key.items():
+        old = old_map.get(ck)
+        if old is None:
+            d_spots += 1
+            d_exact += 1
+            d_total += n
+        else:
+            old_total, old_exact = old
+            if old_exact == 0:
+                d_exact += 1
+            d_total += n - old_total
+    bump_equity_stats(conn, street, 1, d_spots=d_spots, d_exact=d_exact, d_total=d_total)
 
 
 def exact_turn_dp_parallel(conn, hole, board4, pool) -> tuple:
@@ -414,7 +491,7 @@ def process_turn_flop_batch_parallel(conn, street: str, jobs, pool) -> list:
     pending_updates = []
 
     def flush():
-        n = _flush_exact_updates(conn, pending_updates)
+        n = _flush_exact_updates(conn, street, pending_updates)
         pending_updates.clear()
         return n
 
@@ -447,6 +524,8 @@ def process_mc_batch_parallel(conn, jobs, pool) -> list:
         tasks.append((job["id"], hole, board, job["num_opponents"], MC_CHUNK))
     t0 = time.time()
     results = pool.map(_mc_job, tasks)
+    # id -> (street, num_opponents) — 결과(results)는 job 순서를 보존하므로 zip으로 매핑.
+    meta_by_id = {job["id"]: (job["street"], job["num_opponents"]) for job in jobs}
     sql = (
         "UPDATE equity_cache SET wins=wins+?, ties=ties+?, total=total+?, "
         "updated_at=datetime('now') WHERE id=? AND exact=0"
@@ -455,6 +534,12 @@ def process_mc_batch_parallel(conn, jobs, pool) -> list:
         chunk = results[i:i + BATCH_COMMIT]
         cur = conn.executemany(sql, chunk)
         cur.close()
+        deltas: dict = defaultdict(int)
+        for w, t, total, job_id in chunk:
+            street, n_opp = meta_by_id[job_id]
+            deltas[(street, n_opp)] += total
+        for (street, n_opp), d_total in deltas.items():
+            bump_equity_stats(conn, street, n_opp, d_total=d_total)
         conn.commit()
     dt = time.time() - t0
     return [
@@ -518,7 +603,9 @@ def sweep_flop_batch(conn) -> int:
                 "(street, spot_key, num_opponents) VALUES('flop', ?, 1)",
                 (key,),
             )
-            added += cur.rowcount
+            if cur.rowcount:
+                added += cur.rowcount
+                bump_equity_stats(conn, "flop", 1, d_spots=cur.rowcount)
             cur.close()
             flop_idx += 1
             scanned += 1
@@ -589,6 +676,10 @@ def next_mc_job(conn):
 
 def _upsert_exact(conn, street: str, spot_key: str, w: float, t: float, n: int) -> None:
     """자식 스팟의 정확값 저장 (커밋은 호출자가)"""
+    old = conn.execute(
+        "SELECT total, exact FROM equity_cache WHERE spot_key=? AND num_opponents=1",
+        (spot_key,),
+    ).fetchone()
     cur = conn.execute(
         """
         INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
@@ -600,6 +691,14 @@ def _upsert_exact(conn, street: str, spot_key: str, w: float, t: float, n: int) 
         (street, spot_key, w, t, n),
     )
     cur.close()
+    if old is None:
+        bump_equity_stats(conn, street, 1, d_spots=1, d_exact=1, d_total=n)
+    else:
+        bump_equity_stats(
+            conn, street, 1,
+            d_exact=(1 if old["exact"] == 0 else 0),
+            d_total=n - old["total"],
+        )
 
 
 def _lookup_exact(conn, spot_key: str):
@@ -674,13 +773,7 @@ def process_exact(conn, job) -> str:
         wins, ties, total, hits = exact_turn_dp(conn, hole, board)
     else:
         wins, ties, total, hits = exact_flop_dp(conn, hole, board)
-    cur = conn.execute(
-        "UPDATE equity_cache SET wins=?, ties=?, total=?, exact=1, "
-        "updated_at=datetime('now') WHERE id=? AND exact=0",
-        (wins, ties, total, job["id"]),
-    )
-    cur.close()
-    conn.commit()
+    _flush_exact_updates(conn, job["street"], [(wins, ties, total, job["id"])])
     eq = (wins + 0.5 * ties) / total
     hit_info = f", 캐시적중 {hits}" if hits else ""
     return (f"✅ [전수] {job['street']:6s} {job['spot_key']:24s} "
@@ -701,7 +794,7 @@ def process_turn_flop_batch(conn, street: str, jobs) -> list:
     pending_updates = []
 
     def flush():
-        n = _flush_exact_updates(conn, pending_updates)
+        n = _flush_exact_updates(conn, street, pending_updates)
         pending_updates.clear()
         return n
 
@@ -735,6 +828,11 @@ def process_mc(conn, job) -> str:
         "updated_at=datetime('now') WHERE id=? AND exact=0",
         (wins, ties, total, job["id"]),
     )
+    # MC 대상(preflop/multiway)은 exact로 전환되지 않는 street/num_opponents
+    # 조합만 선택되므로(next_mc_job 참고) rowcount>0이면 항상 우리 기여가
+    # 그대로 반영된 것 — total_sum에 그대로 더한다.
+    if cur.rowcount:
+        bump_equity_stats(conn, job["street"], job["num_opponents"], d_total=total)
     cur.close()
     conn.commit()
     cur = conn.execute(
@@ -786,6 +884,7 @@ def process_mc_batch(conn, jobs) -> list:
     """
     logs = []
     pending = []
+    pending_meta = []  # (street, num_opponents, total) — pending과 1:1 대응
     sql = (
         "UPDATE equity_cache SET wins=wins+?, ties=ties+?, total=total+?, "
         "updated_at=datetime('now') WHERE id=? AND exact=0"
@@ -796,14 +895,22 @@ def process_mc_batch(conn, jobs) -> list:
             return
         cur = conn.executemany(sql, pending)
         cur.close()
+        # MC 대상 조합은 exact 승격 대상이 아니므로(next_mc_batch 참고) 그대로 합산.
+        deltas: dict = defaultdict(int)
+        for street, n_opp, total in pending_meta:
+            deltas[(street, n_opp)] += total
+        for (street, n_opp), d_total in deltas.items():
+            bump_equity_stats(conn, street, n_opp, d_total=d_total)
         conn.commit()
         pending.clear()
+        pending_meta.clear()
 
     for job in jobs:
         hole, board = decode_key(job["spot_key"])
         t0 = time.time()
         wins, ties, total = mc_counts(hole, board, job["num_opponents"], MC_CHUNK)
         pending.append((wins, ties, total, job["id"]))
+        pending_meta.append((job["street"], job["num_opponents"], total))
         if len(pending) >= BATCH_COMMIT:
             flush()
         new_total = job["total"] + total
@@ -825,20 +932,17 @@ def show_status(conn) -> None:
     print(f"\n{'='*68}")
     print("  에퀴티 캐시 현황")
     print(f"{'='*68}")
+    # equity_cache 풀스캔(9,600만 행+, 실측 59초) 대신 쓰기 시점마다 증분 갱신되는
+    # equity_cache_stats(street, num_opponents)별 요약만 읽는다 — 행 수 무관 즉시 응답.
+    # avg_samples/capped_samples는 total_sum에서 파생(원래 AVG/MIN 집계의 근사이지만
+    # 목표 도달 스팟은 더 이상 샘플링되지 않으므로 오차는 최대 1청크 수준으로 무시할 만함).
     rows = conn.execute(
         """
-        SELECT street, num_opponents,
-               COUNT(*) AS spots,
-               SUM(exact) AS exact_done,
-               AVG(total) AS avg_samples,
-               SUM(MIN(total, CASE WHEN street='preflop' THEN ? ELSE ? END))
-                   AS capped_samples
-        FROM equity_cache
-        GROUP BY street, num_opponents
+        SELECT street, num_opponents, spots, exact_done, total_sum
+        FROM equity_cache_stats
         ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1
                  WHEN 'turn' THEN 2 ELSE 3 END, num_opponents
-        """,
-        (PREFLOP_TARGET, MULTIWAY_TARGET),
+        """
     ).fetchall()
     if not rows:
         print("  (비어있음 — 게임을 플레이하거나 워커를 실행하면 채워집니다)")
@@ -847,14 +951,16 @@ def show_status(conn) -> None:
     prev_street = None
     for r in rows:
         target = PREFLOP_TARGET if r["street"] == "preflop" else MULTIWAY_TARGET
+        avg_samples = r["total_sum"] / r["spots"] if r["spots"] else 0
         if r["street"] != "preflop" and r["num_opponents"] == 1:
             # 전수조사 대상
             pct = r["exact_done"] / r["spots"] if r["spots"] else 0
             detail = f"전수조사 {r['exact_done']}/{r['spots']}"
         else:
-            # 샘플 누적 대상 (스팟별 target 상한으로 집계)
-            pct = r["capped_samples"] / (r["spots"] * target) if r["spots"] else 0
-            detail = f"평균 {r['avg_samples']:,.0f}/{target:,} 샘플"
+            # 샘플 누적 대상 (스팟별 target 상한 근사 — 위 설명 참고)
+            capped_samples = min(r["total_sum"], r["spots"] * target)
+            pct = capped_samples / (r["spots"] * target) if r["spots"] else 0
+            detail = f"평균 {avg_samples:,.0f}/{target:,} 샘플"
         print(f"  {r['street']:8s} vs{r['num_opponents']}  {_bar(pct)} "
               f"{pct*100:5.1f}%  스팟 {r['spots']:4d}개  {detail}")
 
@@ -866,9 +972,13 @@ def show_status(conn) -> None:
             coverage_str = f"{coverage_pct:.2f}%" if coverage_pct < 1 else f"{coverage_pct:.1f}%"
             if r["street"] == "preflop":
                 # 프리플랍은 샘플링 대상 — 목표 샘플 도달 스팟 수 표시
+                # exact=0 조건을 명시해야 idx_equity_pending(street, total, id) 부분
+                # 인덱스를 planner가 안전하게 탈 수 있다(부분 인덱스는 WHERE절이
+                # 인덱스 조건을 내포해야 사용됨) — 없으면 9,600만 행 풀스캔(14s+).
+                # 프리플랍 행은 exact로 전환되지 않으므로 논리적으로도 항상 참.
                 reached = conn.execute(
                     "SELECT COUNT(*) AS n FROM equity_cache "
-                    "WHERE street='preflop' AND num_opponents=1 AND total >= ?",
+                    "WHERE street='preflop' AND num_opponents=1 AND exact=0 AND total >= ?",
                     (PREFLOP_TARGET,),
                 ).fetchone()["n"]
                 extra = f"목표 샘플 도달 {reached:,}"
@@ -915,12 +1025,48 @@ def show_status(conn) -> None:
     print()
 
 
+def rebuild_stats(conn) -> None:
+    """
+    equity_cache_stats를 실제 equity_cache 풀스캔 집계로 다시 채운다.
+    v9 마이그레이션 직후 1회만 실행하면 되는 백필 작업 — 이후로는
+    쓰기 시점 증분 갱신만으로 equity_cache_stats가 정확히 유지된다.
+    """
+    print("equity_cache 풀스캔 집계 중... (행 수에 비례해 시간이 걸립니다)")
+    t0 = time.time()
+    rows = conn.execute(
+        """
+        SELECT street, num_opponents,
+               COUNT(*) AS spots,
+               SUM(exact) AS exact_done,
+               SUM(total) AS total_sum
+        FROM equity_cache
+        GROUP BY street, num_opponents
+        """
+    ).fetchall()
+    conn.execute("DELETE FROM equity_cache_stats")
+    conn.executemany(
+        "INSERT INTO equity_cache_stats(street, num_opponents, spots, exact_done, total_sum) "
+        "VALUES(?,?,?,?,?)",
+        [
+            (r["street"], r["num_opponents"], r["spots"], r["exact_done"] or 0, r["total_sum"] or 0)
+            for r in rows
+        ],
+    )
+    conn.commit()
+    dt = time.time() - t0
+    print(f"완료 — {len(rows)}개 카테고리, {dt:.1f}s")
+
+
 def main():
     parser = argparse.ArgumentParser(description="에퀴티 전수조사 워커")
     parser.add_argument("--minutes", type=float, default=None, help="실행 시간 제한(분)")
     parser.add_argument("--preflop-first", action="store_true",
                         help="프리플랍 845스팟 샘플링을 전수조사보다 우선")
     parser.add_argument("--status", action="store_true", help="진행 현황만 출력")
+    parser.add_argument(
+        "--rebuild-stats", action="store_true",
+        help="equity_cache_stats를 equity_cache 풀스캔으로 재집계 (1회성 백필/복구용)"
+    )
     parser.add_argument(
         "--workers", type=int, default=DEFAULT_WORKERS,
         help=f"병렬 워커 프로세스 수 (기본 {DEFAULT_WORKERS} = CPU-2). "
@@ -929,6 +1075,11 @@ def main():
     args = parser.parse_args()
 
     conn = get_connection()
+
+    if args.rebuild_stats:
+        rebuild_stats(conn)
+        conn.close()
+        return
 
     if args.status:
         show_status(conn)

@@ -158,6 +158,34 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 
 ---
 
+### equity_cache_stats (v9)
+`--status`의 카테고리별 진행률 집계가 equity_cache 풀스캔(9,600만 행+, 실측 59초)이던
+문제를 해결하기 위한 요약 테이블. `(street, num_opponents)`별 `spots`/`exact_done`/
+`total_sum`을 equity_cache 쓰기 시점마다(MC 기여, exact 승격, 신규 스팟 등록) 원자적
+UPSERT로 증분 갱신 — `--status`는 이 작은 테이블만 읽어 행 수와 무관하게 즉시 응답한다
+(실측 59s → 0.09s).
+
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| `street` | TEXT | preflop / flop / turn / river |
+| `num_opponents` | INTEGER | 상대 수 (1~5) |
+| `spots` | INTEGER | 등록된 스팟 수 (exact 여부 무관) |
+| `exact_done` | INTEGER | 전수조사(exact=1) 완료 스팟 수 |
+| `total_sum` | INTEGER | 누적 샘플 수 총합 |
+
+PRIMARY KEY(street, num_opponents). 갱신 로직은 `ai/equity.py`의 `bump_equity_stats`
+(모든 쓰기 지점이 공유)에 모여 있고, 각 호출자는 쓰기 직전 상태(old total/exact)와
+직후 상태를 비교해 정확한 델타만 반영한다 — 특히 `_batch_upsert_exact`는 같은 배치
+안에 캐노니컬 키가 중복될 수 있어(수트 정규화로 다른 실제 카드가 같은 키로 겹침)
+배치 내 마지막 값 기준으로만 델타를 계산해야 이중 집계를 피할 수 있다(실측으로 드리프트
+확인 후 수정).
+
+**1회 백필**: `python3 scripts/equity_worker.py --rebuild-stats`로 equity_cache
+전체를 풀스캔해 초기값을 채운다(v9 마이그레이션 직후 1회만 필요). 검증: 백필 직후 +
+워커 2분 실행 전후 모두 실제 `GROUP BY` 풀스캔과 완전 일치 확인함(2026-07-10).
+
+---
+
 ### worker_meta (v5)
 에퀴티 워커의 플랍 스윕 진행 커서 저장 (key-value).
 
