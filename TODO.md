@@ -10,9 +10,12 @@
 # 1순위: 그라인드 — 캐시 + RL 학습데이터 + 미수집 스팟 발견 동시 축적
 # pypy3로 실행하면 grind.py가 sys.executable로 워커/아레나를 서브프로세스로
 # 띄우므로 워커도 자동으로 PyPy를 씀 (워커 처리량 3.7배, PyPy 미설치면 python3로 대체)
+# 워커는 --workers 옵션 없이도 기본 max(1, cpu_count()-2)로 멀티프로세싱 병렬화됨
+# (턴 처리 ~4.3배, 플랍 ~4.7배, 아레나 프로세스 몫 코어 2개는 자동으로 남겨둠)
 pypy3 scripts/grind.py
 
 # 또는: 프리플랍 equity 채우기 (845스팟, 순수 워커) — pypy3 권장
+# 아레나가 없어 코어를 더 써도 되므로 --workers로 늘려도 됨 (예: --workers 10)
 pypy3 scripts/equity_worker.py --preflop-first
 
 # 또는: 파라미터 튜닝 캠페인 (봇이 스스로 강해짐, 결과는 tuning_results.json)
