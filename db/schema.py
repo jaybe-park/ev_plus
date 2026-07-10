@@ -2,7 +2,7 @@
 poker_simulator DB 스키마 정의 및 마이그레이션
 """
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -277,6 +277,17 @@ CREATE TABLE IF NOT EXISTS equity_cache_stats (
 );
 """
 
+# v10: next_mc_job/next_mc_batch의 프리플랍 대기 체크 쿼리
+# (WHERE exact=0 AND street='preflop' AND total < ?)를 뒷받침하는 인덱스가
+# 없어(v8에서 idx_equity_street를 "잉여"로 제거하며 이 쿼리를 놓침) 매 배치
+# 호출마다 equity_cache 전체(1억 행)를 풀스캔(~3.1초) — 프리플랍은 이미
+# 100% 완료라 항상 0건인데도 반복 발생. 프리플랍 대기 행만 담는(최대 845행)
+# 부분 인덱스로 해소.
+CREATE_EQUITY_PREFLOP_PENDING_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_equity_preflop_pending
+ON equity_cache(total) WHERE exact = 0 AND street = 'preflop';
+"""
+
 CREATE_WORKER_META = """
 CREATE TABLE IF NOT EXISTS worker_meta (
     key   TEXT PRIMARY KEY,
@@ -307,6 +318,9 @@ MIGRATIONS = {
     9: [
         CREATE_EQUITY_CACHE_STATS,
     ],
+    10: [
+        CREATE_EQUITY_PREFLOP_PENDING_INDEX,
+    ],
 }
 
 ALL_STATEMENTS = [
@@ -335,4 +349,6 @@ ALL_STATEMENTS = [
     CREATE_GAME_POS_INDEXES,
     # v9: equity_cache 집계 요약 테이블 (--status 풀스캔 회피)
     CREATE_EQUITY_CACHE_STATS,
+    # v10: 프리플랍 대기 체크 쿼리(next_mc_job/next_mc_batch) 전용 부분 인덱스
+    CREATE_EQUITY_PREFLOP_PENDING_INDEX,
 ]

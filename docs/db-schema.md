@@ -186,6 +186,22 @@ PRIMARY KEY(street, num_opponents). 갱신 로직은 `ai/equity.py`의 `bump_equ
 
 ---
 
+**인덱스 추가 (v10)** — `next_mc_job`/`next_mc_batch`의 프리플랍 대기 체크 쿼리
+(`WHERE exact=0 AND street='preflop' AND total < ?`)를 뒷받침하는 인덱스가 없어
+(v8에서 `idx_equity_street` 제거 시 이 쿼리 하나를 놓침) `equity_cache`(1억 행+) 풀스캔이
+매 배치 호출마다 발생 — 프리플랍은 이미 100% 완료라 항상 0건 반환하는데도 실측 ~3.1초
+소요. `--workers` 병렬 압축계산(2초대)은 정상인데 이 숨은 지연이 매번 더해져 배치
+전체가 10초+처럼 보였다. 부분 인덱스로 해소:
+```sql
+CREATE INDEX IF NOT EXISTS idx_equity_preflop_pending
+ON equity_cache(total) WHERE exact = 0 AND street = 'preflop';
+```
+프리플랍 대기 행만 담으므로(최대 845행) 항상 작게 유지된다. 적용 후 `EXPLAIN QUERY PLAN`이
+`SEARCH equity_cache USING INDEX idx_equity_preflop_pending`을 사용함을 확인, 해당 쿼리
+실행 시간 3.1초 → 마이크로초 단위로 개선(2026-07-10 실측).
+
+---
+
 ### worker_meta (v5)
 에퀴티 워커의 플랍 스윕 진행 커서 저장 (key-value).
 
