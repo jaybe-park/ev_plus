@@ -86,6 +86,19 @@ gto_postflop_hands       ← 포스트플랍 핸드별 빈도 (미사용)
 | BB vs [UTG open / CO 3bet] | 17/169 | ✅ GTO Wizard |
 | UTG vs CO 3bet | 51/169 | ✅ GTO Wizard |
 
+**미수집 추적 큐 정리 (2026-07-10)**
+
+`gto_missing_spots`에 기록되면 안 되는 오탐이 섞여 있던 버그를 수정했다.
+
+- `gto/advisor.py` RFI 판정이 포지션을 안 가려 림프 팟에서 BB가 레이즈하면
+  "BB RFI"로 오판(BB는 이미 강제 베팅 상태라 원천적으로 RFI 불가능). → 수정 후
+  `my_position != "BB"`일 때만 open range 조회/기록.
+- vs_3bet 판정이 `my_position == 오프너`인지 검증 안 해 "CO vs CO 3bet" 같은
+  논리적으로 불가능한 조합이 대량 기록됨(우리 데이터 모델은 오프너가 3벳에
+  대응하는 레인지만 수집). → 수정 후 my_position이 오프너일 때만 조회/기록.
+- 정리 결과: open 2→1(BTN/SB 헤즈업 갭만 유지), vs_3bet 65→12(위 4개 미완성
+  스팟에 대한 실제 갭만 남음), vs_open 18(변화 없음).
+
 ### vs_open — 미존재 (fold 100% 폴백)
 
 현재 기본 vs_open 12개 모두 수집 완료. 아래는 아직 없는 심화 스팟.

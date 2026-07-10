@@ -90,7 +90,10 @@ class GTOAdvisor:
         is_rfi = current_bet <= big_blind
 
         # RFI
-        if is_rfi:
+        # BB는 강제 베팅 상태라 "오픈(RFI)"이 원천적으로 불가능하다.
+        # 림프된 팟(current_bet == big_blind)에서 BB가 레이즈하는 상황은
+        # 우리 데이터 모델이 지원하지 않으므로 조회/기록 없이 폴백시킨다.
+        if is_rfi and my_position != "BB":
             range_data = get_open_range(my_position)
             if range_data is None:
                 _save_missing_spot("open", my_position, "", f"{my_position} RFI")
@@ -130,6 +133,11 @@ class GTOAdvisor:
             raisers = _find_raisers_in_log(action_log, positions)
             if len(raisers) >= 2:
                 opener_pos, three_bettor_pos = raisers[0], raisers[1]
+                # 우리 데이터 모델은 "원래 오프너가 3벳에 대응하는" 레인지만
+                # 수집한다. my_position이 오프너가 아니면(림프 후 대응 등)
+                # 데이터 모델 밖의 상황이므로 조회/기록 없이 None 반환.
+                if my_position != opener_pos:
+                    return None
                 range_data = get_vs_3bet_range(my_position, opener_pos, three_bettor_pos)
                 if range_data is None:
                     _save_missing_spot(
