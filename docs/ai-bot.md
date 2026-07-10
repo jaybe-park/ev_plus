@@ -89,11 +89,62 @@ decide_action(game_state)
   (대부분 플랍) → 배치 후 **20개** (약 1.8배). PyPy에서도 커서 close 패턴이
   유지되어 에러 없이 동일하게 동작 확인.
 
-### 백그라운드 워커
+### 워커 멀티프로세싱 (2026-07-10)
+
+그라인드/워커 실행 중 CPU 사용률이 낮았던 원인은 워커가 단일 프로세스·단일
+스레드(GIL)로 계산해 멀티코어 대부분이 유휴 상태였기 때문. SQLite는 동시
+쓰기가 근본 제약이므로 **"쓰기(DB 캐시 조회/저장)는 메인 프로세스 1개, 계산
+(순수 CPU 작업)은 워커 프로세스 N개"**로 분리해 `multiprocessing.Pool`을
+도입했다.
+
+- **리버** (`exact_counts_river`/`equity_via_board_table`): 원래 DB 접근이
+  없는 순수 함수라 그대로 병렬화. `process_river_batch_parallel()`이 배치를
+  실제 보드로 그룹화(기존 최적화 유지)한 뒤 그룹 단위로 `pool.map`에 분배.
+- **턴/플랍**: `exact_turn_dp`/`exact_flop_dp`는 자식 스팟을
+  `_lookup_exact`/`_upsert_exact`로 DB에 직접 읽고 쓰기 때문에 원본 함수를
+  그대로 워커 프로세스에 넘길 수 없다. "캐시 접근은 메인에서만, 순수 계산만
+  Pool로" 원칙으로 재구성:
+  - `exact_turn_dp_parallel()`: 46개 리버 자식의 spot_key를 먼저 계산해
+    `_batch_lookup_exact()`로 **한 번에** 캐시 조회 → 캐시 미적중 자식만
+    모아 `pool.map(_river_calc_job, ...)`로 `exact_counts_river`(순수 함수)를
+    병렬 계산 → 결과를 `_batch_upsert_exact()`로 일괄 저장 + 합산.
+  - `exact_flop_dp_parallel()`: 47개 턴 자식은 기존처럼 캐시 조회 후 없으면
+    `exact_turn_dp_parallel()`을 호출 — 그 내부의 46개 리버가 Pool로
+    병렬화된다. 47개 턴 자체를 동시에 병렬화하는 것은 과설계로 보고 생략
+    (리버 단위 병렬화만으로 충분한 스케일링을 확인, 아래 실측 참고).
+  - 기존 `exact_turn_dp`/`exact_flop_dp`(순차, `--workers 1` 경로)는 그대로
+    유지.
+- **MC 배치** (`mc_counts`): 순수 함수이므로 `pool.map(_mc_job, ...)`로 그대로
+  병렬화, 저장은 기존처럼 `wins=wins+?` 누적 executemany.
+- 메인 루프 우선순위(리버→턴→플랍→preflop/mc→스윕)는 그대로 유지, 각 단계가
+  `pool`이 있으면 병렬 함수를, 없으면(`--workers 1`) 기존 순차 함수를 호출.
+
+**정합성 검증**: 리버 5 + 턴 3 + 플랍 1 스팟을 `--workers 1`과 `--workers 4`
+각각(별도 DB)로 처리해 `(wins, ties, total)`이 완전히 동일함을 확인
+(9스팟 전부 일치, 캐시 없는 상태부터 처리 시간 7.33s → 2.34s).
+
+**성능 스케일링 실측** (2026-07-10, 12코어 맥, 신선한 DB/캐시 없음 상태):
+
+| workers | 턴 40스팟 | speedup | 플랍 2스팟 | speedup |
+|---|---|---|---|---|
+| 1  | 5.68s | x1.00 | 13.6s | x1.00 |
+| 2  | 3.36s | x1.69 | -     | -     |
+| 4  | 1.82s | x3.13 | 4.2s  | x3.25 |
+| 10 (기본) | 1.33s | x4.28 | 2.9s | x4.71 |
+
+코어 수 대비 완전한 선형 스케일링은 아니지만(풀 생성/IPC 오버헤드, 배치당
+작업 수가 워커 수보다 작을 때 유휴 워커 발생) 뚜렷한 이득이 확인된다.
+기본 워커 수는 `max(1, cpu_count()-2)`로 그라인드(`scripts/grind.py`)의
+아레나 프로세스 몫을 배려한다.
+
+**PyPy 호환**: `pypy3 scripts/equity_worker.py --workers 2 --minutes 0.3`
+에러 없이 정상 동작 확인 — `multiprocessing.Pool`은 PyPy에서도 지원된다.
 
 ```bash
 python3 scripts/equity_worker.py               # 무한 실행 (Ctrl+C 안전)
 python3 scripts/equity_worker.py --minutes 30       # 시간 제한
+python3 scripts/equity_worker.py --workers 1        # 순차 처리 (회귀 안전/디버깅용)
+python3 scripts/equity_worker.py --workers 4        # 병렬 워커 수 직접 지정
 python3 scripts/equity_worker.py --preflop-first    # 프리플랍 845스팟부터 (순수 워커용)
 python3 scripts/equity_worker.py --status           # 현황
 ```

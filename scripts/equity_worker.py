@@ -25,6 +25,7 @@ Ctrl+C로 언제든 중단해도 진행분은 저장되고, 다시 실행하면 
 """
 
 import argparse
+import multiprocessing
 import sqlite3
 import sys
 import os
@@ -40,6 +41,10 @@ from ai.equity import (
     exact_counts_river, street_of, _FULL_DECK,
     board_rank_table, equity_via_board_table,
 )
+
+# 기본 워커 수: CPU-2 (그라인드의 아레나 프로세스 몫 배려). --workers 1이면
+# 기존 순차 경로 그대로 사용(회귀 안전, 디버깅용).
+DEFAULT_WORKERS = max(1, (os.cpu_count() or 2) - 2)
 from db.connection import get_connection
 
 # 배치 인출/저장 크기 (작업 3 — 워커 배치 인출/저장)
@@ -225,6 +230,236 @@ def process_river_batch(conn, jobs) -> list:
         f"(board_rank_table {len(groups)}회 구축), 저장 {saved}건, {dt:.2f}s"
     )
     return logs
+
+
+# ──────────────────────────────────────────
+# 멀티프로세싱 병렬화 (--workers N)
+#
+# SQLite는 동시 쓰기가 근본 제약이므로 "쓰기는 메인 프로세스 1개, 계산(순수
+# CPU 작업, DB 접근 없음)은 워커 프로세스 N개"로 분리한다. 아래 _*_job 함수들은
+# multiprocessing.Pool.map으로 자식 프로세스에 전달되므로 DB 커넥션을 절대
+# 받지 않고, (결과..., job_id) 튜플만 반환한다 — 저장은 메인 프로세스가
+# 기존 _flush_exact_updates/executemany로 단독 수행한다.
+#
+# 리버(exact_counts_river/equity_via_board_table)와 MC(mc_counts)는 원래
+# DB 접근이 없는 순수 함수라 그대로 병렬화 가능하다.
+#
+# 턴(exact_turn_dp)/플랍(exact_flop_dp)은 내부에서 자식 스팟을
+# _lookup_exact/_upsert_exact로 캐시 조회/저장하기 때문에 원본 함수를 그대로
+# 워커 프로세스에 넘길 수는 없다. 하지만 "캐시 접근은 메인에서만, 순수 계산만
+# Pool로" 원칙을 지키면 캐시 이득을 유지하면서도 병렬화할 수 있다:
+#   턴 = 46개 리버 자식의 합. 메인이 46개 spot_key를 먼저 계산해 한 번에
+#   배치 조회(_batch_lookup_exact)하고, 캐시에 없는 자식들만 모아 Pool.map으로
+#   exact_counts_river(순수 함수)를 병렬 실행 → 메인이 결과를 모아 배치
+#   upsert(_batch_upsert_exact) + 합산.
+#   플랍 = 47개 턴 자식의 합. 턴 자식 자체는 기존처럼 캐시 조회 후 없으면
+#   exact_turn_dp_parallel을 호출 — 그러면 각 턴 자식 내부의 46개 리버가
+#   Pool로 병렬화된다. 47개 턴을 동시에 병렬화하는 건 과설계이므로 생략하고,
+#   "리버 46개 단위 병렬화"만으로 충분한 이득을 노린다(docs/ai-bot.md 실측 참고).
+# ──────────────────────────────────────────
+
+
+def _river_calc_job(args):
+    """워커 프로세스에서 실행 — 순수 exact_counts_river 1건 계산."""
+    ck, hole, board5 = args
+    w, t, n = exact_counts_river(hole, board5)
+    return (ck, w, t, n)
+
+
+def _river_group_job(args):
+    """워커 프로세스에서 실행 — 같은 보드를 공유하는 리버 잡 묶음을 계산."""
+    board, items = args  # items: list of (job_id, hole)
+    table = board_rank_table(board)
+    results = []
+    for job_id, hole in items:
+        w, t, n = equity_via_board_table(hole, board, table)
+        results.append((w, t, n, job_id))
+    return results
+
+
+def _mc_job(args):
+    """워커 프로세스에서 실행 — MC 샘플링 1스팟."""
+    job_id, hole, board, num_opp, num_sim = args
+    w, t, n = mc_counts(hole, board, num_opp, num_sim)
+    return (w, t, n, job_id)
+
+
+def process_river_batch_parallel(conn, jobs, pool) -> list:
+    """process_river_batch의 병렬 버전 — 보드별 그룹을 pool.map으로 워커에 분배."""
+    groups: dict = defaultdict(list)
+    boards: dict = {}
+    for job in jobs:
+        hole, board = decode_key(job["spot_key"])
+        board_key = tuple(sorted((c.rank.rank_value, c.suit.value) for c in board))
+        groups[board_key].append((job["id"], hole))
+        boards.setdefault(board_key, board)
+
+    tasks = [(boards[bk], items) for bk, items in groups.items()]
+    t0 = time.time()
+    group_results = pool.map(_river_group_job, tasks)
+    updates = [row for group in group_results for row in group]
+    saved = _flush_exact_updates(conn, updates)
+    dt = time.time() - t0
+    return [
+        f"✅ [배치-리버-병렬] {len(jobs)}스팟 → 실제보드 {len(groups)}그룹 "
+        f"(workers={pool._processes}), 저장 {saved}건, {dt:.2f}s"
+    ]
+
+
+def _batch_lookup_exact(conn, spot_keys: list) -> dict:
+    """여러 spot_key의 exact=1 캐시(wins,ties,total)를 한 번에 조회."""
+    if not spot_keys:
+        return {}
+    placeholders = ",".join("?" * len(spot_keys))
+    cur = conn.execute(
+        f"SELECT spot_key, wins, ties, total FROM equity_cache "
+        f"WHERE spot_key IN ({placeholders}) AND num_opponents=1 AND exact=1",
+        spot_keys,
+    )
+    result = {
+        row["spot_key"]: (row["wins"], row["ties"], row["total"])
+        for row in cur.fetchall()
+    }
+    cur.close()
+    return result
+
+
+def _batch_upsert_exact(conn, street: str, rows: list) -> None:
+    """(spot_key, wins, ties, total) 리스트를 한 번에 upsert (커밋은 호출자가)."""
+    if not rows:
+        return
+    sql = (
+        "INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact) "
+        "VALUES(?,?,1,?,?,?,1) "
+        "ON CONFLICT(spot_key, num_opponents) DO UPDATE SET "
+        "wins=excluded.wins, ties=excluded.ties, total=excluded.total, "
+        "exact=1, updated_at=datetime('now')"
+    )
+    params = [(street, ck, w, t, n) for ck, w, t, n in rows]
+    cur = conn.executemany(sql, params)
+    cur.close()
+
+
+def exact_turn_dp_parallel(conn, hole, board4, pool) -> tuple:
+    """
+    턴 전수조사 — exact_turn_dp와 수학적으로 동일(46개 리버 자식의 합)하지만
+    캐시 조회/저장은 메인 프로세스가 배치로 처리하고, 캐시 미적중 자식들의
+    exact_counts_river(순수 함수) 계산만 Pool로 병렬 분배한다.
+    pool=None이면 순차로 계산(테스트/폴백용).
+    """
+    known = set(hole) | set(board4)
+    deck = [c for c in _FULL_DECK if c not in known]
+    river_specs = [(canonical_key(hole, board4 + [river]), river) for river in deck]
+
+    cache = _batch_lookup_exact(conn, [ck for ck, _ in river_specs])
+
+    W = T = 0.0
+    N = 0
+    hits = 0
+    to_compute = []  # (ck, hole, board5)
+    for ck, river in river_specs:
+        if ck in cache:
+            w, t, n = cache[ck]
+            W += w; T += t; N += n
+            hits += 1
+        else:
+            to_compute.append((ck, hole, board4 + [river]))
+
+    if to_compute:
+        if pool is not None:
+            results = pool.map(_river_calc_job, to_compute)
+        else:
+            results = [_river_calc_job(task) for task in to_compute]
+        _batch_upsert_exact(conn, "river", results)
+        for ck, w, t, n in results:
+            W += w; T += t; N += n
+
+    return W, T, N, hits
+
+
+def exact_flop_dp_parallel(conn, hole, board3, pool) -> tuple:
+    """
+    플랍 전수조사 — 47개 턴 자식의 합(exact_flop_dp와 동일 수학).
+    턴 자식은 기존처럼 캐시 조회 후 없으면 exact_turn_dp_parallel로 계산 —
+    그 내부에서 46개 리버가 Pool로 병렬화된다. 47개 턴을 동시에 병렬화하는
+    건 과설계로 보고 생략(리버 단위 병렬화로 충분한 이득을 노림).
+    """
+    known = set(hole) | set(board3)
+    deck = [c for c in _FULL_DECK if c not in known]
+    W = T = 0.0
+    N = 0
+    hits = 0
+    for turn in deck:
+        b4 = board3 + [turn]
+        ck = canonical_key(hole, b4)
+        row = _lookup_exact(conn, ck)
+        if row:
+            w, t, n = row["wins"], row["ties"], row["total"]
+            hits += 1
+        else:
+            w, t, n, _ = exact_turn_dp_parallel(conn, hole, b4, pool)
+            _upsert_exact(conn, "turn", ck, w, t, n)
+            conn.commit()  # 턴 자식 단위로 진행분 보존 (exact_flop_dp와 동일)
+        W += w; T += t; N += n
+    return W, T, N, hits
+
+
+def process_turn_flop_batch_parallel(conn, street: str, jobs, pool) -> list:
+    """
+    턴/플랍 배치 병렬 버전 — 계산은 exact_turn_dp_parallel/exact_flop_dp_parallel로
+    수행(내부에서 리버 계산이 Pool로 분배됨), 최종 결과 저장은 기존과 동일하게
+    BATCH_COMMIT 단위 executemany로 모아 커밋한다.
+    """
+    logs = []
+    pending_updates = []
+
+    def flush():
+        n = _flush_exact_updates(conn, pending_updates)
+        pending_updates.clear()
+        return n
+
+    for job in jobs:
+        hole, board = decode_key(job["spot_key"])
+        t0 = time.time()
+        if street == "turn":
+            wins, ties, total, hits = exact_turn_dp_parallel(conn, hole, board, pool)
+        else:
+            wins, ties, total, hits = exact_flop_dp_parallel(conn, hole, board, pool)
+        pending_updates.append((wins, ties, total, job["id"]))
+        eq = (wins + 0.5 * ties) / total
+        hit_info = f", 캐시적중 {hits}" if hits else ""
+        logs.append(
+            f"✅ [배치-{street}-병렬] {job['spot_key']:24s} "
+            f"equity={eq:.4f} ({total:,}조합, {time.time()-t0:.1f}s{hit_info})"
+        )
+        if len(pending_updates) >= BATCH_COMMIT:
+            flush()
+
+    flush()
+    return logs
+
+
+def process_mc_batch_parallel(conn, jobs, pool) -> list:
+    """MC 배치 병렬 버전 — mc_counts를 워커에 분배, 저장은 executemany(+=) 누적."""
+    tasks = []
+    for job in jobs:
+        hole, board = decode_key(job["spot_key"])
+        tasks.append((job["id"], hole, board, job["num_opponents"], MC_CHUNK))
+    t0 = time.time()
+    results = pool.map(_mc_job, tasks)
+    sql = (
+        "UPDATE equity_cache SET wins=wins+?, ties=ties+?, total=total+?, "
+        "updated_at=datetime('now') WHERE id=? AND exact=0"
+    )
+    for i in range(0, len(results), BATCH_COMMIT):
+        chunk = results[i:i + BATCH_COMMIT]
+        cur = conn.executemany(sql, chunk)
+        cur.close()
+        conn.commit()
+    dt = time.time() - t0
+    return [
+        f"📈 [배치샘플-병렬] {len(jobs)}스팟 (workers={pool._processes}), {dt:.2f}s"
+    ]
 
 
 # ──────────────────────────────────────────
@@ -686,6 +921,11 @@ def main():
     parser.add_argument("--preflop-first", action="store_true",
                         help="프리플랍 845스팟 샘플링을 전수조사보다 우선")
     parser.add_argument("--status", action="store_true", help="진행 현황만 출력")
+    parser.add_argument(
+        "--workers", type=int, default=DEFAULT_WORKERS,
+        help=f"병렬 워커 프로세스 수 (기본 {DEFAULT_WORKERS} = CPU-2). "
+             "1이면 기존 순차 경로 그대로 사용(회귀 안전)."
+    )
     args = parser.parse_args()
 
     conn = get_connection()
@@ -703,6 +943,13 @@ def main():
     cur = conn.execute("ANALYZE")
     cur.close()
     conn.commit()
+
+    pool = None
+    if args.workers > 1:
+        pool = multiprocessing.Pool(processes=args.workers)
+        print(f"병렬 워커 {args.workers}개 (turn/flop: 캐시는 메인, 리버 순수계산은 Pool)")
+    else:
+        print("순차 모드 (--workers 1)")
 
     deadline = time.time() + args.minutes * 60 if args.minutes else None
     done_count = 0
@@ -724,7 +971,11 @@ def main():
                     continue
                 if jobs:
                     try:
-                        for line in process_mc_batch(conn, jobs):
+                        mc_lines = (
+                            process_mc_batch_parallel(conn, jobs, pool) if pool
+                            else process_mc_batch(conn, jobs)
+                        )
+                        for line in mc_lines:
                             print(line)
                     except sqlite3.OperationalError:
                         print("⏳ DB 쓰기 경합 — 1초 후 재시도")
@@ -741,9 +992,20 @@ def main():
             if jobs:
                 try:
                     if street == "river":
-                        lines = process_river_batch(conn, jobs)
+                        lines = (
+                            process_river_batch_parallel(conn, jobs, pool) if pool
+                            else process_river_batch(conn, jobs)
+                        )
+                    elif street == "turn":
+                        lines = (
+                            process_turn_flop_batch_parallel(conn, "turn", jobs, pool) if pool
+                            else process_turn_flop_batch(conn, "turn", jobs)
+                        )
                     else:
-                        lines = process_turn_flop_batch(conn, street, jobs)
+                        lines = (
+                            process_turn_flop_batch_parallel(conn, "flop", jobs, pool) if pool
+                            else process_turn_flop_batch(conn, "flop", jobs)
+                        )
                     for line in lines:
                         print(line)
                 except sqlite3.OperationalError:
@@ -759,7 +1021,11 @@ def main():
                     continue
                 if jobs:
                     try:
-                        for line in process_mc_batch(conn, jobs):
+                        mc_lines = (
+                            process_mc_batch_parallel(conn, jobs, pool) if pool
+                            else process_mc_batch(conn, jobs)
+                        )
+                        for line in mc_lines:
                             print(line)
                     except sqlite3.OperationalError:
                         print("⏳ DB 쓰기 경합 — 1초 후 재시도")
@@ -779,6 +1045,10 @@ def main():
 
     except KeyboardInterrupt:
         print(f"\n⏸  중단됨 — {done_count}개 작업 저장 완료. 재실행하면 이어서 계산합니다.")
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
 
     show_status(conn)
     conn.close()
