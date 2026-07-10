@@ -107,7 +107,7 @@ gto_postflop_hands       ← 포스트플랍 핸드별 빈도 (미사용)
 
 ### 준비
 1. 서버 HTTPS 실행: `./start.sh`
-2. Chrome에서 `https://localhost:8000` 접속 → 인증서 허용 (`thisisunsafe` 입력)
+2. Chrome에서 `https://localhost:8765` 접속 → 인증서 허용 (`thisisunsafe` 입력)
 3. GTO Wizard 로그인 (핫스팟 필요 — 회사 와이파이 차단)
 
 ### URL 패턴 (6-max, Cash6mGeneral_6mNL25R25, 100bb)
@@ -170,7 +170,7 @@ async function extractAndSave(position, label) {
     if (!Object.keys(freqs).length) freqs.fold = 1;
     hands[hand] = freqs;
   }
-  const r = await fetch('https://localhost:8000/gto/preflop/save', {
+  const r = await fetch('https://localhost:8765/gto/preflop/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ position, vs_position: null, range_type: 'open',

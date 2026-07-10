@@ -3,6 +3,9 @@
 SQLite 기반. `poker.db` 파일로 저장.  
 v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**된다 (RL 학습 데이터).
 
+현재 `SCHEMA_VERSION = 8` (`db/schema.py`). 마이그레이션은 `db/connection.py`가
+현재 버전 초과분만 순서대로 실행한다 (`MIGRATIONS` dict, 버전별 1회성 DDL).
+
 ---
 
 ## 테이블 구조
@@ -25,6 +28,8 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 | `pot_total` | INTEGER | 최종 팟 크기 |
 | `winner_pos` | TEXT | JSON 배열 `["BTN"]` |
 | `player_results` | TEXT | JSON `{"BTN":{"start":1000,"end":1150}}` |
+
+**인덱스**: `idx_games_played (played_at)` — 시각 기준 조회/정렬용.
 
 ---
 
@@ -72,6 +77,38 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 
 ---
 
+### gto_preflop_situations / gto_preflop_hands (v2)
+프리플랍 GTO 레인지 데이터. `situations`가 상황(포지션/상대/타입) 단위,
+`hands`가 상황별 169핸드 각각의 액션 빈도. 상세 데이터 현황은
+[GTO 데이터 문서](gto-data.md) 참고.
+
+| 테이블 | 컬럼 | 설명 |
+|---|---|---|
+| `gto_preflop_situations` | `position` / `vs_position` / `range_type` | open / vs_open / vs_3bet, `vs_position` NULL=RFI |
+| | `raise_size`, `situation_label` | 사이즈 표기, 사람이 읽는 설명 |
+| `gto_preflop_hands` | `situation_id` | situations FK (ON DELETE CASCADE) |
+| | `hand` | "AKs" / "AA" / "K7o" 등 169핸드 표기 |
+| | `freq_fold/call/raise/allin` | 액션별 빈도 0~1, 합≈1.0 |
+
+**인덱스**: `idx_gto_pre_sit (position, vs_position, range_type)` — 상황 조회,
+`idx_gto_pre_hand (situation_id, hand)` — 핸드별 빈도 조회.
+
+### gto_postflop_situations / gto_postflop_hands (v2, 미사용)
+포스트플랍 GTO 데이터용으로 v2에 스키마만 선반영. 아직 데이터 수집 전이라
+`gto/loader.py`에서 사용하지 않는다 (봇은 equity 휴리스틱으로 대체).
+
+| 테이블 | 컬럼 | 설명 |
+|---|---|---|
+| `gto_postflop_situations` | `street`, `ip_position`, `oop_position` | flop/turn/river, IP/OOP 포지션 |
+| | `pot_type`, `action_sequence`, `raise_size` | SRP/3BP/4BP, "check-bet" 등 |
+| `gto_postflop_hands` | `situation_id`, `hand` | situations FK, 169핸드 표기 |
+| | `freq_check/fold/call/raise_33~100/allin` | 팟 대비 사이즈별 빈도 |
+
+**인덱스**: `idx_gto_post_sit (street, ip_position, oop_position)`,
+`idx_gto_post_hand (situation_id, hand)`.
+
+---
+
 ### gto_missing_spots (v3)
 플레이 중 만난 GTO 데이터 없는 스팟 큐. 수집모드가 소비.
 
@@ -83,6 +120,8 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 | `range_type` | TEXT | open / vs_open / vs_3bet |
 | `gto_wizard_url` | TEXT | 직접 이동 URL (사전 계산) |
 | `collected` | INTEGER | 수집 완료 여부 |
+
+**인덱스**: `idx_gto_missing_collected (collected)` — 미수집(0) 큐 조회용.
 
 ---
 

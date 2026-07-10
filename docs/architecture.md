@@ -8,13 +8,13 @@
     ▼
 FastAPI 서버 (server/)
     │
-    ├─ WebGameSession (server/session.py)
-    │       │
-    │       ├─ TexasHoldem (core/game.py)   ← 게임 엔진
-    │       ├─ PokerBot    (ai/bot.py)       ← AI 봇
-    │       └─ GTOAdvisor  (gto/advisor.py) ← GTO 힌트
-    │
-    └─ [미연결] DB Recorder (db/recorder.py)
+    └─ WebGameSession (server/session.py)
+            │
+            ├─ TexasHoldem   (core/game.py)     ← 게임 엔진
+            ├─ PokerBot      (ai/bot.py)         ← AI 봇 (ai/equity.py 사용)
+            ├─ GTOAdvisor    (gto/advisor.py)    ← GTO 힌트
+            ├─ grade_action  (gto/grader.py)     ← 플레이 평가(Play Grader)
+            └─ GameRecorder  (db/recorder.py)    ← 핸드/액션 DB 자동 기록 (v6부터 연결)
 ```
 
 ## 모듈 의존성
@@ -30,14 +30,30 @@ core/          ← 순수 게임 로직, 외부 의존 없음
 ai/            ← core/ 사용
   bot.py       ← core/game, core/player, core/card, gto/advisor
 
-gto/           ← core/card 사용
-  loader.py    ← gto_data/ JSON 파일 로드
-  advisor.py   ← gto/loader, core/card
+gto/           ← core/card, db/ 사용
+  loader.py    ← DB(gto_preflop_*) 로드 (앱 시작 시 캐시)
+  advisor.py   ← gto/loader, core/card — 미수집 스팟은 gto_missing_spots에 기록
+  grader.py    ← 플레이 평가(Play Grader) 판정 엔진 (GTO 빈도 / equity 기반)
+  url_generator.py ← GTO Wizard 직접 이동 URL 생성
 
-server/        ← core/, ai/, gto/ 사용
-  session.py   ← 핵심: 웹용 스텝 방식 게임 루프
+db/            ← 순수 SQLite 계층, 외부 의존 없음
+  schema.py    ← 테이블/인덱스 DDL + 버전별 마이그레이션 (SCHEMA_VERSION)
+  connection.py ← 커넥션 관리 (EV_PLUS_DB 환경변수로 테스트 격리)
+  recorder.py  ← GameRecorder — 핸드/액션 기록 (RL 학습 데이터)
+
+ai/            ← core/, db/ 사용
+  bot.py       ← core/game, core/player, core/card, gto/advisor, ai/equity
+  equity.py    ← MC 샘플링 + 전수조사 + equity_cache DB 누적
+
+server/        ← core/, ai/, gto/, db/ 사용
+  session.py   ← 핵심: 웹용 스텝 방식 게임 루프, GameRecorder/에퀴티/평가 연결
   main.py      ← FastAPI 라우터
   schemas.py   ← Pydantic 모델
+
+scripts/       ← db/, ai/, core/ 사용
+  equity_worker.py ← 에퀴티 전수조사/샘플링 워커
+  bot_arena.py     ← 봇 vs 봇 시뮬레이션
+  grind.py         ← 아레나 + 워커 동시 실행
 
 web/           ← server/ API 호출
   src/api.ts   ← fetch 래퍼
@@ -90,5 +106,9 @@ POST /game/{id}/next-hand
   gto_hint,         // "📊 GTO [AKs] BTN RFI: 레이즈 100%"
   action_log,       // 최근 30개 액션 문자열
   call_amount, min_raise_to,
+  equity,           // 실시간 에퀴티 패널. waiting_for_action=true && 사람 미폴드 시만 값 존재
+  hand_review,      // 플레이 평가(Play Grader). hand_over=true일 때만 값 존재
 }
 ```
+
+필드 상세 타입(`EquityInfo`, `HandReviewEntry` 등)은 [API 문서](api.md) 참고.

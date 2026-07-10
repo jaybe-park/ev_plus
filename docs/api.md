@@ -1,7 +1,7 @@
 # API 명세
 
-베이스 URL: `http://localhost:8000`  
-개발 모드 문서 (Swagger): `http://localhost:8000/docs`
+베이스 URL: `https://localhost:8765`  
+개발 모드 문서 (Swagger): `https://localhost:8765/docs`
 
 ---
 
