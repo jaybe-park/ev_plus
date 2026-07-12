@@ -2,7 +2,7 @@
 poker_simulator DB 스키마 정의 및 마이그레이션
 """
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -149,13 +149,16 @@ CREATE INDEX IF NOT EXISTS idx_preflop_game_pos  ON preflop_actions(game_uuid, p
 CREATE INDEX IF NOT EXISTS idx_postflop_game_pos ON postflop_actions(game_uuid, position);
 """
 
+# v11: raise_size를 TEXT("3x" 플레이스홀더) → REAL(bb 단위 실측 raise-to 숫자,
+# 예: 8.0, 11.0, 13.5)로 변경. 사이징은 배수 공식으로 추론 불가 — GTO Wizard에서
+# 실측한 값만 저장한다 (docs/gto-data.md 2026-07-10 근본 원인 참고).
 CREATE_GTO_PREFLOP_SITUATIONS = """
 CREATE TABLE IF NOT EXISTS gto_preflop_situations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     position        TEXT    NOT NULL,   -- BTN, CO, MP, UTG, SB, BB
     vs_position     TEXT,               -- NULL = RFI, 오프너 포지션 = vs_open/vs_3bet
     range_type      TEXT    NOT NULL,   -- open | vs_open | vs_3bet
-    raise_size      TEXT,               -- "2.5bb", "3x"
+    raise_size      REAL,               -- bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5)
     situation_label TEXT    NOT NULL,   -- "BTN RFI", "BB vs BTN open"
     UNIQUE(position, vs_position, range_type)
 );
@@ -212,8 +215,11 @@ CREATE INDEX IF NOT EXISTS idx_gto_post_sit  ON gto_postflop_situations(street, 
 CREATE INDEX IF NOT EXISTS idx_gto_post_hand ON gto_postflop_hands(situation_id, hand);
 """
 
-CREATE_GTO_MISSING_SPOTS = """
-CREATE TABLE IF NOT EXISTS gto_missing_spots (
+# v11: gto_missing_spots → gto_missing_spots_preflop 개명. 포스트플랍 GTO
+# 추상화 작업 시 별도 gto_missing_spots_postflop이 필요해질 것을 대비해
+# 미리 이름공간 분리 (docs/gto-postflop.md 참고).
+CREATE_GTO_MISSING_SPOTS_PREFLOP = """
+CREATE TABLE IF NOT EXISTS gto_missing_spots_preflop (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     street          TEXT    NOT NULL DEFAULT 'preflop',  -- preflop | flop | turn | river
     position        TEXT    NOT NULL,   -- 결정 주체 포지션
@@ -228,8 +234,8 @@ CREATE TABLE IF NOT EXISTS gto_missing_spots (
 );
 """
 
-CREATE_GTO_MISSING_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_gto_missing_collected ON gto_missing_spots(collected);
+CREATE_GTO_MISSING_PREFLOP_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_gto_missing_preflop_collected ON gto_missing_spots_preflop(collected);
 """
 
 CREATE_EQUITY_CACHE = """
@@ -321,6 +327,15 @@ MIGRATIONS = {
     10: [
         CREATE_EQUITY_PREFLOP_PENDING_INDEX,
     ],
+    11: [
+        # 근본 버그(콜/올인 색상 임계값 오탐)로 손상된 프리플랍 GTO 데이터 전량
+        # 무효화 + raise_size TEXT("3x" 플레이스홀더) → REAL(실측 bb) 재정의.
+        # 이미 데이터를 지우는 참이라 컬럼 마이그레이션 대신 DROP 후 재생성.
+        "DROP TABLE IF EXISTS gto_preflop_hands;",
+        "DROP TABLE IF EXISTS gto_preflop_situations;",
+        "DROP INDEX IF EXISTS idx_gto_missing_collected;",
+        "ALTER TABLE gto_missing_spots RENAME TO gto_missing_spots_preflop;",
+    ],
 }
 
 ALL_STATEMENTS = [
@@ -335,9 +350,9 @@ ALL_STATEMENTS = [
     CREATE_GTO_POSTFLOP_SITUATIONS,
     CREATE_GTO_POSTFLOP_HANDS,
     CREATE_GTO_INDEXES,
-    # v3: 미수집 스팟 큐
-    CREATE_GTO_MISSING_SPOTS,
-    CREATE_GTO_MISSING_INDEX,
+    # v3: 미수집 스팟 큐 (v11: gto_missing_spots → gto_missing_spots_preflop 개명)
+    CREATE_GTO_MISSING_SPOTS_PREFLOP,
+    CREATE_GTO_MISSING_PREFLOP_INDEX,
     # v4: 에퀴티 캐시 (전수조사 워커 + 봇 런타임 공유)
     CREATE_EQUITY_CACHE,
     # v5: 워커 진행 커서 (체계적 플랍 스윕 재개용)

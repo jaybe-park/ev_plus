@@ -32,7 +32,7 @@ ai/            ← core/ 사용
 
 gto/           ← core/card, db/ 사용
   loader.py    ← DB(gto_preflop_*) 로드 (앱 시작 시 캐시)
-  advisor.py   ← gto/loader, core/card — 미수집 스팟은 gto_missing_spots에 기록
+  advisor.py   ← gto/loader, core/card — 미수집 스팟은 gto_missing_spots_preflop에 기록
   grader.py    ← 플레이 평가(Play Grader) 판정 엔진 (GTO 빈도 / equity 기반)
   url_generator.py ← GTO Wizard 직접 이동 URL 생성
 

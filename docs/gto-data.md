@@ -3,6 +3,14 @@
 프리플랍 레인지 데이터를 SQLite DB(`poker.db`)로 관리한다.
 GTO Wizard에서 Claude in Chrome MCP로 추출해 저장한다.
 
+> ⚠️ **2026-07-10 파서 버그로 전량 무효화, 재수집 대기 중.**
+> `colorToAction()`의 RGB 임계값 버그(콜 `b < 80` — 실제 콜색 b=94라 상시 거짓,
+> 올인 `r < 150` — 실제 올인색 r=153 경계로 불안정)로 콜 세그먼트 100% 유실,
+> 올인 세그먼트 간헐적 유실. 아래 "현재 저장된 데이터 현황" 표는 **역사적 기록**이며
+> 실제 DB의 `gto_preflop_situations`/`gto_preflop_hands`는 2026-07-12 전량 삭제됐다.
+> `raise_size`도 대부분 `"3x"` 등 플레이스홀더였던 것을 REAL(실측 bb) 컬럼으로 교체.
+> 재수집 시 아래 수정된 `colorToAction()`을 사용할 것 (5~7번 항목, TODO.md 참고).
+
 ---
 
 ## DB 테이블 구조
@@ -146,8 +154,13 @@ https://app.gtowizard.com/solutions?solution_type=gwiz&gametype=Cash6mGeneral_6m
 ### 추출 원리
 
 GTO Wizard 레인지 그리드 각 셀의 `background-size` CSS 속성에 action 빈도가 인코딩됨:
-- 색상 매핑: 빨강 `rgb(240,60,60)` = raise, 파랑 `rgb(61,124,184)` = fold, 진빨강 `rgb(125,31,31)` = allin
+- 색상 매핑: 빨강 `rgb(240,60,60)` = raise, 파랑 `rgb(61,124,184)` = fold,
+  초록 `#22c55e = rgb(34,197,94)` = call, 진빨강 `#991b1b = rgb(153,27,27)` = allin
 - bgSize는 누적값: `"21% 100%, 100% 100%"` → raise 21%, fold 79%
+- ⚠️ 아래 `colorToAction()`은 2026-07-10 확정된 버그(콜 `b < 80` — 실제 b=94라 상시
+  거짓, 올인 `r < 150` — 실제 r=153 경계라 안티앨리어싱에 불안정) **수정 반영판**이다.
+  재수집 시 반드시 이 버전을 사용할 것 (임계값 부등식 대신 정확한 hex 매칭이 더
+  안전하니, Playwright 자동화 구현 시 그 방식으로 교체 고려).
 
 ### 저장 스크립트 (Chrome DevTools에서 실행)
 
@@ -158,9 +171,9 @@ async function extractAndSave(position, label) {
     if (!m) return null;
     const [r, g, b] = [+m[1], +m[2], +m[3]];
     if (r > 200 && g < 100 && b < 100) return 'raise';
-    if (r > 80 && r < 150 && g < 50 && b < 50) return 'allin';
+    if (r > 80 && r < 160 && g < 50 && b < 50) return 'allin';   // 수정: r<150 → r<160 (실제 r=153)
     if (r < 100 && g > 80 && b > 150) return 'fold';
-    if (r < 80 && g > 150 && b < 80) return 'call';
+    if (r < 80 && g > 150 && b < 110) return 'call';             // 수정: b<80 → b<110 (실제 b=94)
     return null;
   }
   const cells = document.querySelectorAll('[data-tst^="range_table_cell_0_"]');

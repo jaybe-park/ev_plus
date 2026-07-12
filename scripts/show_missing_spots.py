@@ -22,7 +22,7 @@ def main():
         f"""
         SELECT id, street, range_type, position, vs_position,
                situation_label, gto_wizard_url, collected, discovered_at
-        FROM gto_missing_spots
+        FROM gto_missing_spots_preflop
         {where}
         ORDER BY street, range_type, position, vs_position
         """

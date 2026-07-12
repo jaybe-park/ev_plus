@@ -3,7 +3,7 @@
 SQLite 기반. `poker.db` 파일로 저장.  
 v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**된다 (RL 학습 데이터).
 
-현재 `SCHEMA_VERSION = 8` (`db/schema.py`). 마이그레이션은 `db/connection.py`가
+현재 `SCHEMA_VERSION = 11` (`db/schema.py`). 마이그레이션은 `db/connection.py`가
 현재 버전 초과분만 순서대로 실행한다 (`MIGRATIONS` dict, 버전별 1회성 DDL).
 
 ---
@@ -85,7 +85,8 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 | 테이블 | 컬럼 | 설명 |
 |---|---|---|
 | `gto_preflop_situations` | `position` / `vs_position` / `range_type` | open / vs_open / vs_3bet, `vs_position` NULL=RFI |
-| | `raise_size`, `situation_label` | 사이즈 표기, 사람이 읽는 설명 |
+| | `raise_size` (REAL, v11) | bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5). v10까지는 TEXT("3x" 플레이스홀더)였으나 사이징이 배수 공식으로 추론 불가함이 확인돼(포지션마다 배수가 다름) 실측 숫자만 저장하도록 변경 — [GTO 데이터 문서](gto-data.md) 참고 |
+| | `situation_label` | 사람이 읽는 설명 |
 | `gto_preflop_hands` | `situation_id` | situations FK (ON DELETE CASCADE) |
 | | `hand` | "AKs" / "AA" / "K7o" 등 169핸드 표기 |
 | | `freq_fold/call/raise/allin` | 액션별 빈도 0~1, 합≈1.0 |
@@ -109,8 +110,10 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 
 ---
 
-### gto_missing_spots (v3)
-플레이 중 만난 GTO 데이터 없는 스팟 큐. 수집모드가 소비.
+### gto_missing_spots_preflop (v3, v11에 개명)
+플레이 중 만난 GTO 데이터 없는 프리플랍 스팟 큐. 수집모드가 소비.
+v11에서 `gto_missing_spots` → `gto_missing_spots_preflop`으로 개명 (포스트플랍 GTO
+추상화 작업 시 별도 `gto_missing_spots_postflop`이 필요해질 것을 대비한 이름공간 분리).
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -121,7 +124,7 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 | `gto_wizard_url` | TEXT | 직접 이동 URL (사전 계산) |
 | `collected` | INTEGER | 수집 완료 여부 |
 
-**인덱스**: `idx_gto_missing_collected (collected)` — 미수집(0) 큐 조회용.
+**인덱스**: `idx_gto_missing_preflop_collected (collected)` — 미수집(0) 큐 조회용.
 
 ---
 

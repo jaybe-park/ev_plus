@@ -23,7 +23,7 @@ def _save_missing_spot(
         conn = get_connection()
         conn.execute(
             """
-            INSERT OR IGNORE INTO gto_missing_spots
+            INSERT OR IGNORE INTO gto_missing_spots_preflop
                 (street, position, vs_position, range_type, situation_label, gto_wizard_url)
             VALUES ('preflop', ?, ?, ?, ?, ?)
             """,
@@ -99,11 +99,16 @@ class GTOAdvisor:
                 _save_missing_spot("open", my_position, "", f"{my_position} RFI")
                 return None
             freqs = get_action_frequencies(range_data, hand)
+            if freqs is None:
+                # 핸드 데이터 손상(로드 시 스킵됨) 또는 미수집 — 특정 액션에
+                # 몰아주지 않고 상위(봇)가 휴리스틱 폴백을 타도록 None 반환.
+                return None
             return {
                 "hand": hand,
                 "frequencies": freqs,
                 "situation": range_data.get("situation", f"{my_position} RFI"),
-                "raise_size": range_data.get("raise_size", "2.5bb"),
+                # 실측 bb 값만 사용 — 없으면 None (추측/플레이스홀더 금지, 상위에서 폴백 처리)
+                "raise_size": range_data.get("raise_size") or None,
                 "raise_count": 0,
             }
 
@@ -120,11 +125,13 @@ class GTOAdvisor:
                 )
                 return None
             freqs = get_action_frequencies(range_data, hand)
+            if freqs is None:
+                return None
             return {
                 "hand": hand,
                 "frequencies": freqs,
                 "situation": range_data.get("situation", f"{my_position} vs {opener_pos}"),
-                "raise_size": range_data.get("raise_size", "3x"),
+                "raise_size": range_data.get("raise_size") or None,
                 "raise_count": 1,
             }
 
@@ -147,11 +154,13 @@ class GTOAdvisor:
                     )
                     return None
                 freqs = get_action_frequencies(range_data, hand)
+                if freqs is None:
+                    return None
                 return {
                     "hand": hand,
                     "frequencies": freqs,
                     "situation": range_data.get("situation", f"{my_position} vs 3bet"),
-                    "raise_size": "2.5x",
+                    "raise_size": range_data.get("raise_size") or None,
                     "raise_count": 2,
                 }
 
@@ -204,5 +213,5 @@ class GTOAdvisor:
         return {
             "action": action,
             "raise_count": rec.get("raise_count", 0),
-            "raise_size": rec.get("raise_size", "3x"),
+            "raise_size": rec.get("raise_size"),  # 실측 bb (REAL) 또는 None
         }

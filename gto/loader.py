@@ -7,9 +7,17 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import logging
 import random
 from typing import Optional
 from core.card import Card, Rank
+
+logger = logging.getLogger(__name__)
+
+# 핸드별 빈도 합 검증 허용 범위. 이 밖이면 손상 데이터로 간주해 조용히 넘어가지
+# 않고(=fold 등 특정 액션에 잔여를 몰아주지 않고) "데이터 없음"으로 처리한다.
+_FREQ_SUM_MIN = 0.9
+_FREQ_SUM_MAX = 1.1
 
 _RANK_GTO = {"10": "T"}
 
@@ -69,6 +77,21 @@ def _load_all() -> None:
 
             hands = {}
             for h in hands_rows:
+                freq_sum = (
+                    h["freq_fold"] + h["freq_call"] + h["freq_raise"] + h["freq_allin"]
+                )
+                if not (_FREQ_SUM_MIN <= freq_sum <= _FREQ_SUM_MAX):
+                    # 손상 핸드 — 원인 불명 상태에서 잔여를 특정 액션에 몰아주지
+                    # 않고 "데이터 없음"으로 처리해 상위 호출부가 휴리스틱 폴백을
+                    # 타도록 한다. 조용히 넘어가지 않고 식별 가능하게 경고 로그.
+                    logger.warning(
+                        "GTO 손상 핸드 스킵: situation_id=%s hand=%s freq_sum=%.3f "
+                        "(fold=%.3f call=%.3f raise=%.3f allin=%.3f)",
+                        s["id"], h["hand"], freq_sum,
+                        h["freq_fold"], h["freq_call"], h["freq_raise"], h["freq_allin"],
+                    )
+                    continue
+
                 freqs = {}
                 if h["freq_fold"]  > 0: freqs["fold"]  = h["freq_fold"]
                 if h["freq_call"]  > 0: freqs["call"]  = h["freq_call"]
@@ -81,7 +104,7 @@ def _load_all() -> None:
             key = (s["position"], s["vs_position"], s["range_type"])
             _cache[key] = {
                 "situation":     s["situation_label"],
-                "raise_size":    s["raise_size"] or "",
+                "raise_size":    s["raise_size"],  # REAL(bb) 또는 None — 텍스트 플레이스홀더 없음
                 "range_type":    s["range_type"],
                 "hands":         hands,
             }
@@ -144,11 +167,16 @@ def get_call_range(my_pos: str, opener_pos: str) -> Optional[dict]:
     return weights or None
 
 
-def get_action_frequencies(range_data: dict, hand_notation: str) -> dict:
-    """레인지 데이터에서 특정 핸드의 액션 빈도 반환. 없으면 fold 100%."""
+def get_action_frequencies(range_data: dict, hand_notation: str) -> Optional[dict]:
+    """
+    레인지 데이터에서 특정 핸드의 액션 빈도 반환.
+    핸드가 없으면(손상되어 로드 시 스킵됐거나 원래 미수집) None을 반환해
+    상위 호출부가 "데이터 없음"으로 처리하고 휴리스틱 폴백을 타게 한다.
+    (부족분을 fold 등 특정 액션에 몰아주지 않음 — 원인 불명 상태에서 새 가정을 얹지 않기 위함)
+    """
     if range_data is None:
-        return {"fold": 1.0}
-    return range_data.get("hands", {}).get(hand_notation, {"fold": 1.0})
+        return None
+    return range_data.get("hands", {}).get(hand_notation)
 
 
 def sample_action(frequencies: dict) -> str:

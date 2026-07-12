@@ -108,7 +108,7 @@ class GtoPreflopSaveRequest(BaseModel):
     position: str                          # BTN, CO, MP, UTG, SB, BB
     vs_position: Optional[str] = None     # None=RFI, "BTN"=vs_open
     range_type: str                        # open | vs_open | vs_3bet
-    raise_size: Optional[str] = None      # "2.5bb", "3x"
+    raise_size: Optional[float] = None    # bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5)
     situation_label: str                   # "BTN RFI"
     hands: Dict[str, Dict[str, float]]    # {"AA": {"raise": 1.0}, ...}
 

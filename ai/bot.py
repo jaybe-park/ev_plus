@@ -209,7 +209,7 @@ class PokerBot:
 
         action_str = gto_result["action"]
         raise_count = gto_result.get("raise_count", 0)
-        raise_size = gto_result.get("raise_size", "3x")
+        raise_size = gto_result.get("raise_size")  # 실측 bb(REAL) 또는 None
         call_amount = game_state["current_bet"] - self.player.current_bet
 
         if action_str == "fold":
@@ -227,26 +227,35 @@ class PokerBot:
 
         return None
 
-    def _preflop_raise(self, state: dict, raise_count: int, raise_size: str) -> Tuple[Action, int]:
+    def _preflop_raise(
+        self, state: dict, raise_count: int, raise_size: Optional[float]
+    ) -> Tuple[Action, int]:
         """
         프리플랍 레이즈 사이즈 계산.
-        - RFI (raise_count=0): 2.5bb 오픈
-        - 3벳 (raise_count=1): 오픈의 3x
-        - 4벳 (raise_count=2): 3벳의 2.5x (또는 올인)
+        raise_size: GTO 어드바이저가 반환한 실측 bb 단위 raise-to 값(REAL).
+        수집된 값이 없으면(None/0) 폴백 공식을 사용한다 — 폴백은 근거 없는
+        추측이라는 점을 명확히 구분해서만 사용 (GTO 실측값이 항상 우선).
         """
         current_bet = state["current_bet"]
         big_blind = state.get("big_blind", 20)
         min_raise = state.get("min_raise", big_blind)
         max_chips = self.player.chips + self.player.current_bet
 
-        if raise_count == 0:
-            raise_to = int(big_blind * 2.5)
-        elif raise_count == 1:
-            raise_to = int(current_bet * 3)
-        else:
-            raise_to = int(current_bet * 2.5)
-            if raise_to >= max_chips * 0.7:
+        if raise_size:
+            # GTO 실측값 사용: raise_size는 bb 단위 raise-to 금액
+            raise_to = int(raise_size * big_blind)
+            if raise_count >= 2 and raise_to >= max_chips * 0.7:
                 return Action.ALL_IN, 0
+        else:
+            # 폴백 (GTO 데이터 없음 — 근거 없는 추측 공식, 데이터 수집되면 대체됨)
+            if raise_count == 0:
+                raise_to = int(big_blind * 2.5)
+            elif raise_count == 1:
+                raise_to = int(current_bet * 3)
+            else:
+                raise_to = int(current_bet * 2.5)
+                if raise_to >= max_chips * 0.7:
+                    return Action.ALL_IN, 0
 
         raise_to = max(raise_to, current_bet + min_raise)
         raise_to = min(raise_to, max_chips)
