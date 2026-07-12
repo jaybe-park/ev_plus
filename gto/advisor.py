@@ -9,7 +9,7 @@ from .loader import (
     hand_to_notation, get_open_range, get_vs_open_range, get_vs_3bet_range,
     get_action_frequencies, sample_action, find_opener_position
 )
-from .url_generator import get_url
+from .url_generator import get_url, POS_INDEX
 from core.card import Card
 
 
@@ -117,6 +117,14 @@ class GTOAdvisor:
             opener_pos = find_opener_position(positions, game_state, big_blind)
             if opener_pos is None:
                 return None
+            # 우리 데이터 모델은 "오프너가 나보다 먼저 행동하는" open/vs_open
+            # 구조만 지원한다. (예: 림프 후 아이솔레이트 레이즈처럼) 오프너가
+            # 포지션 순서상 my_position보다 뒤인 경우는 데이터 모델 밖의
+            # 상황이므로 조회/기록 없이 None 반환. 헤즈업 포지션(BTN/SB 등
+            # POS_INDEX에 없는 값)은 비교 불가하므로 기존 로직을 유지한다.
+            if my_position in POS_INDEX and opener_pos in POS_INDEX:
+                if POS_INDEX[opener_pos] > POS_INDEX[my_position]:
+                    return None
             range_data = get_vs_open_range(my_position, opener_pos)
             if range_data is None:
                 _save_missing_spot(

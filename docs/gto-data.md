@@ -107,6 +107,26 @@ gto_postflop_hands       ← 포스트플랍 핸드별 빈도 (미사용)
 - 정리 결과: open 2→1(BTN/SB 헤즈업 갭만 유지), vs_3bet 65→12(위 4개 미완성
   스팟에 대한 실제 갭만 남음), vs_open 18(변화 없음).
 
+**미수집 추적 큐 정리 (2026-07-12, 3번째 유사 버그)**
+
+BB RFI, vs_3bet 오프너 불일치에 이어 vs_open에서도 같은 계열의 "데이터
+모델 밖 상황" 오탐이 발견됨: `find_opener_position()`이 "BTN 림프 후 BB가
+아이솔레이트 레이즈, 액션이 BTN에게 돌아온" 상황에서 opener_pos='BB'를
+반환 — 실제 가능한 상황이지만 우리 데이터 모델(open/vs_open/vs_3bet)은
+"림프 후 아이솔레이트" 카테고리를 지원하지 않는다. 게다가 이 케이스는
+`gto/url_generator.py`의 `vs_open_url()`이 오프너가 my_pos보다 뒤일 때
+루프가 `range(my_idx)`까지만 돌아 오프너의 레이즈를 URL에 반영 못 하고
+BTN RFI URL과 동일해지는 부수 문제도 있었다.
+
+- `gto/advisor.py` vs_open 블록에서 opener_pos 확보 후, 오프너가 포지션
+  순서(UTG,HJ,CO,BTN,SB,BB)상 my_position보다 뒤인 경우 조회/기록 없이
+  None 반환하도록 수정(vs_3bet의 "my_position != opener_pos면 스킵" 패턴과
+  동일 원칙). 포지션 비교는 `gto/url_generator.py`의 `POS_INDEX`를 재사용.
+  헤즈업 포지션('BTN/SB' 등 POS_INDEX에 없는 값)은 비교 불가하므로 기존
+  로직 유지.
+- 큐 정리: 7개 → 6개. `position='BTN', vs_position='BB', range_type='vs_open'`
+  1건이 이 버그로 생긴 오탐이라 삭제.
+
 ### vs_open — 미존재 (fold 100% 폴백)
 
 현재 기본 vs_open 12개 모두 수집 완료. 아래는 아직 없는 심화 스팟.
