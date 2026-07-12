@@ -77,6 +77,16 @@ class GTOAdvisor:
         if len(hole_cards) < 2:
             return None
 
+        # 헤즈업(2인) 매핑: core/game.py의 딜러 라벨 "BTN/SB"는 UI/핸드
+        # 히스토리 표시용 원본이므로 여기서 건드리지 않는다. GTO 조회 시점
+        # 에서만 6-max "SB"로 국소 치환해 기존 SB RFI/vs_open/vs_3bet 데이터를
+        # 재사용한다(헤즈업 트리는 SB(딜러) vs BB 단둘로 6-max SB 스팟과
+        # 게임 트리가 구조적으로 동일하다고 판단, 2026-07-12 결정).
+        # 조회 실패 시 큐(gto_missing_spots_preflop) 기록도 이 치환된 값
+        # 기준으로 남도록 치환은 아래 조회/기록 로직보다 앞에서 수행한다.
+        if my_position == "BTN/SB":
+            my_position = "SB"
+
         hand = hand_to_notation(hole_cards[0], hole_cards[1])
         current_bet = game_state.get("current_bet", 0)
         street = game_state.get("street", "프리플랍")
@@ -117,6 +127,8 @@ class GTOAdvisor:
             opener_pos = find_opener_position(positions, game_state, big_blind)
             if opener_pos is None:
                 return None
+            if opener_pos == "BTN/SB":
+                opener_pos = "SB"
             # 우리 데이터 모델은 "오프너가 나보다 먼저 행동하는" open/vs_open
             # 구조만 지원한다. (예: 림프 후 아이솔레이트 레이즈처럼) 오프너가
             # 포지션 순서상 my_position보다 뒤인 경우는 데이터 모델 밖의
@@ -148,6 +160,10 @@ class GTOAdvisor:
             raisers = _find_raisers_in_log(action_log, positions)
             if len(raisers) >= 2:
                 opener_pos, three_bettor_pos = raisers[0], raisers[1]
+                if opener_pos == "BTN/SB":
+                    opener_pos = "SB"
+                if three_bettor_pos == "BTN/SB":
+                    three_bettor_pos = "SB"
                 # 우리 데이터 모델은 "원래 오프너가 3벳에 대응하는" 레인지만
                 # 수집한다. my_position이 오프너가 아니면(림프 후 대응 등)
                 # 데이터 모델 밖의 상황이므로 조회/기록 없이 None 반환.

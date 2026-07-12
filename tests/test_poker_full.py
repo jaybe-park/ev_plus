@@ -980,6 +980,69 @@ def test_6_8_sidepot_conservation():
     total_after = p0.chips + p1.chips + p2.chips
     assert total_after == 1000, f"사이드팟 후 칩 보존 실패: {total_after}"
 
+def test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi():
+    """헤즈업(2인) GTO 조회: my_position="BTN/SB"는 내부적으로 "SB"로 치환돼
+    6-max SB RFI 데이터로 정상 응답해야 함 (core/game.py의 원본 라벨 자체는
+    변경되지 않음 — advisor 내부 조회 시점에서만 국소 치환).
+    이 테스트는 격리된 임시 DB(EV_PLUS_DB)를 쓰므로 외부 수집 데이터에
+    의존하지 않고 최소 SB RFI 시추에이션을 직접 시딩한다."""
+    from db.connection import get_connection
+    from gto.advisor import GTOAdvisor
+    import gto.loader as gto_loader
+
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO gto_preflop_situations
+            (position, vs_position, range_type, raise_size, situation_label)
+        VALUES ('SB', NULL, 'open', 3.0, 'SB RFI')
+        """
+    )
+    conn.commit()
+    situation_id = conn.execute(
+        "SELECT id FROM gto_preflop_situations WHERE position='SB' AND range_type='open'"
+    ).fetchone()[0]
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO gto_preflop_hands
+            (situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin)
+        VALUES (?, 'AKs', 0.0, 0.0, 1.0, 0.0)
+        """,
+        (situation_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    # gto/loader._load_all()은 프로세스당 1회만 DB를 읽는 메모리 캐시라
+    # 방금 시딩한 데이터가 반영되도록 캐시를 무효화한다(테스트 격리).
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+
+    game, players = make_game(2, chips=1000, sb=10)
+    game.start_hand()
+    positions = game.get_positions()
+
+    # core/game.py는 여전히 "BTN/SB"를 그대로 보고해야 함(원본 라벨 유지)
+    assert "BTN/SB" in positions.values()
+
+    sb_player = next(p for p in players if positions.get(p.name) == "BTN/SB")
+
+    advisor = GTOAdvisor()
+    game_state = {
+        "current_bet": game.big_blind,
+        "street": "프리플랍",
+        "action_log": [],
+    }
+    rec = advisor.get_recommendation(
+        hole_cards=[c("A", "S"), c("K", "S")],
+        my_position="BTN/SB",
+        positions=positions,
+        game_state=game_state,
+        big_blind=game.big_blind,
+    )
+    assert rec is not None, "헤즈업 BTN/SB RFI는 SB 데이터로 매핑되어 응답해야 함"
+    assert "SB" in rec["situation"], f"situation에 SB 매핑 흔적이 있어야 함: {rec['situation']}"
+
 
 # ═════════════════════════════════════════════════════════════
 # 실행
@@ -1045,6 +1108,7 @@ ALL_TESTS = [
     ("6-6  사이드팟 — 동일 올인 팟 1개",       test_6_6_sidepot_three_allins),
     ("6-7  사이드팟 — 폴드 기여분 처리",       test_6_7_sidepot_folded_player_contribution),
     ("6-8  사이드팟 분배 후 칩 보존",          test_6_8_sidepot_conservation),
+    ("6-9  헤즈업 GTO BTN/SB→SB RFI 매핑",     test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi),
 ]
 
 
