@@ -3,13 +3,13 @@
 프리플랍 레인지 데이터를 SQLite DB(`poker.db`)로 관리한다.
 GTO Wizard에서 Claude in Chrome MCP로 추출해 저장한다.
 
-> ⚠️ **2026-07-10 파서 버그로 전량 무효화, 재수집 대기 중.**
-> `colorToAction()`의 RGB 임계값 버그(콜 `b < 80` — 실제 콜색 b=94라 상시 거짓,
-> 올인 `r < 150` — 실제 올인색 r=153 경계로 불안정)로 콜 세그먼트 100% 유실,
-> 올인 세그먼트 간헐적 유실. 아래 "현재 저장된 데이터 현황" 표는 **역사적 기록**이며
-> 실제 DB의 `gto_preflop_situations`/`gto_preflop_hands`는 2026-07-12 전량 삭제됐다.
+> ⚠️ **2026-07-10 파서 버그로 전량 무효화 → 2026-07-12 레이어 기반 파서로 재수집 진행 중.**
+> 기존 "단일 gradient + % 색상 스탑" 가정 파서는 실제 GTO Wizard CSS 구조(여러 개
+> 겹친 `linear-gradient` 레이어 + `background-size` 누적 폭)와 달라 call/allin이
+> 섞이는 스팟에서 파싱 실패(`badSum` 발생)했다. 아래 "저장 스크립트"는 레이어
+> 순서(`allin, raise, call, fold`) 매칭 + 누적폭 차분 방식으로 교체된 최신판이다.
 > `raise_size`도 대부분 `"3x"` 등 플레이스홀더였던 것을 REAL(실측 bb) 컬럼으로 교체.
-> 재수집 시 아래 수정된 `colorToAction()`을 사용할 것 (5~7번 항목, TODO.md 참고).
+> 재수집 중 발견된 HJ RFI 데이터 오염 건은 아래 "현재 저장된 데이터 현황" 참고.
 
 ---
 
@@ -26,73 +26,60 @@ gto_postflop_hands       ← 포스트플랍 핸드별 빈도 (미사용)
 
 ## 현재 저장된 데이터 현황
 
-### RFI (오픈 레인지) — GTO Wizard ✅
+> ⚠️ 2026-07-10 파서 버그로 전량 무효화 후 2026-07-12부터 레이어 기반 새 파서로
+> 재수집 진행 중. 아래 표는 **현재 DB 실측 기준(2026-07-12, 전수검사 완료)**이며,
+> 재수집된 스팟만 반영돼 있다(vs_open/vs_3bet 대부분은 아직 `gto_missing_spots_preflop`
+> 큐 기반으로 실전 우선순위 수집 중).
 
-| 스팟 | 오픈률 | 상태 |
+### RFI (오픈 레인지) — GTO Wizard ✅ (5/5 완료, 전수검사 통과)
+
+fold=100%인 핸드 수(169개 중)로 표시 — 작을수록 넓게 오픈. UTG < HJ < CO < BTN < SB
+순으로 넓어지는 정상 패턴 확인됨(2026-07-12 `scripts/audit_gto_preflop.py` 검증).
+
+| 스팟 | fold100 카운트 | 상태 |
 |---|---|---|
-| UTG RFI | 30% | ✅ GTO Wizard |
-| HJ RFI | 34% | ✅ GTO Wizard |
-| CO RFI | 40% | ✅ GTO Wizard |
-| BTN RFI | 52% | ✅ GTO Wizard |
-| SB RFI | 59% | ✅ GTO Wizard |
+| UTG RFI | 117/169 | ✅ GTO Wizard (레이어 파서) |
+| HJ RFI | 111/169 | ✅ GTO Wizard (2026-07-12 재수집 — 아래 "HJ RFI 데이터 오염" 참고) |
+| CO RFI | 102/169 | ✅ GTO Wizard (레이어 파서) |
+| BTN RFI | 81/169 | ✅ GTO Wizard (레이어 파서) |
+| SB RFI | 61/169 | ✅ GTO Wizard (레이어 파서) |
 
-### vs_open (수비 레인지) — GTO Wizard ✅
+### vs_open (수비 레인지) — 일부 수집 (큐 기반 진행 중)
 
-| 스팟 | 3bet 핸드 수 | 상태 |
+| 스팟 | 사이징(실측 bb) | 상태 |
 |---|---|---|
-| HJ vs UTG open | 38/169 (~22%) | ✅ GTO Wizard |
-| CO vs UTG open | 41/169 (~24%) | ✅ GTO Wizard |
-| BTN vs UTG open | 43/169 (~25%) | ✅ GTO Wizard |
-| SB vs UTG open | 39/169 (~23%) | ✅ GTO Wizard |
-| BB vs UTG open | 54/169 (~32%) | ✅ GTO Wizard |
-| CO vs HJ open | 42/169 (~25%) | ✅ GTO Wizard |
-| BTN vs HJ open | 43/169 (~25%) | ✅ GTO Wizard |
-| SB vs HJ open | 45/169 (~27%) | ✅ GTO Wizard |
-| BB vs HJ open | 57/169 (~34%) | ✅ GTO Wizard |
-| BTN vs CO open | 47/169 (~28%) | ✅ GTO Wizard |
-| SB vs CO open | 41/169 (~24%) | ✅ GTO Wizard |
-| BB vs CO open | 60/169 (~36%) | ✅ GTO Wizard |
-| SB vs BTN open | 46/169 (~27%) | ✅ GTO Wizard |
-| BB vs BTN open | 67/169 (~40%) | ✅ GTO Wizard |
-| BB vs SB open | 90/169 (~53%) | ✅ GTO Wizard |
+| HJ vs UTG open | 8.0 | ✅ GTO Wizard |
+| BB vs UTG open | 13.5 | ✅ GTO Wizard |
+| BB vs BTN open | 13.5 | ✅ GTO Wizard |
+| SB vs BTN open | 11.0 | ✅ GTO Wizard |
 
-### vs_3bet — GTO Wizard (31/35 완료)
+나머지 vs_open 스팟은 `gto_missing_spots_preflop` 큐가 실전에서 채워지는 대로 수집.
 
-> ⚠️ GTO Wizard 무료 계정 하루 100스팟 제한으로 4개 미완성. 내일 이어서 수집 가능.
+### vs_3bet — 일부 수집 (큐 기반 진행 중)
 
-**완료 (31개):**
+| 오프너 | 3베터 | 사이징(실측 bb) | 상태 |
+|---|---|---|---|
+| UTG | HJ | 21.5 | ✅ GTO Wizard |
+| BTN | BB | 28.5 | ✅ GTO Wizard |
 
-| 오프너 | 3베터 | 대응 포지션 |
-|---|---|---|
-| UTG | HJ | CO, BTN, SB, BB, UTG |
-| UTG | CO | BTN, SB, BB, UTG |
-| UTG | BTN | SB, BB, UTG |
-| UTG | SB | BB, UTG |
-| UTG | BB | UTG |
-| HJ | CO | BTN, SB, BB, HJ |
-| HJ | BTN | SB, BB, HJ |
-| HJ | SB | BB, HJ |
-| HJ | BB | HJ |
-| CO | BTN | SB, BB, CO |
-| CO | SB | BB, CO |
-| CO | BB | CO |
+나머지 vs_3bet 조합은 큐 기반으로 계속 수집.
 
-**미완성 (4개) — 내일 수집:**
+### HJ RFI 데이터 오염 확인 및 재수집 (2026-07-12)
 
-| 스팟 | 상태 |
-|---|---|
-| BB vs [BTN open / SB 3bet] | ❌ 한도 초과 |
-| BTN vs SB 3bet | ❌ 한도 초과 |
-| BTN vs BB 3bet | ❌ 한도 초과 |
-| SB vs BB 3bet | ❌ 한도 초과 |
-| BTN vs [UTG open / HJ 3bet] | 24/169 | ✅ GTO Wizard |
-| SB vs [UTG open / HJ 3bet] | 20/169 | ✅ GTO Wizard |
-| BB vs [UTG open / HJ 3bet] | 20/169 | ✅ GTO Wizard |
-| UTG vs HJ 3bet | 51/169 | ✅ GTO Wizard |
-| BTN vs [UTG open / CO 3bet] | 24/169 | ✅ GTO Wizard |
-| SB vs [UTG open / CO 3bet] | 20/169 | ✅ GTO Wizard |
-| BB vs [UTG open / CO 3bet] | 17/169 | ✅ GTO Wizard |
-| UTG vs CO 3bet | 51/169 | ✅ GTO Wizard |
+- **증상**: DB 직접 조회로 `HJ RFI` 169핸드 전부가 `freq_fold>=0.999`로 저장돼
+  있음을 발견(비교: UTG fold100=117, CO=102, BTN=81, SB=61 — 포지션이 늦을수록
+  오픈이 넓어지는 정상 패턴인데 HJ만 유일하게 전부 폴드로 붕괴).
+- **원인 확정**: GTO Wizard에서 HJ RFI 스팟(`preflop_actions=F&history_spot=1`)을
+  Chrome MCP로 직접 재확인한 결과, 실제 GTO 솔루션은 raise 21.7% / fold 78.3% /
+  allin 0% — 저장된 "전부 fold"는 실제 GTO 값이 아니라 **재수집(v11 스키마 전환)
+  과정에서의 저장 버그**였음이 확정됨(추측 아님, 화면 확인 및 재저장으로 검증).
+- **조치**: 레이어 기반 파서(아래 "저장 스크립트" 참고)로 재추출(`badSum=0`,
+  169핸드 전체 파싱 성공, Overview 패널의 21.7%/78.3%와 일치) 후 재저장.
+  재저장 후 fold100=111/169로 UTG(117)와 CO(102) 사이에 정상 위치.
+- **전수 검사**: `scripts/audit_gto_preflop.py` 작성 — 현재 DB에 저장된 모든
+  `gto_preflop_situations`(11개)에 대해 핸드별 빈도합 검증(0.9~1.1 범위), RFI
+  포지션 간 오픈 비율 순서 검증, 특정 액션 100%/0% 쏠림 탐지를 수행. HJ RFI
+  수정 후 **11개 전체 통과**, 추가 이상 스팟 없음.
 
 **미수집 추적 큐 정리 (2026-07-10)**
 
@@ -177,62 +164,74 @@ BTN RFI URL과 동일해지는 부수 문제도 있었다.
 https://app.gtowizard.com/solutions?solution_type=gwiz&gametype=Cash6mGeneral_6mNL25R25&depth=100&preflop_actions=F-F-F&history_spot=3
 ```
 
-### 추출 원리
+### 추출 원리 (레이어 기반, 2026-07-12 확정)
 
-GTO Wizard 레인지 그리드 각 셀의 `background-size` CSS 속성에 action 빈도가 인코딩됨:
-- 색상 매핑: 빨강 `rgb(240,60,60)` = raise, 파랑 `rgb(61,124,184)` = fold,
-  초록 `#22c55e = rgb(34,197,94)` = call, 진빨강 `#991b1b = rgb(153,27,27)` = allin
-- bgSize는 누적값: `"21% 100%, 100% 100%"` → raise 21%, fold 79%
-- ⚠️ 아래 `colorToAction()`은 2026-07-10 확정된 버그(콜 `b < 80` — 실제 b=94라 상시
-  거짓, 올인 `r < 150` — 실제 r=153 경계라 안티앨리어싱에 불안정) **수정 반영판**이다.
-  재수집 시 반드시 이 버전을 사용할 것 (임계값 부등식 대신 정확한 hex 매칭이 더
-  안전하니, Playwright 자동화 구현 시 그 방식으로 교체 고려).
+GTO Wizard 레인지 그리드 각 셀은 **여러 개의 겹친 `linear-gradient` 레이어**로
+구성되고, 각 레이어의 `background-size` 누적 폭(%)이 action 빈도를 인코딩한다
+(단일 gradient + 색상 스탑 구조라는 기존 가정은 틀렸음 — call/allin이 섞인
+스팟에서 파싱 실패로 확인됨, 2026-07-12).
 
-### 저장 스크립트 (Chrome DevTools에서 실행)
+- 레이어를 앞→뒤 순서로 `allin, raise, call, fold` 색상에 매칭하고, 누적폭
+  차분(현재 레이어 bg-size % − 이전 레이어 %)으로 각 액션의 빈도를 계산
+- 색상 매핑(실측): raise `r>200,g<100,b<100`, allin `110<=r<=140,g<50,b<50`,
+  call `r<100,g>150,b<160`, fold `r<100,100<g<160,b>150`
+- bgImage가 `'none'`인 핸드는 오프너 오픈레인지에 아예 없는 핸드라 정당하게
+  제외(억지로 fold=1 채우지 않음)
+- 핸드별 빈도 합이 `[0.9, 1.1]` 밖이면 `badSum`으로 카운트해 검증 실패 처리
+
+### 저장 스크립트 (Chrome DevTools / Chrome MCP `javascript_tool`에서 실행)
 
 ```javascript
-async function extractAndSave(position, label) {
+async function extractAndSave(position, label, raiseSize, vsPosition = null, rangeType = 'open') {
   function colorToAction(rgb) {
     const m = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
     if (!m) return null;
     const [r, g, b] = [+m[1], +m[2], +m[3]];
+    if (r >= 110 && r <= 140 && g < 50 && b < 50) return 'allin';
     if (r > 200 && g < 100 && b < 100) return 'raise';
-    if (r > 80 && r < 160 && g < 50 && b < 50) return 'allin';   // 수정: r<150 → r<160 (실제 r=153)
-    if (r < 100 && g > 80 && b > 150) return 'fold';
-    if (r < 80 && g > 150 && b < 110) return 'call';             // 수정: b<80 → b<110 (실제 b=94)
+    if (r < 100 && g > 150 && b < 160) return 'call';
+    if (r < 100 && g > 100 && g < 160 && b > 150) return 'fold';
     return null;
   }
   const cells = document.querySelectorAll('[data-tst^="range_table_cell_0_"]');
   const hands = {};
+  let badSum = 0;
   for (const cell of cells) {
     const hand = cell.getAttribute('data-tst').replace('range_table_cell_0_', '');
     const s = window.getComputedStyle(cell);
+    if (s.backgroundImage === 'none' || !s.backgroundImage) continue; // 오픈레인지에 없는 핸드 → 정당하게 제외
     const grads = s.backgroundImage.split('), linear-gradient(');
     const sizes = s.backgroundSize.split(',').map(x => parseFloat(x.trim()));
     const freqs = {}; let prev = 0;
     for (let i = 0; i < grads.length; i++) {
-      const m = grads[i].match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-      if (!m) continue;
+      const colorMatches = [...grads[i].matchAll(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/g)];
+      if (!colorMatches.length) continue;
+      const m = colorMatches[0]; // 각 gradient의 첫 색상(솔리드 컬러라 두 색상 동일)
       const a = colorToAction(`rgb(${m[1]},${m[2]},${m[3]})`);
       const cum = sizes[i] ?? 100;
       const f = parseFloat(((cum - prev) / 100).toFixed(4));
-      if (a && f > 0.001) freqs[a] = f;
+      if (a && f > 0.001) freqs[a] = (freqs[a] || 0) + f;
       prev = cum;
     }
-    if (!Object.keys(freqs).length) freqs.fold = 1;
+    const sum = Object.values(freqs).reduce((a, b) => a + b, 0);
+    if (sum < 0.9 || sum > 1.1) badSum++;
     hands[hand] = freqs;
+  }
+  if (badSum > 0) {
+    console.error(`검증 실패: badSum=${badSum} — 저장하지 않음`);
+    return { ok: false, badSum };
   }
   const r = await fetch('https://localhost:8765/gto/preflop/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ position, vs_position: null, range_type: 'open',
-                           raise_size: '2.5bb', situation_label: label, hands })
+    body: JSON.stringify({ position, vs_position: vsPosition, range_type: rangeType,
+                           raise_size: raiseSize, situation_label: label, hands })
   });
   return r.json();
 }
 
-// 실행 예시 (BTN RFI 페이지에서)
-extractAndSave('BTN', 'BTN RFI').then(console.log);
+// 실행 예시 (HJ RFI 페이지에서, 오버뷰 패널의 사이징을 그대로 실측값으로 입력)
+extractAndSave('HJ', 'HJ RFI', 2.5).then(console.log);
 ```
 
 ---
