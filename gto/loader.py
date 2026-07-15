@@ -50,6 +50,8 @@ def hand_to_notation(card1: Card, card2: Card) -> str:
 # (position, vs_position, range_type) → range_data dict
 # ──────────────────────────────────────────
 _cache: dict = {}
+# ② 시퀀스 키(노드 키) → range_data dict. _cache와 같은 range_data 객체를 공유.
+_cache_by_seq: dict = {}
 _loaded: bool = False
 
 
@@ -58,6 +60,8 @@ def _load_all() -> None:
     global _loaded
     if _loaded:
         return
+    # 재로드(테스트가 _loaded=False로 무효화) 시 시퀀스 캐시도 함께 초기화
+    _cache_by_seq.clear()
 
     try:
         from db.connection import get_connection
@@ -102,12 +106,20 @@ def _load_all() -> None:
                 hands[h["hand"]] = freqs
 
             key = (s["position"], s["vs_position"], s["range_type"])
-            _cache[key] = {
+            entry = {
                 "situation":     s["situation_label"],
                 "raise_size":    s["raise_size"],  # REAL(bb) 또는 None — 텍스트 플레이스홀더 없음
                 "range_type":    s["range_type"],
                 "hands":         hands,
             }
+            _cache[key] = entry
+
+            # ② 시퀀스 키 병렬 인덱스(있는 행만). enum 캐시와 동일 객체 공유 →
+            # 두 경로가 항상 같은 레인지를 가리킴(검증 게이트 a).
+            cols = s.keys()
+            seq_key = s["action_seq"] if "action_seq" in cols else None
+            if seq_key is not None:
+                _cache_by_seq[seq_key] = entry
 
         conn.close()
         _loaded = True
@@ -115,6 +127,16 @@ def _load_all() -> None:
     except Exception as e:
         # DB 없거나 마이그레이션 전이면 조용히 실패 (힌트 없음)
         _loaded = True  # 재시도 방지
+
+
+def get_range_by_seq(node_key) -> Optional[dict]:
+    """② 캐노니컬 노드 키로 프리플랍 레인지 조회(시퀀스 키 경로).
+
+    node_key는 gto.advisor.canonical_node_key / gto.url_generator.situation_to_node_key가
+    생성한 캐노니컬 문자열(예: "R2.5-R8-F-F-F-F", RFI UTG는 ""). 없으면 None.
+    """
+    _load_all()
+    return _cache_by_seq.get(node_key)
 
 
 def get_vs_3bet_range(my_pos: str, opener_pos: str, three_bettor_pos: str) -> Optional[dict]:

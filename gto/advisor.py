@@ -7,9 +7,10 @@ GTO 어드바이저
 from typing import Optional
 from .loader import (
     hand_to_notation, get_open_range, get_vs_open_range, get_vs_3bet_range,
-    get_action_frequencies, sample_action, find_opener_position
+    get_action_frequencies, sample_action, find_opener_position,
+    get_range_by_seq,
 )
-from .url_generator import get_url, POS_INDEX
+from .url_generator import get_url, POS_INDEX, canonical_raise_size
 from core.card import Card
 
 
@@ -88,9 +89,95 @@ def canonical_preflop_actions(preflop_seq: list) -> str:
     return "-".join(parts)
 
 
+def canonical_node_key(preflop_seq: list) -> str:
+    """구조화 시퀀스 → 캐노니컬 노드 키(② 런타임 조회 키).
+
+    canonical_preflop_actions와 달리 각 자발적 레이즈의 실전 사이즈를 **레이즈 깊이의
+    캐노니컬 사이즈로 스냅**한다(url_generator.canonical_raise_size — 저장 노드 키
+    backfill_v12/situation_to_node_key와 동일한 단일 소스 테이블 → 항상 매칭).
+
+    예: [UTG raise 2.5, HJ raise 7.5, CO fold, ...] → "R2.5-R8-F-..."
+    (HJ의 실전 3벳 7.5bb가 깊이2 캐노니컬 8로 스냅). 사이즈 자체가 아니라 레이즈
+    순번으로 스냅하므로 13.5bb 3벳이 4벳(17.5)으로 오분류되지 않는다.
+    allin도 깊이 기준으로 스냅(현 수집분엔 allin 노드 키 없음 — ④에서 실측 시 정교화).
+    """
+    toks = []
+    depth = 0
+    for a in preflop_seq:
+        act = a.get("action")
+        if act == "fold":
+            toks.append("F")
+        elif act == "check":
+            toks.append("X")
+        elif act == "call":
+            toks.append("C")
+        elif act in ("raise", "allin"):
+            depth += 1
+            toks.append(f"R{_fmt_bb(canonical_raise_size(depth, a.get('position')))}")
+    return "-".join(toks)
+
+
 class GTOAdvisor:
 
     def get_recommendation(
+        self,
+        hole_cards: list,
+        my_position: str,
+        positions: dict,
+        game_state: dict,
+        big_blind: int = 20,
+    ) -> Optional[dict]:
+        """현재 상황에 맞는 GTO 추천 반환.
+
+        ② 이후: 기존 enum(RFI/vs_open/vs_3bet) 경로를 **먼저** 시도해 완전히 동일하게
+        동작시키고(모든 quirk/큐 기록/봇 행동 보존), enum이 못 담는 스팟(스퀴즈/멀티웨이/
+        4벳+ 등)에 한해 **시퀀스 키 경로**를 폴백으로 추가한다(순수 additive). 현재는
+        시퀀스 키로만 조회되는 노드 데이터가 없어 폴백은 항상 None → 동작 불변.
+        ④ 수집으로 롱테일 노드가 채워지면 자동으로 커버가 확장된다.
+        """
+        rec = self._recommend_by_enum(
+            hole_cards, my_position, positions, game_state, big_blind
+        )
+        if rec is not None:
+            return rec
+        return self._recommend_by_seq(hole_cards, my_position, game_state, big_blind)
+
+    def _recommend_by_seq(
+        self,
+        hole_cards: list,
+        my_position: str,
+        game_state: dict,
+        big_blind: int = 20,
+    ) -> Optional[dict]:
+        """② 시퀀스 키 기반 조회(캐노니컬 노드 키로 스냅 후 loader 조회).
+
+        런타임 preflop_seq(히어로 결정 직전까지의 액션)를 캐노니컬 노드 키로 스냅해
+        조회한다. 매칭 노드가 없으면 None(상위 봇이 휴리스틱 폴백). enum 경로가 이미
+        커버하는 스팟은 get_recommendation에서 여기 도달하지 않는다.
+        """
+        if len(hole_cards) < 2:
+            return None
+        if game_state.get("street", "프리플랍") != "프리플랍":
+            return None
+        preflop_seq = game_state.get("preflop_seq") or []
+        node_key = canonical_node_key(preflop_seq)
+        data = get_range_by_seq(node_key)
+        if data is None:
+            return None
+        hand = hand_to_notation(hole_cards[0], hole_cards[1])
+        freqs = get_action_frequencies(data, hand)
+        if freqs is None:
+            return None
+        return {
+            "hand": hand,
+            "frequencies": freqs,
+            "situation": data.get("situation", ""),
+            "raise_size": data.get("raise_size") or None,
+            "raise_count": _count_raises(preflop_seq),
+            "node_key": node_key,
+        }
+
+    def _recommend_by_enum(
         self,
         hole_cards: list,
         my_position: str,

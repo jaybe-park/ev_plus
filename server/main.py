@@ -106,23 +106,38 @@ def get_session_review(session_id: str):
 
 class GtoPreflopSaveRequest(BaseModel):
     position: str                          # BTN, CO, MP, UTG, SB, BB
-    vs_position: Optional[str] = None     # None=RFI, "BTN"=vs_open
+    vs_position: Optional[str] = None     # None=RFI, "BTN"=vs_open, "BTN/BB"=vs_3bet(opener/three_bettor)
     range_type: str                        # open | vs_open | vs_3bet
     raise_size: Optional[float] = None    # bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5)
     situation_label: str                   # "BTN RFI"
     hands: Dict[str, Dict[str, float]]    # {"AA": {"raise": 1.0}, ...}
+    action_seq: Optional[str] = None      # ② 캐노니컬 노드 키(미지정 시 enum에서 파생)
 
 
 @app.post("/gto/preflop/save")
 def save_gto_preflop(req: GtoPreflopSaveRequest):
     """GTO Wizard에서 추출한 프리플랍 레인지를 DB에 저장 (덮어쓰기)."""
     from db.connection import get_connection
+    from gto.url_generator import situation_to_node_key, node_key_active_count
     conn = get_connection()
     cur = conn.cursor()
 
+    # ② vs_3bet vs_position 정규화(마이그레이션 backfill_v12와 동일 규칙): 우리 모델은
+    # opener==hero이므로 three_bettor만 온 경우 'opener/three_bettor'로 정규화해 저장.
+    vs_position = req.vs_position
+    if req.range_type == "vs_3bet" and vs_position and "/" not in vs_position:
+        vs_position = f"{req.position}/{vs_position}"
+
+    # ② 노드 키: 명시값 우선, 없으면 enum에서 결정론적 파생(런타임 조회 키와 동일 소스).
+    action_seq = req.action_seq
+    if action_seq is None:
+        action_seq = situation_to_node_key(req.position, vs_position, req.range_type)
+    hero_position = req.position
+    num_active = node_key_active_count(action_seq) if action_seq is not None else None
+
     # SQLite에서 NULL=NULL이 성립하지 않아 ON CONFLICT가 작동 안 함
     # → IS NULL 비교로 직접 존재 여부 확인 후 update or insert
-    if req.vs_position is None:
+    if vs_position is None:
         row = cur.execute(
             "SELECT id FROM gto_preflop_situations WHERE position=? AND range_type=? AND vs_position IS NULL",
             (req.position, req.range_type)
@@ -130,19 +145,24 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
     else:
         row = cur.execute(
             "SELECT id FROM gto_preflop_situations WHERE position=? AND range_type=? AND vs_position=?",
-            (req.position, req.range_type, req.vs_position)
+            (req.position, req.range_type, vs_position)
         ).fetchone()
 
     if row:
         sit_id = row["id"]
         cur.execute(
-            "UPDATE gto_preflop_situations SET raise_size=?, situation_label=? WHERE id=?",
-            (req.raise_size, req.situation_label, sit_id)
+            "UPDATE gto_preflop_situations "
+            "SET raise_size=?, situation_label=?, action_seq=?, hero_position=?, num_active=? "
+            "WHERE id=?",
+            (req.raise_size, req.situation_label, action_seq, hero_position, num_active, sit_id)
         )
     else:
         cur.execute(
-            "INSERT INTO gto_preflop_situations (position, vs_position, range_type, raise_size, situation_label) VALUES (?,?,?,?,?)",
-            (req.position, req.vs_position, req.range_type, req.raise_size, req.situation_label)
+            "INSERT INTO gto_preflop_situations "
+            "(position, vs_position, range_type, raise_size, situation_label, action_seq, hero_position, num_active) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (req.position, vs_position, req.range_type, req.raise_size,
+             req.situation_label, action_seq, hero_position, num_active)
         )
         sit_id = cur.lastrowid
 
@@ -164,12 +184,16 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
     conn.commit()
     conn.close()
 
-    # 캐시 무효화
+    # 캐시 무효화 (enum + 시퀀스 키 캐시 모두)
     import gto.loader as loader
     loader._cache.clear()
+    loader._cache_by_seq.clear()
     loader._loaded = False
 
-    return {"ok": True, "situation": req.situation_label, "hands": len(req.hands)}
+    return {
+        "ok": True, "situation": req.situation_label,
+        "hands": len(req.hands), "action_seq": action_seq,
+    }
 
 
 @app.get("/gto/preflop/range")

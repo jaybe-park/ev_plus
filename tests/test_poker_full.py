@@ -1159,6 +1159,129 @@ def test_6_12_vs_open_routing_via_seq():
     assert "HJ" in rec["situation"] and "UTG" in rec["situation"], rec
 
 
+def _seed_situation(position, vs_position, range_type, raise_size, label,
+                    hands, action_seq):
+    """② 테스트용: (선택적) action_seq 포함 시추에이션 + 핸드 시딩 후 로더 캐시 무효화."""
+    from db.connection import get_connection
+    import gto.loader as gto_loader
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR IGNORE INTO gto_preflop_situations "
+        "(position, vs_position, range_type, raise_size, situation_label, action_seq) "
+        "VALUES (?,?,?,?,?,?)",
+        (position, vs_position, range_type, raise_size, label, action_seq),
+    )
+    conn.commit()
+    if vs_position is None:
+        sid = conn.execute(
+            "SELECT id FROM gto_preflop_situations "
+            "WHERE position=? AND range_type=? AND vs_position IS NULL",
+            (position, range_type),
+        ).fetchone()[0]
+    else:
+        sid = conn.execute(
+            "SELECT id FROM gto_preflop_situations "
+            "WHERE position=? AND range_type=? AND vs_position=?",
+            (position, range_type, vs_position),
+        ).fetchone()[0]
+    for hand, fr in hands.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO gto_preflop_hands "
+            "(situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin) "
+            "VALUES (?,?,?,?,?,?)",
+            (sid, hand, fr.get("fold", 0.0), fr.get("call", 0.0),
+             fr.get("raise", 0.0), fr.get("allin", 0.0)),
+        )
+    conn.commit()
+    conn.close()
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+
+
+def test_6_13_seq_key_and_enum_key_same_range():
+    """② (a): 같은 스팟을 enum 키와 시퀀스 키로 조회하면 동일한 레인지(같은 객체)를
+    가리켜야 한다. 시퀀스 키 경로가 기존 enum 경로와 병렬로 같은 데이터를 반환함을 검증."""
+    from gto.url_generator import situation_to_node_key
+    from gto.loader import get_open_range, get_vs_open_range, get_range_by_seq
+
+    # RFI(UTG, 노드 키="") + vs_open(HJ vs UTG, 노드 키="R2.5")
+    key_utg = situation_to_node_key("UTG", None, "open")
+    key_hj = situation_to_node_key("HJ", "UTG", "vs_open")
+    assert key_utg == "" and key_hj == "R2.5", (key_utg, key_hj)
+
+    _seed_situation("UTG", None, "open", 2.5, "UTG RFI",
+                    {"AKs": {"raise": 1.0}}, key_utg)
+    _seed_situation("HJ", "UTG", "vs_open", 8.0, "HJ vs UTG open",
+                    {"AKs": {"call": 0.5, "raise": 0.5}}, key_hj)
+
+    assert get_open_range("UTG") is get_range_by_seq(key_utg), "UTG RFI enum≠seq"
+    assert get_vs_open_range("HJ", "UTG") is get_range_by_seq(key_hj), "HJ vs UTG enum≠seq"
+    # 없는 노드 키는 None
+    from gto.loader import get_range_by_seq as g
+    assert g("R2.5-R8-R17.5") is None
+
+
+def test_6_14_runtime_snap_maps_near_size_to_node():
+    """② (b): 런타임의 근접 레이즈 사이즈가 캐노니컬 노드로 올바르게 스냅돼 조회되는지.
+    실전 3벳 7.5bb(+오픈 2.3bb)가 깊이 기준 캐노니컬 "R2.5-R8-..." 노드로 매핑돼야 함."""
+    from gto.advisor import GTOAdvisor, canonical_node_key
+    from gto.url_generator import situation_to_node_key
+    from gto.loader import get_range_by_seq, get_vs_3bet_range
+
+    node_key = situation_to_node_key("UTG", "UTG/HJ", "vs_3bet")
+    assert node_key == "R2.5-R8-F-F-F-F", node_key
+    _seed_situation("UTG", "UTG/HJ", "vs_3bet", 21.5, "UTG vs HJ 3bet",
+                    {"AKs": {"fold": 0.3, "call": 0.0, "raise": 0.7}}, node_key)
+
+    # 실전 시퀀스: 오픈 2.3bb, 3벳 7.5bb → 깊이 스냅 → 2.5 / 8
+    seq = [
+        {"position": "UTG", "action": "raise", "amount_bb": 2.3},
+        {"position": "HJ", "action": "raise", "amount_bb": 7.5},
+        {"position": "CO", "action": "fold"},
+        {"position": "BTN", "action": "fold"},
+        {"position": "SB", "action": "fold"},
+        {"position": "BB", "action": "fold"},
+    ]
+    assert canonical_node_key(seq) == node_key, canonical_node_key(seq)
+    assert get_range_by_seq(canonical_node_key(seq)) is get_vs_3bet_range("UTG", "UTG", "HJ")
+
+    # advisor 시퀀스 경로도 이 노드를 반환해야 함
+    advisor = GTOAdvisor()
+    gs = {"street": "프리플랍", "current_bet": 150, "preflop_seq": seq}
+    rec = advisor._recommend_by_seq([c("A", "S"), c("K", "S")], "UTG", gs, big_blind=20)
+    assert rec is not None and rec["node_key"] == node_key, rec
+    assert "UTG" in rec["situation"], rec
+
+
+def test_6_15_migration_normalizes_vs3bet_format():
+    """② (c): 마이그레이션 백필(backfill_v12)이 vs_3bet의 반쪽 포맷(three_bettor만
+    저장)을 'opener/three_bettor'로 정규화하고 캐노니컬 노드 키를 채우는지 검증."""
+    from db.connection import get_connection
+    from db.schema import backfill_v12
+
+    conn = get_connection()  # 격리 임시 DB(v12), 컬럼 이미 존재
+    # 인계된 불일치 재현: BTN 오프너가 BB 3벳에 대응하는데 vs_position='BB'(반쪽)로 저장
+    conn.execute(
+        "INSERT OR IGNORE INTO gto_preflop_situations "
+        "(position, vs_position, range_type, raise_size, situation_label) "
+        "VALUES ('BTN', 'BB', 'vs_3bet', 28.5, 'BTN vs BB 3bet')"
+    )
+    conn.commit()
+
+    backfill_v12(conn)  # 마이그레이션 백필 로직 직접 실행
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT vs_position, action_seq, hero_position, num_active "
+        "FROM gto_preflop_situations WHERE position='BTN' AND range_type='vs_3bet'"
+    ).fetchone()
+    conn.close()
+    assert row["vs_position"] == "BTN/BB", f"정규화 실패: {row['vs_position']}"
+    assert row["action_seq"] == "F-F-F-R2.5-F-R8", f"노드 키 오류: {row['action_seq']}"
+    assert row["hero_position"] == "BTN"
+    assert row["num_active"] == 2, row["num_active"]
+
+
 # ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
@@ -1227,6 +1350,9 @@ ALL_TESTS = [
     ("6-10 스퀴즈 구조화 시퀀스에 콜 포함",     test_6_10_squeeze_seq_includes_call),
     ("6-11 헤즈업 시퀀스 BTN/SB 라벨 유지",     test_6_11_headsup_seq_labels_btnSB),
     ("6-12 vs_open 시퀀스 라우팅 스팟체크",     test_6_12_vs_open_routing_via_seq),
+    ("6-13 시퀀스 키=enum 키 동일 레인지",      test_6_13_seq_key_and_enum_key_same_range),
+    ("6-14 런타임 사이즈 스냅→노드 매핑",       test_6_14_runtime_snap_maps_near_size_to_node),
+    ("6-15 마이그레이션 vs_3bet 포맷 정규화",   test_6_15_migration_normalizes_vs3bet_format),
 ]
 
 

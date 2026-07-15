@@ -52,7 +52,13 @@ def _migrate(conn: sqlite3.Connection):
         if current > 0:
             for v in range(current + 1, SCHEMA_VERSION + 1):
                 for stmt in MIGRATIONS.get(v, []):
-                    cur.executescript(stmt)
+                    # 마이그레이션 스텝은 SQL 문자열 또는 콜러블(conn을 받는 파이썬
+                    # 함수)일 수 있다. 콜러블은 순수 SQL로 표현 불가한 결정론적
+                    # 데이터 백필(예: v12 캐노니컬 노드 키 계산)에 사용된다.
+                    if callable(stmt):
+                        stmt(conn)
+                    else:
+                        cur.executescript(stmt)
         for stmt in ALL_STATEMENTS:
             cur.executescript(stmt)
         cur.execute(

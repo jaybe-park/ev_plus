@@ -3,8 +3,10 @@
 SQLite 기반. `poker.db` 파일로 저장.  
 v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**된다 (RL 학습 데이터).
 
-현재 `SCHEMA_VERSION = 11` (`db/schema.py`). 마이그레이션은 `db/connection.py`가
+현재 `SCHEMA_VERSION = 12` (`db/schema.py`). 마이그레이션은 `db/connection.py`가
 현재 버전 초과분만 순서대로 실행한다 (`MIGRATIONS` dict, 버전별 1회성 DDL).
+v12부터 마이그레이션 스텝은 **SQL 문자열 또는 콜러블**(conn을 받는 파이썬 함수)일 수
+있다 — 순수 SQL로 표현 불가한 결정론적 데이터 백필(v12 캐노니컬 노드 키 계산)용.
 
 ---
 
@@ -87,12 +89,22 @@ v6부터 게임 세션과 연결되어 **모든 핸드/액션이 자동 기록**
 | `gto_preflop_situations` | `position` / `vs_position` / `range_type` | open / vs_open / vs_3bet, `vs_position` NULL=RFI |
 | | `raise_size` (REAL, v11) | bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5). v10까지는 TEXT("3x" 플레이스홀더)였으나 사이징이 배수 공식으로 추론 불가함이 확인돼(포지션마다 배수가 다름) 실측 숫자만 저장하도록 변경 — [GTO 데이터 문서](gto-data.md) 참고 |
 | | `situation_label` | 사람이 읽는 설명 |
+| | `action_seq` (TEXT, v12) | **캐노니컬 노드 키** — 히어로 결정 직전까지의 액션 시퀀스(예: `"R2.5-R8-F-F-F-F"`, RFI UTG=`""`). 프리플랍 전체 트리 커버리지(②)의 병렬 조회 키. `F`/`X`/`C`/`R{bb}` 토큰, 포지션 순서 UTG→…→BB, 레이즈는 **깊이 캐노니컬 사이즈**로 스냅. 생성 단일 소스: `gto/url_generator.situation_to_node_key`(파생)↔`gto/advisor.canonical_node_key`(런타임). nullable |
+| | `hero_position` (TEXT, v12) | 결정 주체(시퀀스 파생, 조회용) |
+| | `num_active` (INTEGER, v12) | 히어로 결정 시점 미폴드 인원(6 − 폴드 토큰 수, 파생) |
 | `gto_preflop_hands` | `situation_id` | situations FK (ON DELETE CASCADE) |
 | | `hand` | "AKs" / "AA" / "K7o" 등 169핸드 표기 |
 | | `freq_fold/call/raise/allin` | 액션별 빈도 0~1, 합≈1.0 |
 
-**인덱스**: `idx_gto_pre_sit (position, vs_position, range_type)` — 상황 조회,
-`idx_gto_pre_hand (situation_id, hand)` — 핸드별 빈도 조회.
+**인덱스**: `idx_gto_pre_sit (position, vs_position, range_type)` — 상황 조회(레거시 enum 키),
+`idx_gto_pre_hand (situation_id, hand)` — 핸드별 빈도 조회,
+`idx_gto_pre_seq (action_seq) UNIQUE` (v12) — 시퀀스 키 조회 + 노드 키 1:1 매칭 강제
+(nullable → NULL 다수 허용). 두 조회 경로(enum / 시퀀스 키)는 **병렬 공존**하며 같은
+레인지 객체를 가리킨다(`gto/loader.py`의 `_cache` / `_cache_by_seq`).
+
+> v12 마이그레이션: 컬럼 3개 ADD + `backfill_v12`(결정론적 노드 키 백필, vs_3bet
+> `vs_position` 반쪽 포맷 `"BB"`→`"BTN/BB"` 정규화) + 유니크 인덱스 생성. 데이터 손실 0
+> (기존 11행/1778핸드 보존). 상세: [프리플랍 트리 커버리지 문서](gto-preflop-tree.md) "② 구현 결정".
 
 ### gto_postflop_situations / gto_postflop_hands (v2, 미사용)
 포스트플랍 GTO 데이터용으로 v2에 스키마만 선반영. 아직 데이터 수집 전이라

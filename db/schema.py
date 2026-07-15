@@ -2,7 +2,9 @@
 poker_simulator DB 스키마 정의 및 마이그레이션
 """
 
-SCHEMA_VERSION = 11
+import sqlite3
+
+SCHEMA_VERSION = 12
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -152,6 +154,13 @@ CREATE INDEX IF NOT EXISTS idx_postflop_game_pos ON postflop_actions(game_uuid, 
 # v11: raise_size를 TEXT("3x" 플레이스홀더) → REAL(bb 단위 실측 raise-to 숫자,
 # 예: 8.0, 11.0, 13.5)로 변경. 사이징은 배수 공식으로 추론 불가 — GTO Wizard에서
 # 실측한 값만 저장한다 (docs/gto-data.md 2026-07-10 근본 원인 참고).
+# v12: 프리플랍 전체 트리 커버리지(②)를 위해 캐노니컬 시퀀스 키 컬럼 추가.
+#   - action_seq: 히어로 결정 직전까지의 액션 시퀀스를 캐노니컬 사이즈로 스냅한
+#     노드 키(예: "R2.5-R8-F-F-F-F", RFI UTG는 ""). 임의 노드(스퀴즈/멀티웨이/4벳+)를
+#     일반적으로 담기 위한 병렬 키. 기존 (position,vs_position,range_type) enum 키는
+#     레거시/파생으로 nullable 유지(제거하지 않음 — 봇/조회/테스트 하위 호환).
+#   - hero_position/num_active: 시퀀스에서 파생한 조회/디버깅용 컬럼.
+#   UNIQUE(action_seq)는 별도 부분 유니크 인덱스(idx_gto_pre_seq)로 강제(NULL 다수 허용).
 CREATE_GTO_PREFLOP_SITUATIONS = """
 CREATE TABLE IF NOT EXISTS gto_preflop_situations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,6 +169,9 @@ CREATE TABLE IF NOT EXISTS gto_preflop_situations (
     range_type      TEXT    NOT NULL,   -- open | vs_open | vs_3bet
     raise_size      REAL,               -- bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5)
     situation_label TEXT    NOT NULL,   -- "BTN RFI", "BB vs BTN open"
+    action_seq      TEXT,               -- v12: 캐노니컬 노드 키(히어로 결정 직전 시퀀스). NULL 허용
+    hero_position   TEXT,               -- v12: 결정 주체(시퀀스 파생, 조회용)
+    num_active      INTEGER,            -- v12: 히어로 결정 시점 미폴드 인원(6 - 폴드수, 파생)
     UNIQUE(position, vs_position, range_type)
 );
 """
@@ -213,6 +225,13 @@ CREATE INDEX IF NOT EXISTS idx_gto_pre_sit   ON gto_preflop_situations(position,
 CREATE INDEX IF NOT EXISTS idx_gto_pre_hand  ON gto_preflop_hands(situation_id, hand);
 CREATE INDEX IF NOT EXISTS idx_gto_post_sit  ON gto_postflop_situations(street, ip_position, oop_position);
 CREATE INDEX IF NOT EXISTS idx_gto_post_hand ON gto_postflop_hands(situation_id, hand);
+"""
+
+# v12: 시퀀스 키(노드 키) 유니크 인덱스. nullable 컬럼이라 NULL은 서로 distinct로
+# 취급돼 여러 행이 아직 키 없이(NULL) 공존 가능(부분/nullable 허용). 백필된 실측 값은
+# 서로 distinct해야 함 → 저장/조회 노드 키의 1:1 매칭을 인덱스가 강제.
+CREATE_GTO_PREFLOP_SEQ_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gto_pre_seq ON gto_preflop_situations(action_seq);
 """
 
 # v11: gto_missing_spots → gto_missing_spots_preflop 개명. 포스트플랍 GTO
@@ -301,7 +320,50 @@ CREATE TABLE IF NOT EXISTS worker_meta (
 );
 """
 
+def backfill_v12(conn):
+    """v12 백필: 기존 gto_preflop_situations 행에 캐노니컬 노드 키(action_seq) +
+    hero_position + num_active를 결정론적으로 채우고, vs_3bet vs_position 포맷을
+    정규화한다. 데이터 손실 0(기존 컬럼은 그대로 두고 파생 컬럼만 UPDATE).
+
+    - 노드 키 생성은 gto.url_generator.situation_to_node_key를 **단일 소스**로 사용
+      (런타임 조회 키 gto.advisor.canonical_node_key와 동일한 캐노니컬 사이즈 테이블).
+    - vs_3bet 정규화: 우리 데이터 모델은 "오프너가 3벳에 대응"하는 레인지만 담으므로
+      opener == hero(position)다. three_bettor만 저장된 행(예: BTN 행 vs_position="BB")을
+      'opener/three_bettor'(="BTN/BB")로 정규화 — 인계된 포맷 불일치(UTG 행="UTG/HJ"는
+      이미 정규형, BTN 행="BB"만 반쪽) 해소. 이로써 loader.get_vs_3bet_range의
+      'opener/three_bettor' 조회 키와도 일치하게 됨(기존 enum 경로 조회도 정상화).
+
+    connection._migrate가 이 함수를 콜러블 마이그레이션 스텝으로 호출한다(호출부에서
+    최종 conn.commit 수행). 신규 DB(current==0)에서는 마이그레이션이 실행되지 않으므로
+    (백필할 기존 데이터 없음) 호출되지 않는다.
+    """
+    from gto.url_generator import situation_to_node_key  # 지연 임포트(순환 방지)
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT id, position, vs_position, range_type FROM gto_preflop_situations"
+    ).fetchall()
+    for r in rows:
+        rid, position, vs_position, range_type = (
+            r["id"], r["position"], r["vs_position"], r["range_type"]
+        )
+        norm_vs = vs_position
+        if range_type == "vs_3bet" and vs_position and "/" not in vs_position:
+            # three_bettor만 저장된 반쪽 포맷 → opener(=hero=position)를 앞에 붙여 정규화
+            norm_vs = f"{position}/{vs_position}"
+        node_key = situation_to_node_key(position, norm_vs, range_type)
+        num_active = None
+        if node_key is not None:
+            folds = sum(1 for t in node_key.split("-") if t == "F") if node_key else 0
+            num_active = 6 - folds
+        cur.execute(
+            "UPDATE gto_preflop_situations "
+            "SET vs_position=?, action_seq=?, hero_position=?, num_active=? WHERE id=?",
+            (norm_vs, node_key, position, num_active, rid),
+        )
+
+
 # 버전별 1회성 마이그레이션 (connection._migrate가 현재버전 초과분만 실행)
+# 각 스텝은 SQL 문자열(executescript) 또는 콜러블(conn을 받는 파이썬 함수)일 수 있다.
 MIGRATIONS = {
     6: [
         "DROP TABLE IF EXISTS preflop_actions;",
@@ -336,6 +398,18 @@ MIGRATIONS = {
         "DROP INDEX IF EXISTS idx_gto_missing_collected;",
         "ALTER TABLE gto_missing_spots RENAME TO gto_missing_spots_preflop;",
     ],
+    12: [
+        # 프리플랍 전체 트리 커버리지 ②: 캐노니컬 시퀀스 키 컬럼 추가 + 백필.
+        # SQLite ADD COLUMN은 UNIQUE 제약을 인라인으로 못 붙이므로(문서 제약) 컬럼만
+        # 추가하고, 유니크는 아래 부분 유니크 인덱스로 별도 강제한다.
+        "ALTER TABLE gto_preflop_situations ADD COLUMN action_seq TEXT;",
+        "ALTER TABLE gto_preflop_situations ADD COLUMN hero_position TEXT;",
+        "ALTER TABLE gto_preflop_situations ADD COLUMN num_active INTEGER;",
+        # 콜러블 스텝: 기존 행 결정론적 백필 + vs_3bet 포맷 정규화(반드시 인덱스 생성 전).
+        backfill_v12,
+        # 백필로 채워진 action_seq가 서로 distinct임을 유니크 인덱스로 강제.
+        CREATE_GTO_PREFLOP_SEQ_INDEX,
+    ],
 }
 
 ALL_STATEMENTS = [
@@ -350,6 +424,8 @@ ALL_STATEMENTS = [
     CREATE_GTO_POSTFLOP_SITUATIONS,
     CREATE_GTO_POSTFLOP_HANDS,
     CREATE_GTO_INDEXES,
+    # v12: 프리플랍 시퀀스 키(노드 키) 유니크 인덱스
+    CREATE_GTO_PREFLOP_SEQ_INDEX,
     # v3: 미수집 스팟 큐 (v11: gto_missing_spots → gto_missing_spots_preflop 개명)
     CREATE_GTO_MISSING_SPOTS_PREFLOP,
     CREATE_GTO_MISSING_PREFLOP_INDEX,
