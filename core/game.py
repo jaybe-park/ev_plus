@@ -154,15 +154,28 @@ class TexasHoldem:
         """
         플레이어 액션 적용. 유효하면 True 반환.
         웹앱 전환 시 이 메서드를 HTTP endpoint에서 호출하면 됩니다.
+
+        각 "action" 이벤트에는 position/street/to_amount(해당 라운드에서
+        플레이어가 도달한 총 베팅액; fold/check는 None)가 함께 기록된다.
+        이 필드들이 preflop_action_seq()의 구조화 시퀀스 재구성 기반이 된다.
         """
+        pos = self.get_positions().get(player.name, "")
+        street = self.current_street.value
+
         if action == Action.FOLD:
             player.fold()
-            self._emit("action", {"player": player.name, "action": "폴드"})
+            self._emit("action", {
+                "player": player.name, "action": "폴드",
+                "position": pos, "street": street, "to_amount": None,
+            })
 
         elif action == Action.CHECK:
             if self.current_bet > player.current_bet:
                 return False  # 체크 불가
-            self._emit("action", {"player": player.name, "action": "체크"})
+            self._emit("action", {
+                "player": player.name, "action": "체크",
+                "position": pos, "street": street, "to_amount": None,
+            })
 
         elif action == Action.CALL:
             call_amount = self.current_bet - player.current_bet
@@ -170,6 +183,7 @@ class TexasHoldem:
             self.pot += actual
             self._emit("action", {
                 "player": player.name, "action": "콜", "amount": actual,
+                "position": pos, "street": street, "to_amount": player.current_bet,
             })
 
         elif action == Action.RAISE:
@@ -184,6 +198,7 @@ class TexasHoldem:
             self.current_bet = amount
             self._emit("action", {
                 "player": player.name, "action": "레이즈", "amount": amount,
+                "position": pos, "street": street, "to_amount": player.current_bet,
             })
 
         elif action == Action.ALL_IN:
@@ -193,6 +208,7 @@ class TexasHoldem:
                 self.current_bet = player.current_bet
             self._emit("action", {
                 "player": player.name, "action": "올인", "amount": actual,
+                "position": pos, "street": street, "to_amount": player.current_bet,
             })
 
         return True
@@ -340,6 +356,51 @@ class TexasHoldem:
             positions[self.players[idx].name] = label
         return positions
 
+    # 한글 액션 라벨 → 구조화 액션 키
+    _ACTION_KR_TO_EN = {
+        "폴드": "fold", "체크": "check", "콜": "call",
+        "레이즈": "raise", "올인": "allin",
+    }
+
+    def preflop_action_seq(self) -> List[dict]:
+        """프리플랍 자발적 액션(블라인드 제외) 구조화 시퀀스.
+
+        반환: [{"position": str, "action": "fold"|"call"|"raise"|"allin"|"check",
+                "amount_bb": float|None}] (행동 순서대로).
+
+        - position은 get_positions() 라벨(헤즈업은 "BTN/SB" 원본 유지 — advisor가
+          조회 시점에 6-max "SB"로 국소 매핑).
+        - amount_bb = 해당 라운드 도달 총 베팅액 / big_blind (call/raise/allin).
+          fold/check는 None.
+        - 블라인드(SB/BB 강제 베팅)는 "blinds" 이벤트라 "action" 필터에서 자연히
+          제외됨 → GTO Wizard preflop_actions 포맷(자발적 액션만)과 동일.
+        - "프리플랍" = current_street가 PREFLOP인 동안 발행된 action 이벤트.
+          event_log는 핸드 시작 시 리셋되고 스트리트 정보가 이벤트에 박혀 있으므로
+          플랍 이후 액션은 street 필터로 걸러진다.
+        """
+        seq: List[dict] = []
+        for event in self.event_log:
+            if event.event_type != "action":
+                continue
+            data = event.data
+            if data.get("street") != Street.PREFLOP.value:
+                continue
+            act = self._ACTION_KR_TO_EN.get(data.get("action"))
+            if act is None:
+                continue
+            to_amount = data.get("to_amount")
+            amount_bb = (
+                to_amount / self.big_blind
+                if (to_amount is not None and self.big_blind)
+                else None
+            )
+            seq.append({
+                "position": data.get("position", ""),
+                "action": act,
+                "amount_bb": amount_bb,
+            })
+        return seq
+
     def _get_game_state(self) -> dict:
         positions = self.get_positions()
         return {
@@ -350,6 +411,8 @@ class TexasHoldem:
             "big_blind": self.big_blind,
             "community_cards": [str(c) for c in self.community_cards],
             "positions": positions,
+            # 프리플랍 구조화 액션 시퀀스 (advisor가 콜/순서/참여인원 판별에 사용)
+            "preflop_seq": self.preflop_action_seq(),
             "players": [
                 {
                     "name": p.name,

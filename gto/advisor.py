@@ -35,29 +35,57 @@ def _save_missing_spot(
         pass  # DB 없거나 오류 시 조용히 무시
 
 
-def _count_preflop_raises(action_log: list) -> int:
-    """action_log에서 프리플랍 레이즈 횟수 계산"""
-    count = 0
-    for entry in action_log:
-        if "──" in entry:  # 스트리트 구분선
-            break
-        if "레이즈" in entry:
-            count += 1
-    return count
+def _count_raises(preflop_seq: list) -> int:
+    """구조화 프리플랍 시퀀스에서 자발적 레이즈 횟수.
+
+    (구) _count_preflop_raises(한글 action_log 파싱)의 대체. 기존 한글 파서가
+    "레이즈" 문자열만 셌고 "올인"은 세지 않았던 것과 동일하게, 여기서도
+    action == "raise"만 카운트한다(allin 제외) — 기존 라우팅 동작 보존.
+    """
+    return sum(1 for a in preflop_seq if a.get("action") == "raise")
 
 
-def _find_raisers_in_log(action_log: list, positions: dict) -> list:
-    """action_log에서 레이즈한 포지션 목록 (순서대로)"""
-    raisers = []
-    for entry in action_log:
-        if "──" in entry:
-            break
-        if "레이즈" in entry:
-            for name, pos in positions.items():
-                if name in entry and pos not in raisers:
-                    raisers.append(pos)
-                    break
-    return raisers
+def _raisers(preflop_seq: list) -> list:
+    """레이즈한 포지션 목록(행동 순서, 중복 제거).
+
+    (구) _find_raisers_in_log의 대체. 기존과 동일하게 "raise" 액션만 대상으로
+    하고, 같은 포지션의 중복은 제거한다.
+    """
+    out = []
+    for a in preflop_seq:
+        if a.get("action") == "raise":
+            pos = a.get("position")
+            if pos and pos not in out:
+                out.append(pos)
+    return out
+
+
+def _fmt_bb(x) -> str:
+    """bb 사이즈를 캐노니컬 문자열로 (2.5→"2.5", 8.0→"8", 17.5→"17.5")."""
+    if x is None:
+        return ""
+    return f"{x:.1f}".rstrip("0").rstrip(".")
+
+
+def canonical_preflop_actions(preflop_seq: list) -> str:
+    """구조화 시퀀스 → GTO Wizard `preflop_actions` 캐노니컬 문자열.
+
+    F=fold, X=check, C=call, R{bb}=raise/allin to-amount(bb).
+    예: [UTG raise 2.5, HJ raise 8, CO fold] → "R2.5-R8-F".
+    ②(시퀀스 키 스키마)에서 노드 키 생성에 재사용하기 위한 헬퍼(이번 필수 아님).
+    """
+    parts = []
+    for a in preflop_seq:
+        act = a.get("action")
+        if act == "fold":
+            parts.append("F")
+        elif act == "check":
+            parts.append("X")
+        elif act == "call":
+            parts.append("C")
+        elif act in ("raise", "allin"):
+            parts.append(f"R{_fmt_bb(a.get('amount_bb'))}")
+    return "-".join(parts)
 
 
 class GTOAdvisor:
@@ -90,13 +118,15 @@ class GTOAdvisor:
         hand = hand_to_notation(hole_cards[0], hole_cards[1])
         current_bet = game_state.get("current_bet", 0)
         street = game_state.get("street", "프리플랍")
-        action_log = game_state.get("action_log", [])
+        # 구조화 프리플랍 시퀀스 (core/game.py._get_game_state가 제공).
+        # 없으면(구식 game_state) 빈 시퀀스로 폴백 — RFI 등 시퀀스 불필요 경로는 정상 동작.
+        preflop_seq = game_state.get("preflop_seq") or []
 
         if street != "프리플랍":
             return None
 
         # ── 베팅 라운드 판별 ────────────────────────────
-        raise_count = _count_preflop_raises(action_log)
+        raise_count = _count_raises(preflop_seq)
         is_rfi = current_bet <= big_blind
 
         # RFI
@@ -124,7 +154,13 @@ class GTOAdvisor:
 
         # vs_open (레이즈 1번)
         if raise_count <= 1:
-            opener_pos = find_opener_position(positions, game_state, big_blind)
+            # 오프너 = 시퀀스상 첫 레이저. 레이즈가 없는데 current_bet가 BB를
+            # 넘는 경우(예: 올인만 발생 — 위 _count_raises는 allin을 세지 않음)는
+            # 기존과 동일하게 current_bet 기반 find_opener_position으로 폴백한다.
+            raisers = _raisers(preflop_seq)
+            opener_pos = raisers[0] if raisers else find_opener_position(
+                positions, game_state, big_blind
+            )
             if opener_pos is None:
                 return None
             if opener_pos == "BTN/SB":
@@ -157,7 +193,7 @@ class GTOAdvisor:
 
         # vs_3bet (레이즈 2번)
         if raise_count == 2:
-            raisers = _find_raisers_in_log(action_log, positions)
+            raisers = _raisers(preflop_seq)
             if len(raisers) >= 2:
                 opener_pos, three_bettor_pos = raisers[0], raisers[1]
                 if opener_pos == "BTN/SB":

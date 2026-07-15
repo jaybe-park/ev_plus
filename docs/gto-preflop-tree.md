@@ -113,6 +113,31 @@ history_spot=N=지금까지 나온 액션 수=현재 액션할 좌석의 결정 
   구조화 시퀀스 → 기존 enum(RFI/vs_open/vs_3bet) 판정으로 매핑하는 어댑터를 두거나,
   ②와 함께 시퀀스 키 조회로 일괄 전환. 모든 기존 테스트 통과가 게이트.
 
+### ① 구현 완료 (2026-07-15)
+
+**택한 방식 = event_log 이벤트 강화 + 별도 파생 메서드.**
+- `core/game.py::apply_action`의 "action" 이벤트에 `position`(get_positions,
+  헤즈업 "BTN/SB" 원본 유지) + `street` + `to_amount`(해당 라운드 도달 총 베팅액;
+  fold/check는 None) 필드 추가. event_log는 기존에 미사용(외부 소비자 0)이라 필드
+  추가는 완전 하위 호환.
+- `core/game.py::preflop_action_seq()`: event_log를 `street=="프리플랍"`으로 필터
+  → `[{position, action: fold|call|raise|allin|check, amount_bb}]` 반환
+  (amount_bb = to_amount / big_blind). 블라인드는 "blinds" 이벤트라 자동 제외.
+- `_get_game_state()`에 `preflop_seq` 노출. `server/session.py`는 advisor 호출 시
+  `game._get_game_state()`를 그대로 쓰므로 자동 전달(session.py 변경 불필요).
+  UI 표시용 한글 `action_log`는 그대로 유지.
+- `gto/advisor.py`: 한글 문자열 파서(`_count_preflop_raises`/`_find_raisers_in_log`)를
+  seq 기반(`_count_raises`/`_raisers`)으로 교체. 라우팅/헤즈업 매핑/모델-밖 가드는
+  동작 불변. **기존 quirk 보존**: raise 카운트는 "raise"만(allin 제외 — 구 파서가
+  "레이즈" 문자열만 셌던 것과 동일). vs_open 오프너는 seq 첫 레이저, 레이즈 없이
+  current_bet>BB인 올인 엣지만 `find_opener_position` 폴백.
+- `gto/advisor.py::canonical_preflop_actions(seq)`: F/X/C/R{bb} 캐노니컬 문자열
+  생성 헬퍼(② 노드 키 생성에 재사용).
+
+**검증**: `run_all.py --full` 전체 통과 + 유닛테스트 3종 추가(스퀴즈 콜 구조화/
+헤즈업 라벨 유지/vs_open 라우팅). ②로 넘길 때 주의: 실 DB의 vs_3bet `vs_position`
+저장 포맷이 불일치(UTG는 "UTG/HJ", BTN은 "BB") — ② 마이그레이션 때 정규화 필요.
+
 ---
 
 ## 수집·검증 전략 (④⑤⑥)

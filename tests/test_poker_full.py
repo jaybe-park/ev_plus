@@ -1044,6 +1044,121 @@ def test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi():
     assert "SB" in rec["situation"], f"situation에 SB 매핑 흔적이 있어야 함: {rec['situation']}"
 
 
+def test_6_10_squeeze_seq_includes_call():
+    """스퀴즈 라인(UTG오픈→HJ3벳→CO콜→BTN결정)에서 구조화 프리플랍 시퀀스가
+    CO의 '콜'을 구조적으로 담는지 검증. 기존 한글 문자열 파서
+    (_count_preflop_raises/_find_raisers_in_log)로는 콜/정확한 순서/참여 인원을
+    구조적으로 구분할 수 없었던 바로 그 부분이다.
+    advisor가 BTN 스팟에서 None을 반환하는 것 자체는 정상(모델 밖: BTN != 오프너 UTG).
+    """
+    from gto.advisor import GTOAdvisor, canonical_preflop_actions
+
+    game, players = make_game(6, chips=1000, sb=10)  # bb=20
+    game.start_hand()
+    positions = game.get_positions()
+    bb = game.big_blind
+
+    utg = next(p for p in players if positions[p.name] == "UTG")
+    hj = next(p for p in players if positions[p.name] == "HJ")
+    co = next(p for p in players if positions[p.name] == "CO")
+
+    game.apply_action(utg, Action.RAISE, int(2.5 * bb))  # UTG 오픈 2.5bb → 50
+    game.apply_action(hj, Action.RAISE, int(8 * bb))     # HJ 3벳 8bb → 160
+    game.apply_action(co, Action.CALL)                   # CO 콜드콜 → 160
+
+    seq = game.preflop_action_seq()
+    assert len(seq) == 3, f"자발적 액션 3개여야 함(블라인드 제외): {seq}"
+    assert [a["action"] for a in seq] == ["raise", "raise", "call"], seq
+    assert [a["position"] for a in seq] == ["UTG", "HJ", "CO"], seq
+
+    co_entry = seq[2]
+    assert co_entry["action"] == "call", f"CO 액션이 콜로 구조화돼야 함: {co_entry}"
+    assert co_entry["position"] == "CO"
+    assert abs(co_entry["amount_bb"] - 8.0) < 1e-9, f"CO 콜 to-amount 8bb: {co_entry}"
+
+    # 캐노니컬 문자열도 콜을 담아야 함 (② 노드 키 기반)
+    assert canonical_preflop_actions(seq) == "R2.5-R8-C", canonical_preflop_actions(seq)
+
+    # advisor: BTN은 오프너(UTG)가 아니므로 모델 밖 → None (정상)
+    advisor = GTOAdvisor()
+    gs = game._get_game_state()
+    assert "preflop_seq" in gs and len(gs["preflop_seq"]) == 3, gs.get("preflop_seq")
+    rec = advisor.get_recommendation(
+        hole_cards=[c("A", "S"), c("K", "S")],
+        my_position="BTN",
+        positions=positions,
+        game_state=gs,
+        big_blind=bb,
+    )
+    assert rec is None, f"BTN는 오프너가 아니므로 모델 밖(None)이어야 함: {rec}"
+
+
+def test_6_11_headsup_seq_labels_btnSB():
+    """헤즈업(2인) 프리플랍 시퀀스는 딜러를 원본 라벨 'BTN/SB'로 담아야 한다
+    (advisor가 조회 시점에 'SB'로 매핑). test_6_9(advisor 매핑)와 함께 헤즈업 회귀 방지."""
+    game, players = make_game(2, chips=1000, sb=10)  # bb=20
+    game.start_hand()
+    positions = game.get_positions()
+    assert "BTN/SB" in positions.values()
+    btnsb = next(p for p in players if positions[p.name] == "BTN/SB")
+
+    game.apply_action(btnsb, Action.RAISE, int(3 * game.big_blind))  # 3bb → 60
+    seq = game.preflop_action_seq()
+    assert len(seq) == 1, seq
+    assert seq[0]["position"] == "BTN/SB", f"헤즈업 딜러 라벨 원본 유지: {seq}"
+    assert seq[0]["action"] == "raise"
+    assert abs(seq[0]["amount_bb"] - 3.0) < 1e-9, seq
+
+
+def test_6_12_vs_open_routing_via_seq():
+    """리팩터 후에도 vs_open 스팟(HJ vs UTG open)이 구조화 시퀀스 기반 라우팅으로
+    동일 데이터를 반환하는지 스팟체크(격리 DB에 최소 데이터 시딩)."""
+    from db.connection import get_connection
+    from gto.advisor import GTOAdvisor
+    import gto.loader as gto_loader
+
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR IGNORE INTO gto_preflop_situations
+           (position, vs_position, range_type, raise_size, situation_label)
+           VALUES ('HJ', 'UTG', 'vs_open', 8.0, 'HJ vs UTG open')"""
+    )
+    conn.commit()
+    sid = conn.execute(
+        "SELECT id FROM gto_preflop_situations "
+        "WHERE position='HJ' AND vs_position='UTG' AND range_type='vs_open'"
+    ).fetchone()[0]
+    conn.execute(
+        """INSERT OR IGNORE INTO gto_preflop_hands
+           (situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin)
+           VALUES (?, 'AKs', 0.0, 0.5, 0.5, 0.0)""",
+        (sid,),
+    )
+    conn.commit()
+    conn.close()
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+
+    game, players = make_game(6, chips=1000, sb=10)  # bb=20
+    game.start_hand()
+    positions = game.get_positions()
+    utg = next(p for p in players if positions[p.name] == "UTG")
+    game.apply_action(utg, Action.RAISE, int(2.5 * game.big_blind))  # UTG 오픈
+
+    advisor = GTOAdvisor()
+    gs = game._get_game_state()
+    rec = advisor.get_recommendation(
+        hole_cards=[c("A", "S"), c("K", "S")],
+        my_position="HJ",
+        positions=positions,
+        game_state=gs,
+        big_blind=game.big_blind,
+    )
+    assert rec is not None, "HJ vs UTG open은 시딩 데이터로 응답해야 함"
+    assert rec["raise_count"] == 1, rec
+    assert "HJ" in rec["situation"] and "UTG" in rec["situation"], rec
+
+
 # ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
@@ -1109,6 +1224,9 @@ ALL_TESTS = [
     ("6-7  사이드팟 — 폴드 기여분 처리",       test_6_7_sidepot_folded_player_contribution),
     ("6-8  사이드팟 분배 후 칩 보존",          test_6_8_sidepot_conservation),
     ("6-9  헤즈업 GTO BTN/SB→SB RFI 매핑",     test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi),
+    ("6-10 스퀴즈 구조화 시퀀스에 콜 포함",     test_6_10_squeeze_seq_includes_call),
+    ("6-11 헤즈업 시퀀스 BTN/SB 라벨 유지",     test_6_11_headsup_seq_labels_btnSB),
+    ("6-12 vs_open 시퀀스 라우팅 스팟체크",     test_6_12_vs_open_routing_via_seq),
 ]
 
 

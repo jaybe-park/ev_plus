@@ -34,10 +34,13 @@
 - `start_hand()`: 리셋 → 블라인드 포스팅 → 홀카드 딜
 - `deal_community(street)`: 플랍(3장) / 턴(1장) / 리버(1장) 딜
 - `run_street(street)`: 베팅 라운드 진행 (`_action_callback` 호출 방식)
-- `apply_action(player, action, amount)`: 개별 액션 적용
+- `apply_action(player, action, amount)`: 개별 액션 적용. "action" 이벤트에
+  `position`/`street`/`to_amount`(해당 라운드 도달 총 베팅액, fold/check는 None) 포함
+- `preflop_action_seq()`: 프리플랍 자발적 액션(블라인드 제외) 구조화 시퀀스
+  `[{position, action, amount_bb}]` 반환. GTO advisor가 콜/순서/참여인원 판별에 사용
 - `showdown()`: 핸드 평가 → 팟 분배 → 딜러 버튼 이동
 - `get_positions()`: `{name: "BTN"}` 형태의 포지션 맵 반환
-- `_get_game_state()`: 현재 상태 dict 반환 (봇 입력용)
+- `_get_game_state()`: 현재 상태 dict 반환 (봇 입력용). `preflop_seq` 포함
 
 ---
 
