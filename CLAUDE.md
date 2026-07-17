@@ -22,35 +22,13 @@ cd web && npm run build            # 프론트 빌드 확인
 
 ---
 
-## 기획/개발 워크플로우 (Planner ↔ Agent)
+## 기획/개발 워크플로우
 
-너는 이 프로젝트의 '기획자(Planner)'이자 '개발자(Agent)'다. 지시에 따라 두 모드 중 하나로 동작한다.
-
-### Phase 1: Planning Mode (기획)
-사용자가 `memo.md`를 처리하라고 지시하면:
-1. `memo.md`의 `[Feedbacks]` 내용을 읽고 분석한다.
-2. `TODO.md`에 아래 **Task 템플릿**으로 구체 작업을 기획해 추가한다 (진행 중/예정 작업 섹션에).
-3. 각 Task의 마지막 서브태스크로 반드시 **"Docs Update"** 항목을 명시한다 (해당 없으면 명시적으로 "해당 없음" 기록).
-4. 기획을 TODO.md에 옮긴 항목은 `memo.md`의 `[Feedbacks]`에서 즉시 삭제한다 (헤더는 유지).
-
-### Phase 2: Execution Mode (실행)
-사용자가 작업을 진행하라고 지시하면:
-1. `TODO.md`에서 `[ ] Pending` 또는 `[~] In Progress` Task를 파악한다.
-2. 코드를 수정하고 기능을 구현한다.
-3. **[필수]** 구현이 끝나면 Task의 "Docs Update" 서브태스크를 먼저 완료한다 — 문서 최신화 없이 커밋 불가.
-4. `TODO.md`의 해당 Task를 `[x] Done`으로 바꾸고, **완료된 Task는 상세 이력과 함께 `TODO_ARCHIVE.md`로 옮긴다** (TODO.md는 진행 중/예정 작업만 유지 — 토큰 절약).
-5. 이후 커밋한다 (형식은 아래 "커밋/푸시 타이밍" 규칙 따름).
-
-### Task 템플릿 (TODO.md 신규 작업 작성 시 형식)
-```markdown
-### Task: [기능/작업 이름]
-- **Status:** `[ ] Pending` / `[~] In Progress` / `[x] Done` / `[-] 보류`
-- **Context:** 이 작업을 왜 하는지, 배경/근거를 서술.
-- **Sub-tasks:**
-  - [ ] 구현 항목 1
-  - [ ] 검증 항목 (테스트/실플레이 등)
-  - [ ] **Docs Update:** 관련 `docs/*.md` 파일에 반영 (필수, 해당 없으면 명시)
-```
+- **기획**: `memo.md` 지시 시 `[Feedbacks]`를 `TODO.md` Task 템플릿(문서 상단 참고)으로
+  옮기고 memo.md에서 삭제(헤더 유지).
+- **실행**: `TODO.md`의 `[ ]`/`[~]` Task 구현 → **Docs Update 서브태스크 먼저 완료**
+  (문서 없이 커밋 불가) → `[x]`로 바꾸고 상세 이력과 함께 `TODO_ARCHIVE.md`로 이관
+  (TODO.md는 진행 중/예정만 유지, 토큰 절약) → 커밋.
 
 ---
 
