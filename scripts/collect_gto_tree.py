@@ -104,6 +104,33 @@ SAFETY_MARGIN = 5  # 남은 스팟이 이 값 이하가 되면 새 수집을 멈
 # 카운터를 읽지 못할 때(파싱 실패)만 폴백으로 쓰는 한도 확정 문구(부분 매칭).
 LIMIT_WARN_PHRASE = "Free accounts can browse 100 preflop spots per day"
 
+# ──────────────────────────────────────────────────────────────────────────
+# 크래시/환경 오류 복구 (2026-07-17, 실전 발견 — 크롬 렌더러 크래시로 84개
+# 노드가 잘못 "검증 실패"로 영구 기록될 뻔한 사고 후 추가)
+# ──────────────────────────────────────────────────────────────────────────
+# extract_node()의 res.reason 중 "진짜 데이터 이상(badSum 등, 사람 확인 필요)"이
+# 아니라 "환경 오류(크래시/타임아웃/네트워크, 재시도하면 되는 것)"를 구분하는 마커.
+# 이 마커에 걸리면 failed(영구 no-retry)에 넣지 않고 frontier로 되돌려 자동 재시도한다.
+ENV_FAILURE_MARKERS = ("navigate 실패", "렌더 대기 타임아웃", "추출 JS 실패")
+CONSEC_ENV_RECOVERY_THRESHOLD = 2   # 연속 환경오류 이 횟수부터 탭 재생성 시도
+CONSEC_ENV_ABORT_THRESHOLD = 6      # 재생성해도 계속 실패하면 이 횟수에서 안전 중단
+PAGE_RECYCLE_EVERY = 25             # 크래시 없어도 이만큼 처리할 때마다 예방적 탭 재생성
+
+
+def is_env_failure(reason: str) -> bool:
+    """실패 사유가 '재시도하면 되는 환경 오류'인지 판정(진짜 데이터 이상과 구분)."""
+    return any(marker in (reason or "") for marker in ENV_FAILURE_MARKERS)
+
+
+def recreate_page(ctx, old_page):
+    """크래시/누적 메모리 대비 탭을 새로 만든다. 같은 컨텍스트라 로그인 세션(쿠키)은 유지."""
+    try:
+        old_page.close()
+    except Exception:
+        pass
+    new_page = ctx.new_page()
+    return new_page
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # 프리플랍 베팅 순서 시뮬레이터 (순수 포커 규칙 — GTO 가정 아님)
@@ -622,12 +649,12 @@ CHROME_HELP = """\
 
 
 def connect_cdp(cdp_url: str):
-    """(playwright, browser, page) 반환. 실패 시 안내 출력 후 (None,None,None)."""
+    """(playwright, browser, ctx, page) 반환. 실패 시 안내 출력 후 (None,None,None,None)."""
     try:
         from playwright.sync_api import sync_playwright
     except Exception as e:
         print(f"[오류] playwright 미설치: {e}\n  → pip install playwright && python3 -m playwright install chromium")
-        return None, None, None
+        return None, None, None, None
 
     p = sync_playwright().start()
     try:
@@ -636,7 +663,7 @@ def connect_cdp(cdp_url: str):
         print(f"[연결 실패] CDP {cdp_url} 에 붙지 못했습니다: {e}\n")
         print(CHROME_HELP)
         p.stop()
-        return None, None, None
+        return None, None, None, None
 
     # 로그인된 컨텍스트/페이지 확보: gtowizard 탭 우선, 없으면 새 페이지
     contexts = browser.contexts
@@ -644,7 +671,7 @@ def connect_cdp(cdp_url: str):
         print("[연결 실패] 크롬 컨텍스트가 없습니다. 크롬 창을 하나 열어두세요.\n")
         print(CHROME_HELP)
         browser.close(); p.stop()
-        return None, None, None
+        return None, None, None, None
     ctx = contexts[0]
     page = None
     for pg in ctx.pages:
@@ -656,7 +683,7 @@ def connect_cdp(cdp_url: str):
             continue
     if page is None:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-    return p, browser, page
+    return p, browser, ctx, page
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -689,7 +716,7 @@ def run(args) -> int:
     ckpt.visited |= set(collected.keys())
 
     # 연결
-    p, browser, page = connect_cdp(args.cdp_url)
+    p, browser, ctx, page = connect_cdp(args.cdp_url)
     if page is None:
         # 연결 실패는 크래시가 아니라 정상 종료(안내는 connect_cdp가 출력)
         return 0
@@ -711,6 +738,8 @@ def run(args) -> int:
 
     processed = 0
     saved = 0
+    consec_env_fail = 0  # 연속 환경오류(크래시/타임아웃 등) 카운터 — 성공하면 리셋
+    since_recycle = 0    # 마지막 탭 재생성 이후 처리한 노드 수 — 예방적 재생성용
     try:
         while len(frontier) > 0 and processed < args.limit:
             node = frontier.pop()
@@ -748,12 +777,44 @@ def run(args) -> int:
                 break
 
             if not res.ok:
+                if is_env_failure(res.reason):
+                    # ⚠️ 환경 오류(크래시/타임아웃/네트워크) — 진짜 데이터 이상이 아니므로
+                    # failed(영구 no-retry)에 넣지 않고 그냥 큐에 되돌려 자동 재시도한다
+                    # (2026-07-17, 실전 크래시로 84개 노드가 영구 실패 처리될 뻔한 사고 이후 추가).
+                    consec_env_fail += 1
+                    processed -= 1  # 실제로 처리 못 함 — limit 카운트에서 제외
+                    print(f"        [환경오류 {consec_env_fail}/{CONSEC_ENV_ABORT_THRESHOLD}] "
+                          f"{res.reason} — 재시도 대상으로 큐에 되돌림(영구 실패 아님)")
+                    frontier.push(node)
+
+                    if consec_env_fail == CONSEC_ENV_RECOVERY_THRESHOLD:
+                        print(f"        [자동 복구] 연속 환경오류 {consec_env_fail}회 — "
+                              f"탭을 새로 만들어 이어갑니다(로그인 세션은 유지됨).")
+                        try:
+                            page = recreate_page(ctx, page)
+                        except Exception as e:
+                            print(f"        [복구 실패] 탭 재생성 중 오류: {e}")
+                        since_recycle = 0
+
+                    if consec_env_fail >= CONSEC_ENV_ABORT_THRESHOLD:
+                        print(f"        [안전 중단] 탭을 재생성했는데도 환경오류가 "
+                              f"{consec_env_fail}회 연속 — 더 진행해도 의미 없어 중단합니다. "
+                              f"체크포인트 보존(재실행하면 이어감, 크롬 상태를 확인해보세요).")
+                        ckpt.save(frontier)
+                        break
+
+                    ckpt.save(frontier)
+                    continue
+
+                # 진짜 데이터 이상(badSum, 파싱된 핸드 0개 등) — 사람 확인 필요, 영구 no-retry
                 print(f"        [스킵] {res.reason} (저장 안 함, 재시도 대상 기록)")
                 if key not in ckpt.failed:
                     ckpt.failed.append(key)
                 ckpt.visited.add(key)  # 이번 실행에서 무한 재시도 방지(failed에 남아 추후 점검)
                 ckpt.save(frontier)
                 continue
+
+            consec_env_fail = 0  # 성공 처리 진입 — 연속 환경오류 카운터 리셋
 
             usage_str = (f" [사용량 {res.used}/{DAILY_LIMIT}, 남은 {res.remaining}]"
                          if res.used is not None else "")
@@ -771,20 +832,30 @@ def run(args) -> int:
                 # dry-run은 첫 노드만 자세히 보고 종료
                 break
 
-            # 저장
+            # 저장 (로컬 백엔드 문제는 데이터 이상이 아니라 환경 오류 — 큐에 되돌려 재시도)
             try:
                 out = save_node(args.server, key, meta, res.hands, res.raise_size)
             except Exception as e:
-                print(f"        [저장 실패] {e} (서버 실행 중인지 확인). 재시도 대상 기록")
-                if key not in ckpt.failed:
-                    ckpt.failed.append(key)
+                processed -= 1
+                print(f"        [저장 실패] {e} (서버 실행 중인지 확인) — 재시도 대상으로 큐에 되돌림")
+                frontier.push(node)
                 ckpt.save(frontier)
                 continue
             saved += 1
+            since_recycle += 1
             ckpt.visited.add(key)
             if key in ckpt.failed:
                 ckpt.failed.remove(key)
             print(f"        [저장] {out.get('situation')} action_seq={out.get('action_seq')!r}")
+
+            if since_recycle >= PAGE_RECYCLE_EVERY:
+                print(f"        [예방적 탭 재생성] {PAGE_RECYCLE_EVERY}개 처리 — "
+                      f"누적 메모리 방지를 위해 탭을 새로 만듭니다.")
+                try:
+                    page = recreate_page(ctx, page)
+                except Exception as e:
+                    print(f"        [재생성 실패] {e} (계속 진행, 다음 크래시 시 재시도)")
+                since_recycle = 0
 
             # 자식 확장(도달확률 가중 push)
             size_map = {"raise": res.raise_size, "allin": res.allin_size}
