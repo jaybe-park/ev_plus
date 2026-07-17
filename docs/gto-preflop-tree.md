@@ -348,6 +348,63 @@ SQL 문자열/콜러블 모두 지원하도록 확장) — 실행 전 `poker.db.
    `tests/run_all.py --full` 통과 게이트. 통과 시에만 커밋(푸시는 사용자).
 6. 규모를 미리 세지 말 것 — 큐 빌 때까지/일일 한도까지 데이터 기반으로 걷는다.
 
+### ②' 구현 완료 (2026-07-17, 순수 코드)
+
+D1(하드코딩 캐노니컬 테이블 제거)과 D3(런타임 트리-인지 스냅)를 구현. D2(레거시
+11노드 재수집)는 계획대로 ④ 워커 몫으로 남김(v13 마이그레이션 없음).
+
+**D1 — 하드코딩 테이블을 신규 경로에서 격리(삭제는 D2 완료 후)**
+- `url_generator.CANONICAL_OPEN_SIZE`/`CANONICAL_RAISE_BY_DEPTH`/`canonical_raise_size`/
+  `_canon_raise_token`은 **"레거시" 주석으로 격리**하고 `advisor.canonical_node_key`(런타임
+  스냅 경로)에서 import를 제거. `situation_to_node_key`(enum→키)만 이 테이블을 계속
+  사용 — enum 3종만으론 조상 실측 사이즈를 알 수 없어 근사 키가 불가피하기 때문. 이 함수는
+  ②가 백필한 레거시 11노드 + `server/main.py`의 enum-파생 save 폴백(명시 `action_seq` 없을
+  때만)에서만 쓰이는 **임시 경로**로 명확히 문서화. D2로 11노드가 실측 키로 재수집되면
+  참조가 끊겨 테이블 전체 삭제 가능.
+- `url_from_node_key`에 실측 키를 넘기면 URL이 화면과 정확히 일치함을 docstring에 명시
+  (구 ②의 3벳+ URL 결함이 실측 키 경로에서 자동 해소됨 — 레거시 키 경로만 여전히 주의 필요).
+
+**D3 — `canonical_node_key`를 트리-인지 스냅으로 재작성 (핵심)**
+- `gto/loader.py`에 `get_children_by_prefix(prefix)` 신규: `_cache_by_seq`(수집된 노드 키
+  전체)에서 주어진 프리픽스 바로 다음 토큰들을 중복 제거해 반환. **하드코딩 테이블이 아니라
+  수집 데이터 자체에서 읽는다** — 데이터 기반 원칙의 핵심 구현.
+- `gto/advisor.py::canonical_node_key(preflop_seq)`를 점증 생성으로 재작성: 라이브 시퀀스를
+  앞에서부터 훑으며, 레이즈를 만날 때마다 그 프리픽스에서 `get_children_by_prefix`로 수집된
+  자식을 조회 → 레이즈 토큰만 걸러 파싱(`_parse_raise_bb`) → 라이브 사이즈와 **bb 절대거리
+  최소**인 형제로 스냅(형제 1개면 그걸로, 사이즈 미상 라이브 레이즈는 형제가 유일할 때만
+  매칭). **수집된 레이즈 형제가 하나도 없으면(미수집 브랜치) None을 반환** — 억지 매칭이나
+  하드코딩 폴백 없음.
+- `_recommend_by_seq`(get_recommendation의 시퀀스 경로)가 `canonical_node_key`의 None을
+  받으면, 신규 `_save_missing_seq(node_key_live, hero_position)`로 **실측 사이즈 키**
+  (`canonical_preflop_actions` 산출물)를 큐(`gto_missing_spots_preflop`, `range_type='seq'`,
+  `vs_position`에 노드 키 저장 — UNIQUE 제약으로 자연 dedupe)에 기록하고 None 반환(상위가
+  equity 휴리스틱 폴백). 빈 키(RFI, enum이 이미 커버)는 큐에 안 남긴다.
+- `server/main.py`의 `/gto/preflop/save`는 기존과 동일하게 명시 `action_seq`(④ 워커가 줄
+  실측 키)를 **verbatim 우선 저장**, 없을 때만 레거시 enum 파생으로 폴백 — 변경 없음(기존
+  additive 설계가 이미 D1/D3와 호환).
+
+**검증(전부 통과)**
+- `tests/run_all.py --full`: poker_full 63 + equity 54 + grader 31 = **148개, 0실패**
+  (독립 재실행으로 재확인, 에이전트 보고와 일치).
+- 신규 유닛테스트 3종: 6-16(실측 사이즈가 수집 형제로 정확히 스냅), 6-17(미수집 브랜치는
+  None 반환 + 큐에 실측 키로 등록되는지), 6-18(한 프리픽스에 레이즈 형제 2개 있을 때 bb
+  최소거리로 스냅).
+- `scripts/audit_gto_preflop.py` 통과(11 situations, 문제 스팟 0건, RFI 오픈 순서 정상).
+- 실 DB 스팟체크(수집분: `""`, `F`, `F-F`, `F-F-F`, `F-F-F-F`, `F-F-F-R2.5`,
+  `F-F-F-R2.5-F`, `F-F-F-R2.5-F-R8`, `R2.5`, `R2.5-F-F-F-F`, `R2.5-R8-F-F-F-F`):
+  라이브 "UTG 2.6bb 오픈 → HJ 11bb 3벳"이 수집 형제 `R2.5`/`R8`로 정확히 스냅되어
+  레거시 노드가 여전히 조회됨(회귀 없음). 라이브 "UTG 2.4bb 오픈"도 `R2.5`로 스냅.
+
+**④로 넘길 때 주의점**
+- 워커는 노드 저장 시 **실측 사이즈를 그대로**(verbatim) `action_seq`로 넘겨야 D3 스냅이
+  형제를 찾을 수 있다 — 캐노니컬 값으로 뭉개서 저장하면 트리-인지 매칭이 무의미해짐.
+- D2(레거시 11노드 재수집)를 워커 실행 초반에 포함시킬 것 — 재수집되기 전까지는 그 11개
+  스팟이 여전히 레거시 깊이-캐노니컬 키로 남아있어 3벳+ 라이브 사이즈가 그 키와 정확히
+  일치 안 할 수 있음(스냅 자체는 되지만 근사가 남음, 사용자 검토 사항 ①과 동일 성격).
+- `get_children_by_prefix`는 `_cache_by_seq`(loader의 프로세스 캐시) 기준이라, 워커가 새
+  노드를 저장한 뒤 즉시 다음 스냅을 하려면 `_cache.clear()`/`_loaded=False` 무효화가
+  필요(기존 `/gto/preflop/save`가 이미 저장 후 캐시 무효화하므로 워커도 그 경로를 쓰면 자동 반영).
+
 ## 수집·검증 전략 (④⑤⑥)
 
 - **④ 수집 엔진 = 데이터 기반 트리 워커**(위 "데이터 기반 트리 수집" 참조): 노드의 제공

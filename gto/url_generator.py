@@ -52,26 +52,26 @@ BASE = (
 )
 
 # ──────────────────────────────────────────
-# ② 시퀀스 키(노드 키) 캐노니컬 사이즈 — 저장/조회 일원화 단일 소스
+# ⚠️ 레거시(②) — 깊이-캐노니컬 사이즈 테이블 (②'에서 노드 키 생성 경로에서 제거됨)
 # ──────────────────────────────────────────
-# 노드 키 = 히어로 결정 직전까지의 액션 시퀀스를 "캐노니컬 사이즈"로 스냅한 문자열.
-# 실전(사람/봇) 베팅은 연속값이지만 솔브 트리는 노드당 논-올인 레이즈 사이즈가
-# 정확히 1개(docs/gto-preflop-tree.md ③ 정찰). 따라서 사이즈가 아니라 **레이즈 깊이
-# (자발적 레이즈 순번)**로 스냅한다 — 깊이 자체는 액션 순서로 구조적으로 결정되므로
-# "13.5bb 3벳이 4벳(17.5)로 오분류"되는 사이즈-근접 스냅의 함정을 피한다.
+# ②'(데이터 기반 트리, docs/gto-preflop-tree.md "확정 결정 D1~D3") 이후 **런타임/저장
+# 노드 키 생성 경로에서는 이 테이블을 쓰지 않는다.** 런타임 스냅은 이제
+# gto.advisor.canonical_node_key가 **수집된 형제 노드의 실측 사이즈**로 매핑하고,
+# 저장 키는 워커가 화면 실측 사이즈를 verbatim으로 넣는다(하드코딩 추측 금지 원칙).
 #
-# 깊이별 to-amount(bb)는 ③ 실측 에스컬레이션(2.5 → 8 → 17.5 → 35 → 올인) 기준.
-# 오픈(깊이1)만 포지션 의존(SB 3.5, 나머지 2.5)이 실측돼 반영. 3벳+ 깊이의 실제
-# 사이즈는 포지션 의존이지만(HJ 3벳=8/SB=11/BB=13.5) 노드 키는 깊이별 단일 캐노니컬
-# 값(3벳=8)으로 **스냅**한다 — 저장 키와 런타임 조회 키가 같은 테이블을 쓰므로
-# 항상 매칭된다(구현 결정: docs/gto-preflop-tree.md "② 구현 결정" 참고).
+# 아래 테이블/함수는 **레거시 situation_to_node_key(enum→키) 전용**으로만 남는다:
+# enum(RFI/vs_open/vs_3bet)만으로는 조상 실측 사이즈를 알 수 없어, ②가 백필한 레거시
+# 11노드와 enum-파생 save 폴백에서 임시로 사용될 뿐이다. 이 레거시 11노드는 D2대로
+# ④ 데이터 기반 워커가 실측-사이즈 키로 덮어쓸 예정이며, 그때 이 테이블은 완전히
+# 참조가 끊겨 삭제 가능해진다. **신규 코드에서 사용 금지.**
 CANONICAL_OPEN_SIZE = {"UTG": 2.5, "HJ": 2.5, "CO": 2.5, "BTN": 2.5, "SB": 3.5}
 CANONICAL_RAISE_BY_DEPTH = {1: 2.5, 2: 8.0, 3: 17.5, 4: 35.0}
 _CANONICAL_MAX_DEPTH = 4  # 100bb 기준 5벳(35) 이후는 사실상 올인 — 그 이상은 35로 캡
 
 
 def canonical_raise_size(depth: int, position: str = None) -> float:
-    """레이즈 깊이(1=오픈, 2=3벳, 3=4벳, 4=5벳) → 캐노니컬 to-amount(bb).
+    """[레거시] 레이즈 깊이(1=오픈, 2=3벳, 3=4벳, 4=5벳) → 깊이-캐노니컬 to-amount(bb).
+    ②'에서 노드 키 생성 경로 밖으로 밀려남 — 레거시 situation_to_node_key 전용.
     깊이1(오픈)은 포지션 의존(SB 3.5). 헤즈업 딜러 라벨 'BTN/SB'는 'SB'로 매핑.
     깊이 > 4는 5벳 사이즈(35)로 캡(100bb 기준 그 이상은 올인 강제)."""
     if depth <= 1:
@@ -83,6 +83,7 @@ def canonical_raise_size(depth: int, position: str = None) -> float:
 
 
 def _canon_raise_token(depth: int, position: str = None) -> str:
+    """[레거시] 깊이-캐노니컬 레이즈 토큰. situation_to_node_key 전용."""
     return f"R{_fmt(canonical_raise_size(depth, position))}"
 
 
@@ -168,11 +169,17 @@ def vs_3bet_url(my_pos: str, opener_pos: str, three_bettor_pos: str) -> str:
 
 
 def situation_to_node_key(position: str, vs_position, range_type: str):
-    """(position, vs_position, range_type) enum → 캐노니컬 노드 키 문자열.
+    """[레거시/임시] (position, vs_position, range_type) enum → 깊이-캐노니컬 노드 키.
 
-    노드 키 = 히어로(=position)가 결정하기 **직전까지**의 액션 시퀀스를 캐노니컬
-    사이즈(canonical_raise_size)로 표기한 문자열. 히어로 자신의 이번 액션은 키에
-    포함하지 않는다(GTO Wizard preflop_actions + history_spot 규약과 동일).
+    ⚠️ ②'(데이터 기반) 이후 **레거시**다. enum만으로는 조상 실측 사이즈를 알 수 없어
+    깊이-캐노니컬 사이즈(canonical_raise_size)로 근사한 키를 만든다 → 화면 실측값과
+    다를 수 있음(3벳+). ②가 백필한 레거시 11노드 + enum-파생 save 폴백에서만 쓰이며,
+    D2대로 ④ 워커가 실측-사이즈 키로 덮어쓰면 폐기된다. 실측 키가 필요한 신규 경로는
+    save에 action_seq(실측)를 명시하거나 gto.advisor.canonical_node_key를 쓴다.
+
+    노드 키 = 히어로(=position)가 결정하기 **직전까지**의 액션 시퀀스를 깊이-캐노니컬
+    사이즈로 표기한 문자열. 히어로 자신의 이번 액션은 키에 포함하지 않는다
+    (GTO Wizard preflop_actions + history_spot 규약과 동일).
 
     - open(RFI): 앞 포지션 전부 폴드 → "F"*idx (UTG RFI = "")
     - vs_open: 오프너 오픈(깊이1) + 나머지 폴드
@@ -235,8 +242,9 @@ def url_from_node_key(node_key) -> str:
 
     노드 키 토큰이 그대로 preflop_actions가 되고 history_spot = 토큰 수(=히어로의
     결정 시점 인덱스). ④(수집)에서 노드 키로 GTO Wizard 스팟에 직접 이동하는 데 재사용.
-    ⚠️ 키의 3벳+ 사이즈는 캐노니컬 스냅값(예: 8)이라 화면 실측값(예: 13.5)과 다를 수
-    있다 — 이동 후 실제 표시 사이징 확인 필요(THREE_BET_SIZE 경고와 동일 원칙).
+    ②'(데이터 기반) **실측 사이즈 키**(canonical_preflop_actions/워커 저장 키)를 넘기면
+    URL이 화면과 정확히 일치한다(구 ② 결함 자동 해소). 단 레거시 situation_to_node_key가
+    만든 깊이-캐노니컬 키를 넘기면 3벳+ 사이즈가 화면과 다를 수 있다(그 경우만 확인 필요).
     """
     toks = node_key.split("-") if node_key else []
     return _build_url(toks, len(toks))

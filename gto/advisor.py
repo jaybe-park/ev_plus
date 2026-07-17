@@ -8,9 +8,9 @@ from typing import Optional
 from .loader import (
     hand_to_notation, get_open_range, get_vs_open_range, get_vs_3bet_range,
     get_action_frequencies, sample_action, find_opener_position,
-    get_range_by_seq,
+    get_range_by_seq, get_children_by_prefix,
 )
-from .url_generator import get_url, POS_INDEX, canonical_raise_size
+from .url_generator import get_url, POS_INDEX
 from core.card import Card
 
 
@@ -29,6 +29,34 @@ def _save_missing_spot(
             VALUES ('preflop', ?, ?, ?, ?, ?)
             """,
             (position, vs_position, range_type, situation_label, url),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # DB 없거나 오류 시 조용히 무시
+
+
+def _save_missing_seq(node_key_live: str, hero_position: str) -> None:
+    """②' 트리 밖(미수집) 프리플랍 노드를 큐에 기록(중복 무시).
+
+    node_key_live = 히어로 결정 직전까지의 **실측 사이즈** 캐노니컬 문자열
+    (canonical_preflop_actions). ④ 데이터 기반 워커가 이 실측 키로 GTO Wizard에
+    정확히 이동(url_from_node_key)해 수집한다. gto_missing_spots_preflop 테이블을
+    재사용하되 range_type='seq'로 구분하고, 실측 노드 키를 vs_position에 저장해
+    UNIQUE(street, position, vs_position, range_type)로 자연 dedupe.
+    """
+    try:
+        from db.connection import get_connection
+        from .url_generator import url_from_node_key
+        url = url_from_node_key(node_key_live)
+        conn = get_connection()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO gto_missing_spots_preflop
+                (street, position, vs_position, range_type, situation_label, gto_wizard_url)
+            VALUES ('preflop', ?, ?, 'seq', ?, ?)
+            """,
+            (hero_position, node_key_live, f"seq {node_key_live}", url),
         )
         conn.commit()
         conn.close()
@@ -89,20 +117,37 @@ def canonical_preflop_actions(preflop_seq: list) -> str:
     return "-".join(parts)
 
 
-def canonical_node_key(preflop_seq: list) -> str:
-    """구조화 시퀀스 → 캐노니컬 노드 키(② 런타임 조회 키).
+def _parse_raise_bb(token: str) -> Optional[float]:
+    """레이즈 토큰 'R8'/'R2.5'/'R13.5' → 8.0/2.5/13.5. 레이즈 토큰이 아니면 None."""
+    if not token or token[0] != "R":
+        return None
+    try:
+        return float(token[1:])
+    except ValueError:
+        return None
 
-    canonical_preflop_actions와 달리 각 자발적 레이즈의 실전 사이즈를 **레이즈 깊이의
-    캐노니컬 사이즈로 스냅**한다(url_generator.canonical_raise_size — 저장 노드 키
-    backfill_v12/situation_to_node_key와 동일한 단일 소스 테이블 → 항상 매칭).
 
-    예: [UTG raise 2.5, HJ raise 7.5, CO fold, ...] → "R2.5-R8-F-..."
-    (HJ의 실전 3벳 7.5bb가 깊이2 캐노니컬 8로 스냅). 사이즈 자체가 아니라 레이즈
-    순번으로 스냅하므로 13.5bb 3벳이 4벳(17.5)으로 오분류되지 않는다.
-    allin도 깊이 기준으로 스냅(현 수집분엔 allin 노드 키 없음 — ④에서 실측 시 정교화).
+def canonical_node_key(preflop_seq: list) -> Optional[str]:
+    """구조화 라이브 시퀀스 → 캐노니컬 노드 키(②' 데이터 기반 트리-인지 스냅).
+
+    (②의 깊이-캐노니컬 하드코딩 스냅을 대체) 라이브 시퀀스를 앞에서부터 훑으며 키를
+    **점증 생성**한다. 각 자발적 레이즈에 대해:
+      1) 지금까지 만든 프리픽스에서 **수집된 자식 노드들**을 loader로 조회
+         (get_children_by_prefix — 하드코딩 사이즈 테이블이 아니라 수집 데이터에서 읽음).
+      2) 그중 레이즈-형제 사이즈로 스냅. GTO Wizard 트리는 노드당 레이즈 사이즈가 1개라
+         보통 형제가 유일 → 그 토큰 사용. 2개 이상이면 **bb 절대거리 최소**로 선택.
+         (스토어된 토큰 문자열을 그대로 이어붙여 loader 키와 정확히 일치시킴.)
+      3) 해당 프리픽스/브랜치에 **수집된 레이즈-형제가 없으면**(미수집 브랜치) 숫자로
+         억지 매칭하지 않고 **None 반환** → 상위(_recommend_by_seq)가 큐 등록 + equity
+         휴리스틱 폴백을 타게 한다(추측 금지 대원칙).
+    fold/check/call은 사이즈가 없으므로 그대로 이어붙인다. 블라인드는 preflop_seq에
+    자발 액션으로 들어오지 않으므로 자동 제외(GTO Wizard 포맷과 동일).
+
+    예(수집분에 "R2.5-R8-F-F-F-F"만 있을 때):
+      [UTG raise 2.3, HJ raise 7.5, CO~BB fold] → "R2.5-R8-F-F-F-F"
+      (2.3→형제 R2.5, 7.5→형제 R8로 스냅). 미수집 브랜치면 None.
     """
     toks = []
-    depth = 0
     for a in preflop_seq:
         act = a.get("action")
         if act == "fold":
@@ -112,8 +157,22 @@ def canonical_node_key(preflop_seq: list) -> str:
         elif act == "call":
             toks.append("C")
         elif act in ("raise", "allin"):
-            depth += 1
-            toks.append(f"R{_fmt_bb(canonical_raise_size(depth, a.get('position')))}")
+            prefix = "-".join(toks)
+            raise_children = [
+                (c, _parse_raise_bb(c)) for c in get_children_by_prefix(prefix)
+            ]
+            raise_children = [(c, s) for c, s in raise_children if s is not None]
+            if not raise_children:
+                return None  # 미수집 브랜치 — 억지 매칭 금지, 상위가 큐/폴백 처리
+            live = a.get("amount_bb")
+            if live is None:
+                # 사이즈 미상 라이브 레이즈: 형제 유일이면 그걸로, 다의면 매칭 불가
+                if len(raise_children) == 1:
+                    toks.append(raise_children[0][0])
+                else:
+                    return None
+            else:
+                toks.append(min(raise_children, key=lambda cs: abs(cs[1] - live))[0])
     return "-".join(toks)
 
 
@@ -151,9 +210,11 @@ class GTOAdvisor:
     ) -> Optional[dict]:
         """② 시퀀스 키 기반 조회(캐노니컬 노드 키로 스냅 후 loader 조회).
 
-        런타임 preflop_seq(히어로 결정 직전까지의 액션)를 캐노니컬 노드 키로 스냅해
-        조회한다. 매칭 노드가 없으면 None(상위 봇이 휴리스틱 폴백). enum 경로가 이미
-        커버하는 스팟은 get_recommendation에서 여기 도달하지 않는다.
+        런타임 preflop_seq(히어로 결정 직전까지의 액션)를 트리-인지 스냅으로 캐노니컬
+        노드 키로 변환해 조회한다(canonical_node_key). 스냅이 미수집 브랜치라 None을
+        내면 억지 매칭 대신 **실측 키로 큐 등록** 후 None(상위 봇이 휴리스틱 폴백).
+        키는 나왔지만 데이터 없음이면 그대로 None. enum 경로가 이미 커버하는 스팟은
+        get_recommendation에서 여기 도달하지 않는다.
         """
         if len(hole_cards) < 2:
             return None
@@ -161,6 +222,12 @@ class GTOAdvisor:
             return None
         preflop_seq = game_state.get("preflop_seq") or []
         node_key = canonical_node_key(preflop_seq)
+        if node_key is None:
+            # 미수집 브랜치 — 실측 사이즈 키로 큐에 남기고(④ 워커가 수집) 폴백.
+            live_key = canonical_preflop_actions(preflop_seq)
+            if live_key:  # 자발 액션이 하나라도 있을 때만(빈 키=RFI는 enum이 커버)
+                _save_missing_seq(live_key, my_position)
+            return None
         data = get_range_by_seq(node_key)
         if data is None:
             return None

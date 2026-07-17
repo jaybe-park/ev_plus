@@ -1222,8 +1222,9 @@ def test_6_13_seq_key_and_enum_key_same_range():
 
 
 def test_6_14_runtime_snap_maps_near_size_to_node():
-    """② (b): 런타임의 근접 레이즈 사이즈가 캐노니컬 노드로 올바르게 스냅돼 조회되는지.
-    실전 3벳 7.5bb(+오픈 2.3bb)가 깊이 기준 캐노니컬 "R2.5-R8-..." 노드로 매핑돼야 함."""
+    """②' (스냅): 런타임의 근접 레이즈 사이즈가 **수집된 형제 노드**로 트리-인지 스냅돼
+    조회되는지. 실전 오픈 2.3bb→형제 R2.5, 3벳 7.5bb→형제 R8 로 매핑돼야 함
+    (수집분 "R2.5-R8-F-F-F-F" 기준. 하드코딩 깊이 테이블 아님)."""
     from gto.advisor import GTOAdvisor, canonical_node_key
     from gto.url_generator import situation_to_node_key
     from gto.loader import get_range_by_seq, get_vs_3bet_range
@@ -1280,6 +1281,101 @@ def test_6_15_migration_normalizes_vs3bet_format():
     assert row["action_seq"] == "F-F-F-R2.5-F-R8", f"노드 키 오류: {row['action_seq']}"
     assert row["hero_position"] == "BTN"
     assert row["num_active"] == 2, row["num_active"]
+
+
+def test_6_16_realsize_node_snaps_to_collected_sibling():
+    """②' (a): **실측 사이즈** 노드를 시딩하면, 라이브 오프-트리 사이즈가 그 수집된
+    형제의 실측값으로 스냅돼 조회된다. 3벳 실측 13.5(② 같으면 8로 뭉갰을 값)가
+    라이브 12.0에서 R13.5 형제로 스냅 → 사이즈가 보존됨을 검증."""
+    from gto.advisor import GTOAdvisor, canonical_node_key
+    from gto.loader import get_range_by_seq
+
+    # UTG open → HJ~SB fold → BB 3bet 13.5. 히어로=UTG의 vs_3bet 노드(실측 사이즈 키).
+    node_key = "R2.5-F-F-F-F-R13.5"
+    _seed_situation("UTG", "UTG/BB", "vs_3bet", 30.0, "UTG vs BB 3bet",
+                    {"AKs": {"fold": 0.2, "call": 0.0, "raise": 0.8}}, node_key)
+
+    seq = [
+        {"position": "UTG", "action": "raise", "amount_bb": 2.4},
+        {"position": "HJ", "action": "fold"},
+        {"position": "CO", "action": "fold"},
+        {"position": "BTN", "action": "fold"},
+        {"position": "SB", "action": "fold"},
+        {"position": "BB", "action": "raise", "amount_bb": 12.0},
+    ]
+    # 2.4→R2.5, 12.0→R13.5(수집된 유일 형제) → 실측 사이즈 보존
+    assert canonical_node_key(seq) == node_key, canonical_node_key(seq)
+    assert get_range_by_seq(node_key) is not None
+
+    advisor = GTOAdvisor()
+    gs = {"street": "프리플랍", "current_bet": 240, "preflop_seq": seq}
+    rec = advisor._recommend_by_seq([c("A", "S"), c("K", "S")], "UTG", gs, big_blind=20)
+    assert rec is not None and rec["node_key"] == node_key, rec
+
+
+def test_6_17_uncollected_branch_returns_none_and_queues():
+    """②' (b): 수집되지 않은 브랜치(그 프리픽스에 레이즈-형제 없음)는 숫자 억지 매칭
+    없이 None을 반환하고, 실측 사이즈 키로 큐(gto_missing_spots_preflop range_type='seq')에
+    등록돼야 한다(추측 금지 → 큐/폴백)."""
+    from gto.advisor import GTOAdvisor, canonical_node_key
+    from db.connection import get_connection
+
+    # 수집분: "R2.5-R8-F-F-F-F"만 있다고 보장(6_14가 시딩; 없으면 여기서 시딩).
+    _seed_situation("UTG", "UTG/HJ", "vs_3bet", 21.5, "UTG vs HJ 3bet",
+                    {"AKs": {"fold": 0.3, "raise": 0.7}}, "R2.5-R8-F-F-F-F")
+
+    # UTG open → HJ 3bet → CO fold → BTN 콜드-4벳 20 → 히어로 UTG가 4벳에 직면.
+    # 프리픽스 "R2.5-R8-F"에 수집된 레이즈-형제 없음(수집분 token[3]="F") → None.
+    seq = [
+        {"position": "UTG", "action": "raise", "amount_bb": 2.5},
+        {"position": "HJ", "action": "raise", "amount_bb": 8.0},
+        {"position": "CO", "action": "fold"},
+        {"position": "BTN", "action": "raise", "amount_bb": 20.0},
+    ]
+    assert canonical_node_key(seq) is None, canonical_node_key(seq)
+
+    advisor = GTOAdvisor()
+    gs = {"street": "프리플랍", "current_bet": 400, "preflop_seq": seq}
+    rec = advisor._recommend_by_seq([c("A", "S"), c("K", "S")], "UTG", gs, big_blind=20)
+    assert rec is None, rec
+
+    # 실측 사이즈 키로 큐 등록 확인
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT position, vs_position, range_type FROM gto_missing_spots_preflop "
+        "WHERE range_type='seq' AND vs_position=?",
+        ("R2.5-R8-F-R20",),
+    ).fetchone()
+    conn.close()
+    assert row is not None, "미수집 seq 노드가 큐에 등록되지 않음"
+    assert row["position"] == "UTG" and row["range_type"] == "seq"
+
+
+def test_6_18_two_siblings_snap_to_nearest_bb():
+    """②' (c): 한 프리픽스에 레이즈-형제가 2개 수집돼 있으면 bb 절대거리 최소로 스냅."""
+    from gto.advisor import canonical_node_key
+
+    # 프리픽스 "R2.5"에 3벳 형제 두 개(R8, R12) 수집.
+    _seed_situation("UTG", "UTG/HJ", "vs_3bet", 21.5, "UTG vs HJ 3bet 8",
+                    {"AKs": {"raise": 1.0}}, "R2.5-R8-F-F-F-F")
+    _seed_situation("UTG", "UTG/CO", "vs_3bet", 28.0, "UTG vs CO 3bet 12",
+                    {"AKs": {"raise": 1.0}}, "R2.5-R12-F-F-F-F")
+
+    def key_for(three_bet_bb):
+        seq = [
+            {"position": "UTG", "action": "raise", "amount_bb": 2.5},
+            {"position": "HJ", "action": "raise", "amount_bb": three_bet_bb},
+            {"position": "CO", "action": "fold"},
+            {"position": "BTN", "action": "fold"},
+            {"position": "SB", "action": "fold"},
+            {"position": "BB", "action": "fold"},
+        ]
+        return canonical_node_key(seq)
+
+    # 9.0 → |9-8|=1 < |9-12|=3 → R8
+    assert key_for(9.0) == "R2.5-R8-F-F-F-F", key_for(9.0)
+    # 10.5 → |10.5-8|=2.5 > |10.5-12|=1.5 → R12
+    assert key_for(10.5) == "R2.5-R12-F-F-F-F", key_for(10.5)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -1353,6 +1449,9 @@ ALL_TESTS = [
     ("6-13 시퀀스 키=enum 키 동일 레인지",      test_6_13_seq_key_and_enum_key_same_range),
     ("6-14 런타임 사이즈 스냅→노드 매핑",       test_6_14_runtime_snap_maps_near_size_to_node),
     ("6-15 마이그레이션 vs_3bet 포맷 정규화",   test_6_15_migration_normalizes_vs3bet_format),
+    ("6-16 실측 사이즈 노드 형제 스냅",         test_6_16_realsize_node_snaps_to_collected_sibling),
+    ("6-17 미수집 브랜치 None+큐 등록",         test_6_17_uncollected_branch_returns_none_and_queues),
+    ("6-18 형제 2개 bb 최소거리 스냅",          test_6_18_two_siblings_snap_to_nearest_bb),
 ]
 
 

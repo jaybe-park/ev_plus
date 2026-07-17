@@ -139,6 +139,36 @@ def get_range_by_seq(node_key) -> Optional[dict]:
     return _cache_by_seq.get(node_key)
 
 
+def get_children_by_prefix(prefix) -> list:
+    """②' 데이터 기반 트리-인지 스냅용: 주어진 프리픽스 **바로 다음 위치**에
+    수집된 노드 키들이 실제로 갖는 토큰 목록(중복 제거, 등장 순서 유지)을 반환.
+
+    prefix = 지금까지 만든 캐노니컬 토큰들을 '-'로 join한 문자열(루트=""). 반환 토큰은
+    수집된 형제 노드들의 그 지점 액션(F/X/C/R{실측bb})이며, 레이즈 형제 스냅에 쓰인다.
+    수집 데이터(_cache_by_seq)에서만 읽으므로 하드코딩 사이즈 테이블에 의존하지 않는다.
+
+    예: 수집분에 "R2.5-R8-F-F-F-F"만 있으면
+        get_children_by_prefix("")      → ["R2.5"]
+        get_children_by_prefix("R2.5")  → ["R8"]
+    """
+    _load_all()
+    pref_toks = prefix.split("-") if prefix else []
+    n = len(pref_toks)
+    out = []
+    seen = set()
+    for k in _cache_by_seq.keys():
+        toks = k.split("-") if k else []
+        if len(toks) <= n:
+            continue
+        if toks[:n] != pref_toks:
+            continue
+        child = toks[n]
+        if child not in seen:
+            seen.add(child)
+            out.append(child)
+    return out
+
+
 def get_vs_3bet_range(my_pos: str, opener_pos: str, three_bettor_pos: str) -> Optional[dict]:
     """3벳에 대한 대응 레인지. vs_position = "opener/three_bettor" 형식"""
     _load_all()

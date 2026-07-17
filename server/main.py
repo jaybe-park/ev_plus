@@ -128,7 +128,8 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
     if req.range_type == "vs_3bet" and vs_position and "/" not in vs_position:
         vs_position = f"{req.position}/{vs_position}"
 
-    # ② 노드 키: 명시값 우선, 없으면 enum에서 결정론적 파생(런타임 조회 키와 동일 소스).
+    # ②' 노드 키: 명시 action_seq(④ 워커의 **실측 사이즈** 키)가 오면 **verbatim 우선**
+    # 저장(사이즈 뭉개지 않음). 없을 때만 레거시 enum 파생(깊이-캐노니컬, 임시)으로 폴백.
     action_seq = req.action_seq
     if action_seq is None:
         action_seq = situation_to_node_key(req.position, vs_position, req.range_type)
