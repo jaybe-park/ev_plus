@@ -49,6 +49,21 @@ CLI:
   --checkpoint  진행상황 JSON 경로(기본 <repo>/gto_tree_checkpoint.json).
   --epsilon     분기 빈도 컷(기본 gto_tree_worker.EPSILON=0.0005).
   --nav-timeout navigate/셀 대기 타임아웃 ms(기본 30000).
+  --safety-margin 남은 스팟이 이 값 이하면 새 수집 중단(기본 5, 무료 100/일 보호).
+
+실측 사이즈 스크레이프(2026-07-17 라이브 확정):
+  히어로가 지금 취할 수 있는 액션(사이즈 포함)은 페이지 하단 "Actions" 패널의
+  [data-tst="study_action_btns"] 컨테이너 안 [data-tst^="action_"] 버튼에만 있다.
+  버튼 data-tst가 액션+사이즈를 인코딩(action_R8_1=Raise 8, action_RAI_0=Allin,
+  action_C_2=Call, action_F_3=Fold)하고 화면 표시 텍스트와 verbatim 일치한다.
+  헤더 카드(hspotcrd_action_text: 다른 포지션이 이미 취한 과거 액션)와 접두어가
+  달라 절대 겹치지 않는다 → 이전 "body 전체 정규식" 오탐(헤더의 완료 액션을 잘못
+  집던 버그) 해소.
+
+일일 한도 신호(2026-07-17 라이브 확정):
+  상단 "X/100" 사용량 카운터가 유일한 권위 신호. "Free accounts can browse 100
+  preflop spots per day." 문구는 평상시에도 항상 떠 있어(호버 툴팁) 단독 판단 불가 →
+  카운터를 파싱해 남은 여유(100-X)를 계산, 안전마진 이하면 새 navigate 없이 안전 종료.
 """
 import argparse
 import json
@@ -74,12 +89,18 @@ DEFAULT_CDP = "http://localhost:9222"
 # 화면에서 올인 사이즈를 읽지 못했을 때만 이 값으로 폴백한다.
 ALLIN_FALLBACK_BB = 100.0
 
-# 일일 한도/비정상 페이지 감지 휴리스틱 키워드(대소문자 무시).
-# ⚠️ GTO Wizard의 실제 한도 신호는 라이브로 확인해 다듬어야 한다(추측 기반).
-LIMIT_SIGNAL_WORDS = [
-    "daily limit", "spots today", "spot limit", "upgrade to", "you have reached",
-    "limit reached", "out of spots", "무료", "한도", "일일", "업그레이드",
-]
+# ── 일일 한도 신호 (2026-07-17 라이브 실측으로 확정, 추측 키워드 폐기) ──────────
+# GTO Wizard 무료 계정은 페이지 상단에 "X/100" 사용량 카운터를 항상 노출하고,
+# 그 옆에 "Free accounts can browse 100 preflop spots per day." 고정 문구를
+# (호버 툴팁으로) 항상 표시한다. 문구는 한도 도달 여부와 무관하게 늘 떠 있으므로
+# **문구 존재만으로 한도로 판단하면 안 된다** — 카운터가 유일한 권위 신호다.
+#   - 스팟을 새로 볼 때마다 카운터가 +1 된다(실측: 18→19→20). 즉 navigate=1스팟 소모.
+#   - 남은 여유 = DAILY_LIMIT - used. 안전마진(SAFETY_MARGIN) 이하로 떨어지면
+#     새 노드 navigate를 멈추고 안전 종료(체크포인트 보존 → 재실행 시 이어감).
+DAILY_LIMIT = 100
+SAFETY_MARGIN = 5  # 남은 스팟이 이 값 이하가 되면 새 수집을 멈춘다(무료 100/일 보호).
+# 카운터를 읽지 못할 때(파싱 실패)만 폴백으로 쓰는 한도 확정 문구(부분 매칭).
+LIMIT_WARN_PHRASE = "Free accounts can browse 100 preflop spots per day"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -354,14 +375,58 @@ EXTRACT_JS = r"""
     hands[hand] = res;
     parsed++;
   });
-  // 실측 사이즈 및 한도 신호는 페이지 텍스트에서 강건하게 스크레이프
+
+  // ── 실측 사이즈: 히어로의 Actions 패널 버튼에서만 읽는다 ────────────────────
+  // 컨테이너 [data-tst="study_action_btns"] 안의 [data-tst^="action_"] 버튼들이
+  // "히어로가 지금 취할 수 있는" 액션이다. 각 버튼 data-tst 코드가 액션+사이즈를
+  // 그대로 인코딩한다: action_<CODE>_<idx>, CODE ∈ {RAI(올인), R<size>(레이즈),
+  // C(콜), F(폴드)}. 코드의 숫자는 화면 표시 텍스트("Raise 8" 등)와 verbatim 일치.
+  // ⚠️ 헤더 카드(hspotcrd_action_text, 다른 포지션이 이미 취한 과거 액션)나
+  //    핸드테이블 셀(htc_action_*)과는 접두어가 달라 절대 겹치지 않는다.
+  const container = document.querySelector('[data-tst="study_action_btns"]');
+  const btns = container
+    ? [...container.querySelectorAll('[data-tst^="action_"]')]
+    : [];
+  const actions = [];       // [{action, size, code, text}]
+  const raiseSizes = [];    // 논-올인 레이즈 to-금액(bb)
+  const allinSizes = [];    // 올인 to-금액(bb)
+  let allinPresent = false;
+  for (const b of btns) {
+    const tst = b.getAttribute('data-tst') || '';
+    const m = tst.match(/^action_(.+)_\d+$/);
+    if (!m) continue;
+    const code = m[1];
+    const text = (b.innerText || '').replace(/\s+/g, ' ').trim();
+    if (code === 'RAI') {
+      allinPresent = true;
+      const am = text.match(/Allin\s+([\d]+(?:\.[\d]+)?)/i);
+      const size = am ? parseFloat(am[1]) : null;
+      if (size !== null) allinSizes.push(size);
+      actions.push({action: 'allin', size, code, text});
+    } else if (/^R\d/.test(code)) {              // R + 숫자 = 레이즈 (RAI는 위에서 걸러짐)
+      const size = parseFloat(code.slice(1));
+      if (!isNaN(size)) raiseSizes.push(size);
+      actions.push({action: 'raise', size, code, text});
+    } else if (code === 'C') {
+      actions.push({action: 'call', size: null, code, text});
+    } else if (code === 'F') {
+      actions.push({action: 'fold', size: null, code, text});
+    } else {
+      actions.push({action: 'unknown', size: null, code, text});
+    }
+  }
+
+  // ── 일일 한도: "X/100" 카운터가 유일한 권위 신호(문구는 늘 떠 있어 판단 불가) ──
   const bodyText = (document.body ? document.body.innerText : '') || '';
-  const raiseMatches = [...bodyText.matchAll(/Raise\s+(?:to\s+)?([\d]+(?:\.[\d]+)?)/gi)].map(m=>parseFloat(m[1]));
-  const allinMatches = [...bodyText.matchAll(/All[\s-]?in\s+(?:to\s+)?([\d]+(?:\.[\d]+)?)/gi)].map(m=>parseFloat(m[1]));
-  const allinPresent = /All[\s-]?in/i.test(bodyText);
+  const counterMatch = bodyText.match(/(\d+)\s*\/\s*100\b/);
+  const used = counterMatch ? parseInt(counterMatch[1], 10) : null;
+  const warnPresent = /Free accounts can browse 100 preflop spots per day/i.test(bodyText);
+
   return {
     hands, cellCount: cells.length, parsed, none,
-    raiseSizes: raiseMatches, allinSizes: allinMatches, allinPresent,
+    actions, actionsFound: btns.length,
+    raiseSizes, allinSizes, allinPresent,
+    used, warnPresent,
     bodyTextSample: bodyText.slice(0, 4000),
   };
 }
@@ -377,14 +442,43 @@ def _badsum_count(hands: dict) -> int:
     return bad
 
 
-def _looks_like_limit(text: str) -> bool:
-    low = (text or "").lower()
-    return any(w in low for w in LIMIT_SIGNAL_WORDS)
+import re as _re
+
+_COUNTER_RE = _re.compile(r"(\d+)\s*/\s*100\b")
+
+
+def _parse_usage(text: str) -> Optional[int]:
+    """페이지 텍스트에서 'X/100' 사용량 카운터를 파싱 → X(int) 또는 None."""
+    m = _COUNTER_RE.search(text or "")
+    return int(m.group(1)) if m else None
+
+
+def read_usage(page) -> Optional[int]:
+    """현재 로드된 페이지에서 사용량 카운터(X/100)를 읽는다(navigate 안 함).
+
+    루프 진입 전 '이미 한도 근처인지'를 스팟 소모 없이 확인하는 데 쓴다.
+    """
+    try:
+        return _parse_usage(page.inner_text("body"))
+    except Exception:
+        return None
+
+
+def _limit_hit(used: Optional[int], warn_present: bool, rendered: bool) -> bool:
+    """한도 도달 여부 확정.
+
+    - 카운터를 읽었으면 그것만 신뢰: used >= DAILY_LIMIT 이면 한도 도달.
+    - 카운터를 못 읽었고(파싱 실패) 레인지도 안 떴는데 경고 문구가 있으면 폴백으로 한도 간주.
+      (경고 문구는 평상시에도 항상 떠 있어 단독 신호로 쓰면 안 되므로 폴백 한정.)
+    """
+    if used is not None:
+        return used >= DAILY_LIMIT
+    return warn_present and not rendered
 
 
 class ExtractResult:
     def __init__(self, ok, hands=None, raise_size=None, allin_size=None,
-                 reason="", raw=None, limit_hit=False):
+                 reason="", raw=None, limit_hit=False, used=None):
         self.ok = ok
         self.hands = hands or {}
         self.raise_size = raise_size
@@ -392,6 +486,11 @@ class ExtractResult:
         self.reason = reason
         self.raw = raw or {}
         self.limit_hit = limit_hit
+        self.used = used  # 이 노드 로드 시점의 일일 사용량(X/100의 X), 못 읽으면 None
+
+    @property
+    def remaining(self) -> Optional[int]:
+        return None if self.used is None else DAILY_LIMIT - self.used
 
 
 def extract_node(page, node_key: str, nav_timeout: int) -> ExtractResult:
@@ -403,6 +502,7 @@ def extract_node(page, node_key: str, nav_timeout: int) -> ExtractResult:
         return ExtractResult(False, reason=f"navigate 실패: {e}")
 
     # 레인지 테이블 셀 렌더 대기(고정 sleep 대신 조건 대기)
+    rendered = True
     try:
         page.wait_for_selector('[data-tst^="range_table_cell_0_"]', timeout=nav_timeout)
         # 배경 레이어(빈도 색)까지 채워질 때까지: 색 있는 셀이 충분히 나올 때까지 대기
@@ -415,36 +515,44 @@ def extract_node(page, node_key: str, nav_timeout: int) -> ExtractResult:
             }""",
             timeout=nav_timeout,
         )
+        # 히어로 Actions 패널 버튼도 함께 대기(사이즈 실측 소스)
+        page.wait_for_selector('[data-tst="study_action_btns"] [data-tst^="action_"]',
+                               timeout=nav_timeout)
     except Exception:
-        # 테이블이 안 뜸 → 한도 신호인지 확인
+        rendered = False
+        # 테이블/액션이 안 뜸 → 카운터로 한도인지 확정(문구는 폴백)
         try:
             txt = page.inner_text("body")
         except Exception:
             txt = ""
-        if _looks_like_limit(txt):
-            return ExtractResult(False, reason="일일 한도/제한 신호 감지", limit_hit=True,
-                                 raw={"bodyTextSample": txt[:4000]})
+        used = _parse_usage(txt)
+        warn = LIMIT_WARN_PHRASE.lower() in txt.lower()
+        if _limit_hit(used, warn, rendered):
+            return ExtractResult(False, reason=f"일일 한도 도달(사용량 {used}/{DAILY_LIMIT})",
+                                 limit_hit=True, used=used, raw={"bodyTextSample": txt[:4000]})
         return ExtractResult(False, reason="레인지 테이블 렌더 대기 타임아웃",
-                             raw={"bodyTextSample": txt[:4000]})
+                             used=used, raw={"bodyTextSample": txt[:4000]})
 
     try:
         raw = page.evaluate(EXTRACT_JS)
     except Exception as e:
         return ExtractResult(False, reason=f"추출 JS 실패: {e}")
 
+    used = raw.get("used")
     hands = raw.get("hands", {})
-    if raw.get("limit_hit"):
-        return ExtractResult(False, reason="한도 신호", limit_hit=True, raw=raw)
-    if _looks_like_limit(raw.get("bodyTextSample", "")) and raw.get("parsed", 0) < 50:
-        return ExtractResult(False, reason="일일 한도/제한 신호 감지", limit_hit=True, raw=raw)
+    # 렌더는 됐지만 카운터가 한도를 가리키면 안전 중단(경계 케이스)
+    if _limit_hit(used, raw.get("warnPresent", False), rendered=True):
+        return ExtractResult(False, reason=f"일일 한도 도달(사용량 {used}/{DAILY_LIMIT})",
+                             limit_hit=True, used=used, raw=raw)
     if not hands:
-        return ExtractResult(False, reason="파싱된 핸드 0개", raw=raw)
+        return ExtractResult(False, reason="파싱된 핸드 0개", used=used, raw=raw)
 
     bad = _badsum_count(hands)
     if bad > 0:
-        return ExtractResult(False, reason=f"badSum 검증 실패({bad}핸드)", raw=raw)
+        return ExtractResult(False, reason=f"badSum 검증 실패({bad}핸드)", used=used, raw=raw)
 
-    # 실측 사이즈: raise 토큰용 사이즈(첫 매치), allin 토큰용 사이즈
+    # 실측 사이즈: 히어로 Actions 패널 버튼에서 읽은 값(헤더/과거 액션과 분리됨).
+    # ③ 실측대로 노드당 논-올인 레이즈는 1개 → 첫(유일한) 레이즈 사이즈를 쓴다.
     raise_sizes = raw.get("raiseSizes") or []
     allin_sizes = raw.get("allinSizes") or []
     raise_size = raise_sizes[0] if raise_sizes else None
@@ -452,7 +560,7 @@ def extract_node(page, node_key: str, nav_timeout: int) -> ExtractResult:
         ALLIN_FALLBACK_BB if raw.get("allinPresent") else None
     )
     return ExtractResult(True, hands=hands, raise_size=raise_size,
-                         allin_size=allin_size, raw=raw)
+                         allin_size=allin_size, used=used, raw=raw)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -568,6 +676,21 @@ def run(args) -> int:
         # 연결 실패는 크래시가 아니라 정상 종료(안내는 connect_cdp가 출력)
         return 0
 
+    margin = args.safety_margin
+    # 루프 진입 전, 현재 열려 있는 페이지에서 사용량을 스팟 소모 없이 미리 확인.
+    init_used = read_usage(page)
+    if init_used is not None:
+        print(f"[한도] 현재 사용량 {init_used}/{DAILY_LIMIT} "
+              f"(남은 여유 {DAILY_LIMIT - init_used}, 안전마진 {margin})")
+        if DAILY_LIMIT - init_used <= margin:
+            print("[안전 종료] 남은 여유가 안전마진 이하 — 새 수집을 시작하지 않습니다. "
+                  "내일 다시 실행하면 체크포인트에서 이어갑니다.")
+            try:
+                browser.close(); p.stop()
+            except Exception:
+                pass
+            return 0
+
     processed = 0
     saved = 0
     try:
@@ -603,8 +726,10 @@ def run(args) -> int:
                 ckpt.save(frontier)
                 continue
 
+            usage_str = (f" [사용량 {res.used}/{DAILY_LIMIT}, 남은 {res.remaining}]"
+                         if res.used is not None else "")
             print(f"        추출 OK: {len(res.hands)}핸드, raise_size={res.raise_size} "
-                  f"allin_size={res.allin_size}")
+                  f"allin_size={res.allin_size}{usage_str}")
 
             if args.dry_run:
                 print("        [dry-run] 저장/확장 생략. 집계 빈도:")
@@ -613,6 +738,7 @@ def run(args) -> int:
                     print(f"          {a}: {f:.4f}")
                 print(f"          raiseSizes(raw)={res.raw.get('raiseSizes')} "
                       f"allinSizes(raw)={res.raw.get('allinSizes')}")
+                print(f"          Actions 패널(실측): {res.raw.get('actions')}")
                 # dry-run은 첫 노드만 자세히 보고 종료
                 break
 
@@ -643,6 +769,12 @@ def run(args) -> int:
             print(f"        자식 {pushed}개 push (frontier={len(frontier)})")
 
             ckpt.save(frontier)
+
+            # 이번 노드 로드로 사용량이 안전마진 이하로 떨어졌으면 다음 navigate 전에 안전 종료
+            if res.remaining is not None and res.remaining <= margin:
+                print(f"        [안전 종료] 남은 여유 {res.remaining} ≤ 안전마진 {margin} "
+                      f"— 더 이상 새 노드로 이동하지 않습니다(체크포인트 보존, 재실행 시 이어감).")
+                break
 
         # 루프 종료 후 최종 체크포인트
         ckpt.save(frontier)
@@ -676,6 +808,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT), help="진행상황 JSON 경로")
     ap.add_argument("--epsilon", type=float, default=tw.EPSILON, help="분기 빈도 컷")
     ap.add_argument("--nav-timeout", type=int, default=30000, help="navigate/셀 대기 ms")
+    ap.add_argument("--safety-margin", type=int, default=SAFETY_MARGIN,
+                    help=f"남은 스팟이 이 값 이하면 새 수집 중단(기본 {SAFETY_MARGIN}, 무료 100/일 보호)")
     return ap
 
 
