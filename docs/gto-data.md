@@ -119,7 +119,9 @@ BTN RFI URL과 동일해지는 부수 문제도 있었다.
   frontier/failed 3분류) — `python3 scripts/gto_tree_report.py`로 재생성
 - **실전에서 발견된 트리 밖 스팟 큐**: `python3 scripts/show_missing_spots.py`
   (`gto_missing_spots_preflop` 테이블, `range_type='seq'` 항목은 ②' 시퀀스 키 미매칭분)
-- 포스트플랍 레인지는 여전히 전체 미존재(`docs/gto-postflop.md` 참고, 별도 계획).
+- 포스트플랍 레인지는 여전히 전체 미존재. 텍스처 클래스 수집 계획(`docs/gto-postflop.md`)은
+  2026-07-17 폐기됨(포스트플랍 실측 솔브가 유료 하루 1스팟 제한이라 현실적으로 불가능) —
+  대체 방향은 `TODO.md` "Epic: 포스트플랍 전략" 참고(프리플랍 GTO 기반 레인지 좁히기로 근사).
 
 ---
 

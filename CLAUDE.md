@@ -47,8 +47,8 @@ cd web && npm run build            # 프론트 빌드 확인
 | `docs/api.md` | FastAPI 엔드포인트 명세 | API 추가/변경 시 |
 | `docs/game-engine.md` | core/ 게임 로직 상세 | 게임 엔진 변경 시 |
 | `docs/gto-data.md` | GTO DB 현황, 수집 방법 | GTO 데이터 추가/변경 시 |
-| `docs/gto-postflop.md` | 포스트플랍 GTO 추상화 설계 (텍스처 클래스) | 포스트플랍 GTO 방식 변경 시 |
 | `docs/gto-preflop-tree.md` | 프리플랍 전체 트리 커버리지 설계 (액션 시퀀스 키) | 프리플랍 트리 확장 작업 시 |
+| `docs/postflop-range-strategy.md` | 포스트플랍 전략 Epic 설계 (프리플랍 GTO 기반 레인지 좁히기) | 설계 확정/변경 시 (작성 예정) |
 | `docs/gto-preflop-progress.md` | 프리플랍 트리 수집 현황 (자동 생성, `scripts/gto_tree_report.py`) | 수동 편집 금지 — 스크립트로만 갱신 |
 | `docs/ai-bot.md` | AI 봇 전략 | AI 로직 변경 시 |
 | `docs/db-schema.md` | DB 테이블 구조 | 스키마 변경 시 |

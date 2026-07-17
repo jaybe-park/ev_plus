@@ -75,8 +75,7 @@ ev_plus/
 | [GTO 데이터](docs/gto-data.md) | 레인지 데이터 형식, 입력 방법 |
 | [프리플랍 GTO 트리](docs/gto-preflop-tree.md) | 액션 시퀀스 키 기반 전체 트리 커버리지 설계 + 자동 수집 워커 |
 | [프리플랍 GTO 수집 현황](docs/gto-preflop-progress.md) | 자동 생성 리포트(mermaid 트리, `scripts/gto_tree_report.py`) |
-| [포스트플랍 GTO 계획](docs/gto-postflop.md) | 텍스처 클래스 추상화 설계 (미구현) |
 | [AI 봇](docs/ai-bot.md) | 난이도별 전략, GTO 준수율 |
 | [DB 스키마](docs/db-schema.md) | 테이블 구조, 기록 설계 |
 | [테스트](docs/testing.md) | 테스트 항목, 실행 방법 |
-| [TODO](TODO.md) | 버그, 미연결 기능, 작업 목록 |
+| [TODO](TODO.md) | 진행 중/예정 작업 (완료 이력은 [TODO_ARCHIVE](TODO_ARCHIVE.md)) |

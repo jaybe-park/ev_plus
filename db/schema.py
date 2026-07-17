@@ -234,9 +234,10 @@ CREATE_GTO_PREFLOP_SEQ_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gto_pre_seq ON gto_preflop_situations(action_seq);
 """
 
-# v11: gto_missing_spots → gto_missing_spots_preflop 개명. 포스트플랍 GTO
-# 추상화 작업 시 별도 gto_missing_spots_postflop이 필요해질 것을 대비해
-# 미리 이름공간 분리 (docs/gto-postflop.md 참고).
+# v11: gto_missing_spots → gto_missing_spots_preflop 개명. 포스트플랍용 별도
+# gto_missing_spots_postflop이 필요해질 것을 대비해 미리 이름공간 분리.
+# (구 포스트플랍 텍스처 클래스 수집 계획은 폐기됨 — TODO.md "Epic: 포스트플랍
+# 전략" 참고. gto_postflop_situations/hands 테이블은 여전히 미사용 상태.)
 CREATE_GTO_MISSING_SPOTS_PREFLOP = """
 CREATE TABLE IF NOT EXISTS gto_missing_spots_preflop (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
