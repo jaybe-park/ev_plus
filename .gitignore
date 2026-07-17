@@ -34,6 +34,10 @@ env/
 web/node_modules/
 web/dist/
 
+# ④ 트리 워커 진행상황 체크포인트(로컬 상태)
+gto_tree_checkpoint.json
+gto_tree_checkpoint.tmp
+
 # 테스트/커버리지
 .pytest_cache/
 .coverage

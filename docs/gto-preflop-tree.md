@@ -405,6 +405,80 @@ D1(하드코딩 캐노니컬 테이블 제거)과 D3(런타임 트리-인지 스
   노드를 저장한 뒤 즉시 다음 스냅을 하려면 `_cache.clear()`/`_loaded=False` 무효화가
   필요(기존 `/gto/preflop/save`가 이미 저장 후 캐시 무효화하므로 워커도 그 경로를 쓰면 자동 반영).
 
+## ④ 드라이버 구현 완료 (2026-07-17) — `scripts/collect_gto_tree.py`
+
+데이터 기반 트리 워커의 **Playwright(CDP) 자동화 드라이버**를 구현했다. 순수 로직
+(`scripts/gto_tree_worker.py`: `aggregate_frequencies`/`branch_actions`/`action_to_token`/
+`TreeNode`/`FrontierQueue`)은 **그대로 재사용**하고, 이 파일은 거기에 브라우저 조작과
+저장을 붙인 얇은 드라이버다.
+
+### 드라이버가 하는 일 (노드 1개 처리)
+1. `url_from_node_key(node_key)`로 GTO Wizard로 navigate(실측 사이즈 키 → URL 정확 일치).
+2. 레인지 셀(`[data-tst^="range_table_cell_0_"]`) 렌더 + 배경 색 레이어(≥150셀) 대기.
+3. 검증된 CSS 파서(`colorToAction`/`parseCell`)로 169핸드 액션 빈도 추출.
+4. **badSum 검증**: 핸드별 fold+call+raise+allin 합이 [0.9,1.1] 밖이면 저장 안 하고 스킵
+   (failed에 기록, 진행 계속).
+5. 화면 텍스트에서 raise/allin **실측 사이즈** 스크레이프(`/Raise ([\d.]+)/` 등).
+6. `POST /gto/preflop/save`에 **action_seq=실측 사이즈 키 verbatim**(D1), raise_size 실측,
+   hands 저장(기존 엔드포인트 재사용, 변경 없음).
+7. 저장된 hands로 `aggregate_frequencies`+`branch_actions`(ε=0.05%) → 자식 노드를
+   **도달확률 가중**(부모 reach × 액션 빈도)으로 `FrontierQueue`에 push. 베팅 종료
+   (터미널) 자식은 `_replay` 시뮬레이터로 걸러 제외(무효 navigate 방지).
+
+### 핵심 설계 준수
+- **저장 키는 실측 사이즈**(깊이-캐노니컬 하드코딩 금지, D1). 추측 채움 없음.
+- **분기는 빈도>ε**(버튼 존재로 판단 금지). `branch_actions` 단일 소스.
+- **우선순위는 도달확률 best-first**(자주 나오는 라인 먼저). `FrontierQueue`.
+- **베팅순서 시뮬레이터**(`_replay`)는 순수 포커 규칙(누가 다음에 행동/라운드 재개/
+  터미널)만 쓴다 — GTO "가정"이 아님. 이걸로 히어로/레이저 포지션과
+  `hero_position`/`vs_position`/`range_type`/`situation_label`을 결정론적으로 유도.
+  DB의 기존 13노드 라벨과 100% 일치 확인.
+
+### 사용자 실행 방법 (남은 유일한 작업)
+드라이버는 사용자가 로그인해 둔 GTO Wizard 크롬 세션에 CDP로 붙는다(약관/토큰 안전).
+
+1. **크롬을 디버그 포트로 실행**(기존 크롬은 모두 종료 후):
+   ```
+   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+       --remote-debugging-port=9222 \
+       --user-data-dir="$HOME/chrome-gto-debug"
+   ```
+   (`--user-data-dir`은 디버그 전용 프로필 — 평소 프로필과 분리해 안전.)
+2. 그 창에서 `https://app.gtowizard.com` 로그인.
+3. 로컬 서버 실행: `./start.sh` (저장 POST 대상, `https://localhost:8765`).
+4. **파서 눈검증(dry-run)**: `python3 scripts/collect_gto_tree.py --dry-run`
+   → 첫 노드 추출/집계/실측 사이즈만 출력, 저장 안 함.
+5. **실전 수집**: `python3 scripts/collect_gto_tree.py --limit 90`
+   (무료 100/일 안전마진. 중단돼도 재실행하면 체크포인트+DB에서 이어감.)
+
+### CLI 옵션
+- `--limit N`(기본 90) 이번 실행 최대 신규 노드 수(일일 한도 보호).
+- `--dry-run` 추출/검증만, 저장·확장 없이 첫 노드 상세 출력.
+- `--cdp-url`(기본 `http://localhost:9222`) 크롬 CDP 엔드포인트.
+- `--server`(기본 `https://localhost:8765`) 저장 대상 FastAPI(자체서명 → 검증 스킵).
+- `--checkpoint`(기본 `<repo>/gto_tree_checkpoint.json`) 진행상황 JSON.
+- `--epsilon`(기본 0.0005) 분기 빈도 컷. `--nav-timeout`(기본 30000ms).
+
+### 중단-재개 / 체크포인트
+- 노드를 저장할 때마다 `gto_tree_checkpoint.json`에 `visited`/`frontier`/`failed`를 원자적
+  기록(.tmp→rename). 재실행 시 체크포인트가 있으면 프론티어를 그대로 복원, 없으면 DB의
+  기수집 트리를 루트부터 BFS로 훑어 **미수집 자식만 도달확률 가중으로 재구성(seed)**.
+- DB의 `action_seq` 존재 여부로도 최소 재개가 되지만(중복 수집 방지), 체크포인트가
+  프론티어 재계산 비용을 없앤다. `.gitignore`에 등록(로컬 상태).
+
+### 알려진 제약 / 라이브 튜닝 필요
+- **일일 한도 감지는 추측 기반**: GTO Wizard의 실제 한도 신호(배너/DOM/응답)를 몰라,
+  "레인지 테이블 렌더 실패 + 한도 키워드(`daily limit`/`무료`/`한도` 등) 매칭"으로 감지해
+  안전 중단한다. **첫 실전 실행 때 실제 신호를 관찰해 `LIMIT_SIGNAL_WORDS`/감지 로직을
+  다듬을 것.**
+- **실측 사이즈 스크레이프도 페이지 텍스트 정규식 기반**: 셀렉터가 불안정할 수 있어
+  `body.innerText`에서 `Raise N`/`Allin N`을 정규식으로 뽑는다. dry-run의
+  `raiseSizes(raw)`/`allinSizes(raw)` 출력으로 값이 화면과 맞는지 먼저 확인 권장.
+  올인 to-amount는 화면에서 못 읽으면 100bb(시작 스택, 정의상 결정론적)로 폴백.
+- Playwright 번들 크로미움은 CDP connect엔 필수 아님(사용자 크롬에 붙음). 단
+  `python3 -m playwright install chromium`을 해두면 드라이버 바이너리가 준비돼 안정적
+  (이 저장소에선 설치 완료).
+
 ## 수집·검증 전략 (④⑤⑥)
 
 - **④ 수집 엔진 = 데이터 기반 트리 워커**(위 "데이터 기반 트리 수집" 참조): 노드의 제공

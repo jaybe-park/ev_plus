@@ -1,0 +1,8 @@
+# ④ 데이터 기반 프리플랍 트리 워커(scripts/collect_gto_tree.py) 의존성.
+# 서버 의존성은 requirements-server.txt 참조.
+#
+# 설치:
+#   pip install -r requirements.txt
+#   python3 -m playwright install chromium   # CDP connect엔 필수는 아니나 드라이버 안정화
+playwright>=1.61.0
+requests>=2.31.0
