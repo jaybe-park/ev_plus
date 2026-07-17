@@ -66,7 +66,7 @@ python3 scripts/gto_tree_report.py   # 수집 현황 갱신
   - [ ] **Docs Update:** 해당 없음 (버그 수정, 별도 설계 문서 변경 없음)
   - 커밋: 한국어 메시지 + Co-Authored-By 트레일러, 푸시 (버그 수정은 즉시 커밋 가능)
 
-### Task: DB 인프라 정비 (SQLite 유지 + 파일 분리/보존/백업)
+### Epic: DB 인프라 정비 (SQLite 유지 + 파일 분리/보존/백업)
 - **Status:** `[ ] Pending` — 트리거 발동, 원인 재조사 진행 중 (2026-07-17)
 - **Context:** `poker.db` 실측 15GB로 트리거(5GB) 초과. 행 수 기준 재조사 결과
   `equity_cache`(1억 3,977만 행)가 `games`+`preflop_actions`+`postflop_actions`
@@ -96,14 +96,15 @@ python3 scripts/gto_tree_report.py   # 수집 현황 갱신
   - [ ] 권장 순서: 원인 정확 측정 → 3(백업) → 2(보존) → 1(분리, 트리거 발동 시)
   - [ ] **Docs Update:** `docs/db-schema.md`, `docs/architecture.md`
 
-### Task: 조건부 에퀴티 적용 확대
+### Task: 조건부 에퀴티 적용 확대 (medium 봇 + 그레이더)
 - **Status:** `[ ] Pending`
 - **Context:** equity_cache는 "vs 랜덤" 기저 지표. 조건부(3벳팟이면 쓰레기 핸드는
   폴드된 분포)는 `ranged_equity`가 담당 — hard 봇과 에퀴티 패널 "vs 레인지"에는
-  이미 적용됨. 남은 갭: ① medium 봇 미적용 ② 플레이 평가 EV 계산이 vs 랜덤 기준
-  ③ 포스트플랍 벳/레이즈 기반 추가 좁히기(아래 "Epic: 포스트플랍 전략" 범위와 겹침, 그쪽에서 흡수 검토).
+  이미 적용됨. 남은 갭: ① medium 봇 미적용 ② 플레이 평가 EV 계산이 vs 랜덤 기준.
+  (포스트플랍 벳/레이즈 기반 추가 좁히기는 별도 스코프 — "Epic: 포스트플랍 전략"이
+  전담하므로 여기서는 완전히 제외)
 - **Sub-tasks:**
-  - [ ] medium 봇에 ranged_equity 적용
+  - [ ] medium 봇에 ranged_equity 적용 (기존 `use_ranges` 플래그, hard 봇과 동일 경로)
   - [ ] 플레이 평가 EV 계산을 vs_range 기준으로 전환
   - [ ] 아레나 A/B 검증
   - [ ] **Docs Update:** `docs/ai-bot.md`
@@ -141,7 +142,7 @@ python3 scripts/gto_tree_report.py   # 수집 현황 갱신
   레인지 정보 없을 때 폴백으로 계속 사용(레인지 반영 계산과 별개 경로, 안 겹침).
   다만 **UI(에퀴티 패널)에는 vs_random 표시를 뺀다** — 헷갈리기만 함 (아래
   "에퀴티 표시/해석" Task에 반영). 무한정 커지는 것에 대한 우려는 별도로
-  "DB 인프라 정비" Task에서 "성장 상한 정책 필요 여부"로 다룰 것(플랍 전수조사가
+  "Epic: DB 인프라 정비"에서 "성장 상한 정책 필요 여부"로 다룰 것(플랍 전수조사가
   현재 "무한 작업"으로 설계돼 있음)
 - **모델 전략(확정)**: 까다로운 설계/스펙 확정 단계는 상위 모델(Opus), 스펙이
   명확해진 뒤의 코드 구현은 하위 모델(Sonnet/Haiku) + 테스트/아레나 검증으로 커버
