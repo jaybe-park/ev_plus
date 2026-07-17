@@ -739,6 +739,12 @@ def run(args) -> int:
             if res.limit_hit:
                 print("        !! 일일 한도/제한 신호 감지 — 안전하게 중단하고 재개 가능 상태로 저장")
                 processed -= 1  # 이 노드는 처리 못 함
+                # ⚠️ 버그 수정(2026-07-17, 사용자 지적): frontier.pop()으로 이미 꺼낸
+                # node를 다시 넣지 않고 break하면, 이 노드가 visited에도 frontier에도
+                # 없는 상태로 체크포인트에 저장돼 사실상 영구 유실됐다(체크포인트가
+                # 있으면 다음 실행 때 DB reseed를 안 하므로 다시 나타날 기회가 없음).
+                # 반드시 되돌려 넣고 나서 중단해야 다음 실행에서 이어서 처리된다.
+                frontier.push(node)
                 break
 
             if not res.ok:
