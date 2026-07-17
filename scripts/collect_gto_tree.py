@@ -67,7 +67,9 @@ CLI:
 """
 import argparse
 import json
+import random
 import sys
+import time
 from collections import deque
 from pathlib import Path
 from typing import Optional
@@ -502,18 +504,34 @@ def extract_node(page, node_key: str, nav_timeout: int) -> ExtractResult:
         return ExtractResult(False, reason=f"navigate 실패: {e}")
 
     # 레인지 테이블 셀 렌더 대기(고정 sleep 대신 조건 대기)
+    #
+    # ⚠️ 실측으로 발견된 함정(2026-07-17): 깊은 노드(4벳+)는 오프너의 계속 레인지가
+    # 원래 좁아서(예: 88/169 — 나머지는 오프닝 레인지 밖이라 정당하게 background:none)
+    # "색칠된 셀 ≥150개" 같은 절대 임계값으로는 절대 통과 못 하고 영원히 타임아웃난다.
+    # "로딩 중"과 "이미 다 됐는데 원래 좁은 레인지"를 구분 못 하는 게 근본 문제.
+    # → 절대 개수가 아니라 **색칠된 셀 개수가 더 이상 안 바뀌는(안정화) 시점**으로 판정.
     rendered = True
     try:
         page.wait_for_selector('[data-tst^="range_table_cell_0_"]', timeout=nav_timeout)
-        # 배경 레이어(빈도 색)까지 채워질 때까지: 색 있는 셀이 충분히 나올 때까지 대기
+        # 매 노드마다 안정성 추적 상태 리셋(이전 노드의 폴링 상태가 새 노드로 새는 것 방지)
+        page.evaluate("() => { window.__gtowColoredCount = -1; window.__gtowStableSince = 0; }")
         page.wait_for_function(
             """() => {
                 const cs = document.querySelectorAll('[data-tst^="range_table_cell_0_"]');
                 let n = 0;
                 cs.forEach(c => { if (getComputedStyle(c).backgroundImage !== 'none') n++; });
-                return n >= 150;
+                if (n === 0) return false;  // 아직 아무것도 안 칠해짐 — 확실히 로딩 중
+                const now = Date.now();
+                if (window.__gtowColoredCount !== n) {
+                    window.__gtowColoredCount = n;
+                    window.__gtowStableSince = now;
+                    return false;  // 개수가 방금 바뀜 — 아직 로딩/변화 중
+                }
+                // 개수가 마지막 폴링 이후 그대로 → 600ms 이상 안 바뀌면 렌더 완료로 간주
+                return (now - window.__gtowStableSince) >= 600;
             }""",
             timeout=nav_timeout,
+            polling=200,
         )
         # 히어로 Actions 패널 버튼도 함께 대기(사이즈 실측 소스)
         page.wait_for_selector('[data-tst="study_action_btns"] [data-tst^="action_"]',
@@ -706,6 +724,11 @@ def run(args) -> int:
                 ckpt.visited.add(key)
                 continue
 
+            if processed > 0:
+                delay = random.uniform(args.min_delay, args.max_delay)
+                print(f"        (다음 요청 전 {delay:.1f}초 대기 — 기계적 패턴 회피)")
+                time.sleep(delay)
+
             processed += 1
             print(f"\n[{processed}/{args.limit}] node={key!r} reach={node.reach_prob:.5f} "
                   f"→ {meta['situation_label']}")
@@ -810,6 +833,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--nav-timeout", type=int, default=30000, help="navigate/셀 대기 ms")
     ap.add_argument("--safety-margin", type=int, default=SAFETY_MARGIN,
                     help=f"남은 스팟이 이 값 이하면 새 수집 중단(기본 {SAFETY_MARGIN}, 무료 100/일 보호)")
+    ap.add_argument("--min-delay", type=float, default=2.0,
+                    help="노드 처리 사이 최소 지연(초). 기계적으로 빠른 요청 패턴을 피하기 위한 배려/안전장치")
+    ap.add_argument("--max-delay", type=float, default=5.0,
+                    help="노드 처리 사이 최대 지연(초) — 실제 지연은 [min,max] 균등분포 랜덤")
     return ap
 
 
