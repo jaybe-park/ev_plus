@@ -11,18 +11,22 @@
 ```bash
 # 대표 명령 — 로직 검증만 (기본값, 수초 이내)
 python3 tests/run_all.py
-python3 tests/run_all.py --fast     # 위와 동일 (test_poker_full.py만)
+python3 tests/run_all.py --fast     # 위와 동일 (test_poker_full.py만, 63개)
 
-# 대표 명령 — 로직 + 에퀴티/봇 검증 (89개)
-python3 tests/run_all.py --full     # test_poker_full.py + test_equity.py
+# 대표 명령 — 로직 + 에퀴티/봇 + 플레이평가 검증 (148개, 2026-07-17 기준)
+python3 tests/run_all.py --full     # test_poker_full.py + test_equity.py + test_grader.py
 ```
+
+`run_all.py`의 `FAST_FILES`/`FULL_FILES` 상수가 대상 파일을 정의(신규 테스트 파일
+추가 시 여기 등록해야 `--full`에 포함됨).
 
 개별 실행도 가능하다 (디버깅 시 특정 파일만 빠르게 돌릴 때 유용):
 
 ```bash
-python3 tests/test_poker_full.py    # 정밀 검사 (50개)
-python3 tests/test_equity.py        # 에퀴티 엔진 + 봇 테스트 (39개)
-python3 tests/test_poker.py         # 기본 유닛 테스트 (14개)
+python3 tests/test_poker_full.py    # 정밀 검사 (63개 — 헤즈업/트리 데이터 기반 시퀀스 테스트 포함)
+python3 tests/test_equity.py        # 에퀴티 엔진 + 봇 테스트 (54개)
+python3 tests/test_grader.py        # 플레이 평가(Play Grader) 판정 엔진 (31개, run_all --full에 포함)
+python3 tests/test_poker.py         # 기본 유닛 테스트 (14개, run_all에는 미포함 — 독립 레거시 스위트)
 ```
 
 ### StubBot 방침
@@ -110,7 +114,7 @@ AI 봇의 실제 판단력 검증(equity 정확도, GTO 준수, 페르소나별 
 | 4-7 | 스트리트별 커뮤니티 카드 수 (플랍 3, 턴 4, 리버 5) |
 | 4-8 | 딜된 카드 중복 없음 (6인 풀 핸드) |
 
-### 영역 5 — 웹 세션 (9개)
+### 영역 5 — 웹 세션 (12개)
 
 | 번호 | 항목 |
 |---|---|
@@ -123,10 +127,38 @@ AI 봇의 실제 판단력 검증(equity 정확도, GTO 준수, 페르소나별 
 | 5-7 | 사람 홀카드 항상 공개 |
 | 5-8 | 핸드 진행 중 봇 홀카드 숨김 |
 | 5-9 | 쇼다운 시 봇 홀카드 공개 |
+| 5-10 | 에퀴티 패널 — 넛급 핸드 |
+| 5-11 | 핸드 종료 후 hand_review 포함 |
+| 5-12 | equity_enabled=False 스위치 |
+
+### 영역 6 — 헤즈업/사이드팟/프리플랍 GTO 트리 (18개)
+
+| 번호 | 항목 |
+|---|---|
+| 6-1 | 헤즈업 블라인드 포스팅 (BTN/SB=SB) |
+| 6-2 | 헤즈업 프리플랍 BTN/SB 선행동 |
+| 6-3 | 헤즈업 포스트플랍 BB 선행동 |
+| 6-4 | 헤즈업 20핸드 칩 총량 보존 |
+| 6-5 | 사이드팟 — 숏스택 메인팟만 수령 |
+| 6-6 | 사이드팟 — 동일 올인 팟 1개 |
+| 6-7 | 사이드팟 — 폴드 기여분 처리 |
+| 6-8 | 사이드팟 분배 후 칩 보존 |
+| 6-9 | 헤즈업 GTO BTN/SB→SB RFI 매핑 |
+| 6-10 | 스퀴즈 구조화 시퀀스에 콜 포함(① 구조화 액션 히스토리) |
+| 6-11 | 헤즈업 시퀀스 BTN/SB 라벨 유지 |
+| 6-12 | vs_open 시퀀스 라우팅 스팟체크 |
+| 6-13 | 시퀀스 키=enum 키 동일 레인지(② 시퀀스 키 스키마) |
+| 6-14 | 런타임 사이즈 스냅→노드 매핑 |
+| 6-15 | 마이그레이션 vs_3bet 포맷 정규화 |
+| 6-16 | 실측 사이즈 노드 형제 스냅(②' 데이터 기반 키/스냅) |
+| 6-17 | 미수집 브랜치 None+큐 등록 |
+| 6-18 | 형제 2개 bb 최소거리 스냅 |
+
+프리플랍 GTO 트리 커버리지(6-9~6-18) 관련 배경: [`docs/gto-preflop-tree.md`](gto-preflop-tree.md).
 
 ---
 
-## 에퀴티 테스트 (test_equity.py, 39개)
+## 에퀴티 테스트 (test_equity.py, 54개)
 
 | 영역 | 항목 |
 |---|---|

@@ -165,6 +165,49 @@ HandReviewEntry {
 
 ---
 
+## GTO 데이터 관리 API (내부 도구용, 웹 게임 클라이언트는 사용 안 함)
+
+`scripts/collect_gto_tree.py`(④ 자동 워커)와 GTO Wizard 브라우저 수동 저장 스크립트가
+호출한다. 상세 배경: [`docs/gto-preflop-tree.md`](gto-preflop-tree.md).
+
+### `POST /gto/preflop/save`
+프리플랍 레인지(169핸드 빈도)를 저장(덮어쓰기, position/vs_position/range_type
+또는 action_seq 기준 UPSERT).
+
+**요청**
+```json
+{
+  "position": "BTN",
+  "vs_position": "HJ",
+  "range_type": "vs_open",
+  "raise_size": 8.0,
+  "situation_label": "BTN vs HJ open",
+  "hands": {"AA": {"raise": 1.0}, "72o": {"fold": 1.0}},
+  "action_seq": "F-R2.5-F"
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `position` | string | 히어로 포지션 |
+| `vs_position` | string? | `null`=RFI, `"BTN"`=vs_open, `"BTN/BB"`=vs_3bet(opener/three_bettor) |
+| `range_type` | string | `open` / `vs_open` / `vs_3bet` |
+| `raise_size` | float? | bb 단위 **실측** raise-to 값(추측 금지 원칙 — 화면에서 읽은 값) |
+| `situation_label` | string | 사람이 읽는 설명 |
+| `hands` | object | `{"AA": {"raise": 1.0, "allin": 0.0}, ...}` — fold/call/raise/allin 중 0 초과값만 |
+| `action_seq` | string? | **노드 키**(실측 사이즈 verbatim, 명시하면 그대로 저장 우선). 미지정 시 enum에서 레거시 깊이-캐노니컬 방식으로 파생(근사) |
+
+**응답**: `{"ok": true, "situation": "...", "hands": 169, "action_seq": "F-R2.5-F"}`
+
+### `GET /gto/preflop/range?position=BTN&vs_position=HJ&range_type=vs_open`
+저장된 레인지 조회(169핸드 + 콤보가중 요약). `found: false`면 미수집.
+
+### `GET /gto/preflop/situations`
+저장된 모든 프리플랍 스팟 목록(situation_label, position, vs_position, range_type,
+핸드 수). `scripts/gto_tree_report.py`/`audit_gto_preflop.py`가 이 대신 DB를 직접 조회.
+
+---
+
 ## CORS
 
 개발 모드에서 `localhost` 모든 포트 허용 (`allow_origin_regex`).  

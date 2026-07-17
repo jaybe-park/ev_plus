@@ -34,8 +34,8 @@ ev_plus/
 ├── server/        # FastAPI 백엔드
 ├── web/           # React + Vite + Tailwind 프론트엔드
 ├── db/            # SQLite (게임 기록 + GTO 데이터 + 에퀴티 캐시)
-├── scripts/       # 에퀴티 워커, 봇 아레나, 그라인드 모드
-├── tests/         # 테스트 (포커 로직 50 + 에퀴티/봇 36)
+├── scripts/       # 에퀴티 워커, 봇 아레나, 그라인드 모드, 프리플랍 GTO 트리 수집 워커
+├── tests/         # 테스트 (포커 로직 63 + 에퀴티/봇 54 + 플레이평가 31)
 ├── start.sh       # 개발 모드 실행 (= dev.sh)
 ├── dev.sh         # 개발 모드 실행
 └── prod.sh        # 프로덕션 모드 실행
@@ -52,9 +52,10 @@ ev_plus/
 | AI 봇 3단계 | ✅ 난이도 = MC 샘플 수(판단 해상도) |
 | 프리플랍 GTO 힌트 | ✅ GTO Wizard 데이터 (RFI+vs_open+vs_3bet) |
 | GTO 패널 (레인지 그리드) | ✅ 오른쪽 탭 — 핸드별 색상 + 비교 |
-| 포커 로직 테스트 50개 | ✅ 전체 통과 |
-| GTO 데이터 DB화 | ✅ 완료 (SQLite, 55개 스팟) |
-| GTO Wizard Chrome 연동 | ✅ HTTPS API 직접 저장 |
+| 테스트 스위트 148개 | ✅ 전체 통과 (`tests/run_all.py --full`) |
+| GTO 데이터 DB화 | ✅ 완료 (SQLite) — 현황: [gto-preflop-progress.md](docs/gto-preflop-progress.md) |
+| 프리플랍 GTO 액션 시퀀스 트리 확장 | 🚧 진행 중 — enum 35개 조합 → 데이터 기반 트리(스퀴즈/멀티웨이/4벳+ 포함), 자동 수집 워커. [설계](docs/gto-preflop-tree.md) |
+| GTO Wizard Chrome 연동 | ✅ HTTPS API 직접 저장 + Playwright 자동 워커 |
 | AI 봇 equity 기반 재작성 | ✅ MC/전수조사 + 레인지 반영 + 페르소나 |
 | 에퀴티 전수조사 워커 | ✅ `scripts/equity_worker.py` (중단/재개 안전) |
 | 봇 아레나 / 그라인드 | ✅ bb/100 검증 + 캐시·학습데이터 동시 축적 |
@@ -72,6 +73,9 @@ ev_plus/
 | [게임 엔진](docs/game-engine.md) | core/ 상세, 게임 흐름, 베팅 라운드 규칙 |
 | [API](docs/api.md) | FastAPI 엔드포인트 명세 |
 | [GTO 데이터](docs/gto-data.md) | 레인지 데이터 형식, 입력 방법 |
+| [프리플랍 GTO 트리](docs/gto-preflop-tree.md) | 액션 시퀀스 키 기반 전체 트리 커버리지 설계 + 자동 수집 워커 |
+| [프리플랍 GTO 수집 현황](docs/gto-preflop-progress.md) | 자동 생성 리포트(mermaid 트리, `scripts/gto_tree_report.py`) |
+| [포스트플랍 GTO 계획](docs/gto-postflop.md) | 텍스처 클래스 추상화 설계 (미구현) |
 | [AI 봇](docs/ai-bot.md) | 난이도별 전략, GTO 준수율 |
 | [DB 스키마](docs/db-schema.md) | 테이블 구조, 기록 설계 |
 | [테스트](docs/testing.md) | 테스트 항목, 실행 방법 |

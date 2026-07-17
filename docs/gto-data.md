@@ -1,13 +1,21 @@
 # GTO 데이터
 
 프리플랍 레인지 데이터를 SQLite DB(`poker.db`)로 관리한다.
-GTO Wizard에서 Claude in Chrome MCP로 추출해 저장한다.
 
-> ⚠️ **2026-07-10 파서 버그로 전량 무효화 → 2026-07-12 레이어 기반 파서로 재수집 진행 중.**
+> ⚠️ **2026-07-13부터 수집 방식이 근본적으로 바뀌었다 — 이 문서를 읽기 전에
+> [`docs/gto-preflop-tree.md`](gto-preflop-tree.md)를 먼저 읽을 것.** "35개 조합
+> enum 키" 방식(아래 이력 섹션들이 그 시절 기록)에서 **액션 시퀀스 키(`action_seq`)
+> 기반 데이터 기반 트리 수집**으로 전환됐고, 수집도 Chrome MCP 수동 방식에서
+> **`scripts/collect_gto_tree.py`(Playwright/CDP 자동 워커)** 로 넘어갔다. 이 문서는
+> 그 이전 시대의 이력(파서 버그, 스키마 재작업)과 기본 사용법을 보존하고, 현재
+> 수집 현황/방법은 아래 각 절에서 최신 문서로 연결한다.
+
+> ⚠️ **2026-07-10 파서 버그로 전량 무효화 → 2026-07-12 레이어 기반 파서로 재수집(당시 이력).**
 > 기존 "단일 gradient + % 색상 스탑" 가정 파서는 실제 GTO Wizard CSS 구조(여러 개
 > 겹친 `linear-gradient` 레이어 + `background-size` 누적 폭)와 달라 call/allin이
 > 섞이는 스팟에서 파싱 실패(`badSum` 발생)했다. 아래 "저장 스크립트"는 레이어
-> 순서(`allin, raise, call, fold`) 매칭 + 누적폭 차분 방식으로 교체된 최신판이다.
+> 순서(`allin, raise, call, fold`) 매칭 + 누적폭 차분 방식으로 교체된 최신판이다
+> (이 레이어 기반 파서 자체는 지금도 유효 — `scripts/collect_gto_tree.py`가 그대로 재사용).
 > `raise_size`도 대부분 `"3x"` 등 플레이스홀더였던 것을 REAL(실측 bb) 컬럼으로 교체.
 > 재수집 중 발견된 HJ RFI 데이터 오염 건은 아래 "현재 저장된 데이터 현황" 참고.
 
@@ -26,12 +34,14 @@ gto_postflop_hands       ← 포스트플랍 핸드별 빈도 (미사용)
 
 ## 현재 저장된 데이터 현황
 
-> ⚠️ 2026-07-10 파서 버그로 전량 무효화 후 2026-07-12부터 레이어 기반 새 파서로
-> 재수집 진행 중. 아래 표는 **현재 DB 실측 기준(2026-07-12, 전수검사 완료)**이며,
-> 재수집된 스팟만 반영돼 있다(vs_open/vs_3bet 대부분은 아직 `gto_missing_spots_preflop`
-> 큐 기반으로 실전 우선순위 수집 중).
+> **실시간 현황은 [`docs/gto-preflop-progress.md`](gto-preflop-progress.md) 참고**
+> (`python3 scripts/gto_tree_report.py`로 재생성 가능 — 확정 수집/발견됨(미수집)/
+> 검증 실패 개수, 포지션별·깊이별 통계, 트리 다이어그램, 도달확률까지 항상 최신).
+> 아래 표는 2026-07-12(35개 enum 체계 시절) 스냅샷으로 **이력 보존용**이며 더 이상
+> 갱신하지 않는다 — 2026-07-13 이후는 action_seq 기반 트리 수집으로 전환돼 "RFI/
+> vs_open/vs_3bet 35개 조합"이라는 틀 자체가 더 넓은 트리로 대체됐다.
 
-### RFI (오픈 레인지) — GTO Wizard ✅ (5/5 완료, 전수검사 통과)
+### RFI (오픈 레인지) — GTO Wizard ✅ (5/5 완료, 전수검사 통과, 2026-07-12 스냅샷)
 
 fold=100%인 핸드 수(169개 중)로 표시 — 작을수록 넓게 오픈. UTG < HJ < CO < BTN < SB
 순으로 넓어지는 정상 패턴 확인됨(2026-07-12 `scripts/audit_gto_preflop.py` 검증).
@@ -44,25 +54,12 @@ fold=100%인 핸드 수(169개 중)로 표시 — 작을수록 넓게 오픈. UT
 | BTN RFI | 81/169 | ✅ GTO Wizard (레이어 파서) |
 | SB RFI | 61/169 | ✅ GTO Wizard (레이어 파서) |
 
-### vs_open (수비 레인지) — 일부 수집 (큐 기반 진행 중)
+### vs_open / vs_3bet (2026-07-12 스냅샷, 이후 대폭 확장됨)
 
-| 스팟 | 사이징(실측 bb) | 상태 |
-|---|---|---|
-| HJ vs UTG open | 8.0 | ✅ GTO Wizard |
-| BB vs UTG open | 13.5 | ✅ GTO Wizard |
-| BB vs BTN open | 13.5 | ✅ GTO Wizard |
-| SB vs BTN open | 11.0 | ✅ GTO Wizard |
-
-나머지 vs_open 스팟은 `gto_missing_spots_preflop` 큐가 실전에서 채워지는 대로 수집.
-
-### vs_3bet — 일부 수집 (큐 기반 진행 중)
-
-| 오프너 | 3베터 | 사이징(실측 bb) | 상태 |
-|---|---|---|---|
-| UTG | HJ | 21.5 | ✅ GTO Wizard |
-| BTN | BB | 28.5 | ✅ GTO Wizard |
-
-나머지 vs_3bet 조합은 큐 기반으로 계속 수집.
+당시 vs_open 4개, vs_3bet 2개만 수집된 상태였다. **2026-07-17 기준 확정 수집
+58개로 늘었고**(체계적 트리 워커로 스퀴즈/멀티웨이/4벳/5벳 라인까지 포함),
+개별 스팟 목록은 더 이상 이 문서에 나열하지 않는다 — `gto-preflop-progress.md`가
+항상 최신 전체 목록(도달확률 순 정렬 포함)을 제공한다.
 
 ### HJ RFI 데이터 오염 확인 및 재수집 (2026-07-12)
 
@@ -114,24 +111,27 @@ BTN RFI URL과 동일해지는 부수 문제도 있었다.
 - 큐 정리: 7개 → 6개. `position='BTN', vs_position='BB', range_type='vs_open'`
   1건이 이 버그로 생긴 오탐이라 삭제.
 
-### vs_open — 미존재 (fold 100% 폴백)
+### 미수집 스팟 확인 방법 (2026-07-12 스냅샷 표는 삭제 — 아래로 대체)
 
-현재 기본 vs_open 12개 모두 수집 완료. 아래는 아직 없는 심화 스팟.
-
-| 스팟 | 비고 |
-|---|---|
-| HJ vs UTG cold call | 수집 예정 |
-| CO vs UTG cold call | 수집 예정 |
-| vs_3bet 전체 | 수집 예정 |
-
-**미존재 스팟 (데이터 없음 → fold 100% 폴백)**
-- vs_3bet 레인지 전체
-- BB_vs_SB, SB_vs_CO, SB_vs_MP, SB_vs_UTG
-- 포스트플랍 레인지 전체
+위 "vs_3bet 레인지 전체 미존재" 등은 2026-07-12 시점 기록으로 지금은 사실이 아니다
+(④ 데이터 기반 트리 워커로 스퀴즈/3~5벳 라인 다수 수집됨). 현재 미수집 상태는:
+- **트리 구조 전체**: `docs/gto-preflop-progress.md`(mermaid 다이어그램, collected/
+  frontier/failed 3분류) — `python3 scripts/gto_tree_report.py`로 재생성
+- **실전에서 발견된 트리 밖 스팟 큐**: `python3 scripts/show_missing_spots.py`
+  (`gto_missing_spots_preflop` 테이블, `range_type='seq'` 항목은 ②' 시퀀스 키 미매칭분)
+- 포스트플랍 레인지는 여전히 전체 미존재(`docs/gto-postflop.md` 참고, 별도 계획).
 
 ---
 
 ## GTO Wizard에서 데이터 추출하는 방법
+
+> ⚠️ **대량/체계적 수집은 이제 자동 워커(`scripts/collect_gto_tree.py`)를 쓴다** —
+> 사전 조건 체크리스트·실행법은 [`docs/gto-preflop-tree.md`](gto-preflop-tree.md)
+> "사용자 실행 방법" 섹션 참고(디버그 크롬 + `--user-data-dir`, 랜덤 지연, 크래시
+> 자동 복구 등 이 문서에 없는 내용이 거기 최신으로 있다). 아래 "준비/URL 패턴/저장
+> 스크립트"는 **특정 스팟 하나를 수동으로 확인·재검증할 때**(파서 대조, 이상 스팟
+> 재확인 등) 여전히 유효한 방법으로 남겨둔다 — 레이어 기반 파서 자체는 자동 워커도
+> 그대로 재사용 중이라 원리 설명은 지금도 정확하다.
 
 ### 준비
 1. 서버 HTTPS 실행: `./start.sh`

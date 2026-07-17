@@ -25,16 +25,22 @@ core/          ← 순수 게임 로직, 외부 의존 없음
   deck.py
   player.py
   evaluator.py
-  game.py
+  game.py      ← preflop_action_seq() — 프리플랍 구조화 액션 시퀀스(포지션+액션+bb),
+                 gto/advisor의 ②' 시퀀스 키 조회가 이걸 소스로 씀(한글 로그 파싱 아님)
 
 ai/            ← core/ 사용
   bot.py       ← core/game, core/player, core/card, gto/advisor
 
 gto/           ← core/card, db/ 사용
-  loader.py    ← DB(gto_preflop_*) 로드 (앱 시작 시 캐시)
-  advisor.py   ← gto/loader, core/card — 미수집 스팟은 gto_missing_spots_preflop에 기록
+  loader.py    ← DB(gto_preflop_*) 로드 (앱 시작 시 캐시). enum 키(_cache)와
+                 시퀀스 키(_cache_by_seq/get_range_by_seq) 병렬 조회 지원(②').
+                 get_children_by_prefix()로 수집된 트리에서 형제 노드 조회(④ 트리-인지 스냅용)
+  advisor.py   ← gto/loader, core/card — enum 경로 우선, 미수집이면 시퀀스 키(canonical_node_key,
+                 트리-인지 스냅) 폴백. 그래도 없으면 gto_missing_spots_preflop에 기록(레거시
+                 enum 또는 range_type='seq' 실측 키)
   grader.py    ← 플레이 평가(Play Grader) 판정 엔진 (GTO 빈도 / equity 기반)
-  url_generator.py ← GTO Wizard 직접 이동 URL 생성
+  url_generator.py ← GTO Wizard 직접 이동 URL 생성. situation_to_node_key(레거시 enum→
+                 깊이캐노니컬 키)/url_from_node_key(노드 키→URL, 실측 키면 화면과 정확히 일치)
 
 db/            ← 순수 SQLite 계층, 외부 의존 없음
   schema.py    ← 테이블/인덱스 DDL + 버전별 마이그레이션 (SCHEMA_VERSION)
@@ -54,6 +60,14 @@ scripts/       ← db/, ai/, core/ 사용
   equity_worker.py ← 에퀴티 전수조사/샘플링 워커
   bot_arena.py     ← 봇 vs 봇 시뮬레이션
   grind.py         ← 아레나 + 워커 동시 실행
+  gto_tree_worker.py  ← ④ 데이터 기반 트리 워커 순수 로직(집계/ε분기/토큰/도달확률 큐,
+                        브라우저 독립적 — collect_gto_tree.py가 재사용)
+  collect_gto_tree.py ← ④ Playwright(CDP) 자동 수집 드라이버. 사용자의 로그인된 크롬에
+                        붙어 navigate→추출→저장→자식 확장을 반복(중단-재개, 크래시 자동
+                        복구/서킷브레이커 포함). 상세: docs/gto-preflop-tree.md
+  gto_tree_report.py  ← 수집 현황 리포트 생성기 → docs/gto-preflop-progress.md(mermaid 트리)
+  audit_gto_preflop.py ← 저장된 프리플랍 스팟 전수 검증(빈도합/포지션순서/이상 쏠림)
+  show_missing_spots.py ← gto_missing_spots_preflop 큐 CLI 조회
 
 web/           ← server/ API 호출
   src/api.ts   ← fetch 래퍼
