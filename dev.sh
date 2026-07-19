@@ -10,7 +10,7 @@ SSL_CERT="$SCRIPT_DIR/ssl/cert.pem"
 echo "♠ Texas Hold'em — 개발 모드"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  백엔드  https://localhost:8765  (HTTPS, reload 활성화)"
-echo "  프론트  http://localhost:5765   (HMR 활성화)"
+echo "  프론트  http://localhost:5766   (HMR 활성화)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
@@ -42,7 +42,7 @@ FRONTEND_PID=$!
 
 echo ""
 echo "  ⚠️  첫 실행 시 https://localhost:8765 에서 인증서 수동 허용 필요"
-echo "  브라우저: http://localhost:5765"
+echo "  브라우저: http://localhost:5766"
 echo "  종료: Ctrl+C"
 echo ""
 

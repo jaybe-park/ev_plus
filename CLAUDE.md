@@ -6,7 +6,7 @@
 FastAPI 백엔드 + React 프론트엔드.
 
 - 백엔드: `https://localhost:8765`
-- 프론트: `http://localhost:5765`
+- 프론트: `http://localhost:5766`
 - GitHub: `https://github.com/jaybe-park/ev_plus`
 
 ```bash
@@ -80,5 +80,5 @@ POST /game/{id}/action → 봇 자동 처리 → events[] 반환
 4. 무료 계정 100스팟/일 제한 주의
 
 ### 포트
-- 백엔드 8765, 프론트 5765 (다른 프로젝트와 충돌 방지)
+- 백엔드 8765, 프론트 5766 (다른 프로젝트와 충돌 방지)
 - HTTPS 필수 (GTO Wizard Mixed Content 방지)
