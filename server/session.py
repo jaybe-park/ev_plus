@@ -8,9 +8,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import logging
 from typing import List, Optional, Dict
 
-from core.game import TexasHoldem, Action, Street
+from core.game import TexasHoldem, Action, Street, IllegalActionError
 from core.player import Player
 from ai.bot import PokerBot, BotDifficulty, opponent_range_info
 from ai.equity import smart_equity, ranged_equity
@@ -22,6 +23,8 @@ from gto.grader import (
 from db.recorder import GameRecorder
 
 STREETS = [Street.PREFLOP, Street.FLOP, Street.TURN, Street.RIVER]
+
+logger = logging.getLogger(__name__)
 
 
 class WebGameSession:
@@ -114,6 +117,9 @@ class WebGameSession:
         if player is None or not player.is_human:
             return
 
+        # 사람의 불법 액션은 상태를 바꾸기 전에 거절한다(API는 400으로 응답).
+        self.game.normalize_action(player, action, amount, self._can_raise(player))
+
         self._events = []  # 새 액션마다 이벤트 초기화
         self._apply(player, action, amount)
         self._run_until_human()
@@ -133,9 +139,15 @@ class WebGameSession:
 
         call_amount = 0
         min_raise_to = 0
+        can_raise = False
         if waiting:
             call_amount = max(0, self.game.current_bet - self.human.current_bet)
-            min_raise_to = self.game.current_bet + self.game.min_raise
+            # 불완전 올인만 마주해 액션이 닫혔거나 스택이 콜 이하면 레이즈 불가 → min_raise_to=0
+            # (프론트 ActionBar는 min_raise_to=0이면 레이즈 UI를 끈다)
+            can_raise = (self._can_raise(self.human)
+                         and self.human.chips > call_amount)
+            if can_raise:
+                min_raise_to = self.game.current_bet + self.game.min_raise
 
         players_out = []
         for p in self.game.players:
@@ -178,6 +190,7 @@ class WebGameSession:
             "action_log": self.action_log[-30:],
             "call_amount": call_amount,
             "min_raise_to": min_raise_to,
+            "can_raise": can_raise,
             "events": events,
             "equity": self._get_equity_info() if (waiting and self.equity_enabled) else None,
             "hand_review": self.hand_reviews if self.hand_over else None,
@@ -277,10 +290,15 @@ class WebGameSession:
     # ──────────────────────────────────────────
 
     def _setup_round(self, street: Street) -> None:
-        # 행동 순서·초기 acted는 core 규칙을 그대로 쓴다(헤즈업 프리플랍 BTN/SB 선행동 포함).
+        # 행동 순서는 core 규칙을 그대로 쓴다(헤즈업 프리플랍 BTN/SB 선행동 포함).
+        # _acted = 마지막 풀 레이즈 이후 행동한 플레이어(core _betting_round와 같은 의미).
+        # 블라인드 포스팅은 행동이 아니다 — SB도 자기 차례에 레이즈할 수 있고 BB는 옵션 보유.
         self._order = self.game._betting_order(street)
-        self._acted = self.game.initial_acted(street)
+        self._acted = set()
         self._round_i = 0
+
+    def _can_raise(self, player: Player) -> bool:
+        return self.game.raise_allowed(player, self._acted)
 
     def _is_round_over(self) -> bool:
         active = [p for p in self.game.players if not p.is_folded and not p.is_all_in]
@@ -316,6 +334,19 @@ class WebGameSession:
     def _apply(self, player: Player, action: Action, amount: int) -> None:
         positions = self.game.get_positions()
         street = self.game.current_street.value
+        can_raise = self._can_raise(player)
+
+        # 검증: 사람은 submit_action에서 이미 거절됐다. 봇의 불법 액션은 로그를 남기고
+        # core의 안전 폴백(공격→콜/체크, 불법 체크→폴드)으로 대체한다.
+        try:
+            action = self.game.normalize_action(player, action, amount, can_raise)
+        except IllegalActionError as e:
+            if player.is_human:
+                raise
+            fallback = self.game.fallback_action(player, action)
+            logger.warning("봇 불법 액션 대체: %s %s(%s) → %s (%s)",
+                           player.name, action.value, amount, fallback.value, e)
+            action, amount = self.game.normalize_action(player, fallback, 0, can_raise), 0
 
         # 콜 금액은 apply_action 전에 계산
         call_amt = max(0, self.game.current_bet - player.current_bet)
@@ -345,7 +376,8 @@ class WebGameSession:
                 player, action, amount, self.game.current_street, call_amt,
             )
 
-        self.game.apply_action(player, action, amount)
+        result = self.game.execute_action(player, action, amount, can_raise)
+        action = result.action
 
         try:
             self.recorder.record_action(
@@ -358,7 +390,8 @@ class WebGameSession:
         except Exception:
             pass
         self._acted.add(player.name)
-        if action in (Action.RAISE, Action.ALL_IN):
+        if result.reopens:
+            # 풀 레이즈만 액션을 다시 연다. 불완전 올인 뒤 이미 행동한 사람은 콜/폴드만.
             self._acted = {player.name}
             idx = self._order.index(player)
             self._round_i = (idx + 1) % len(self._order)

@@ -30,11 +30,24 @@
   처리되고 BB만 옵션(체크/레이즈)을 보유한다. 포스트플랍은 SB(딜러+1)부터 — 강제 장치:
   core 헬퍼만 `tests/test_poker_full.py::test_2_5_preflop_betting_order_3players`,
   `::test_2_7_postflop_sb_acts_first` (세션은 같은 함수를 호출하므로 간접 보장)
-- 레이즈·올인이 나오면 그 전에 이미 액션했던 활성 플레이어 전원이 다시 기회를 얻는다
-  (본인만 남기고 acted 집합 초기화) — 강제 장치: `tests/test_poker_full.py::test_2_3_raise_reopens_action`
-- 최소 레이즈: 요청 금액이 `현재 베팅 + 직전 레이즈 크기` 미만이면 그 값으로 자동 보정한다
-  (레이즈 불가 최소치 아래로는 못 감) — 강제 장치: `tests/test_poker_full.py::test_4_6_minimum_raise_rule`,
-  `::test_5_5_raise_amount_enforced`
+- 재오픈(표준 불완전 레이즈 규칙): 레이즈 증가분(새 `current_bet` − 이전 `current_bet`)이
+  `min_raise` 이상인 풀 레이즈(올인 포함)만 액션을 다시 연다 — 이미 행동한 사람 전원이 다시
+  기회를 얻고 `min_raise`가 그 증가분으로 갱신된다. 증가분이 `min_raise` 미만인 올인은
+  `current_bet`만 올리고 재오픈하지 않는다: 이미 행동한 사람은 콜/폴드만 할 수 있고
+  (응답 `can_raise=false`, `min_raise_to=0`), 아직 행동하지 않은 사람은 레이즈할 수 있다.
+  콜도 못 채우는 올인은 `current_bet`을 바꾸지 않는다. 블라인드 포스팅은 행동이 아니다
+  (SB도 자기 차례에 레이즈 가능). 연속된 불완전 올인의 합이 풀 레이즈가 되는 경우도
+  재오픈하지 않는다(액션 단위 판정) — 강제 장치(세션 경로):
+  `tests/test_poker_full.py::test_8_6_short_allin_under_call_does_not_reopen`,
+  `::test_8_7_incomplete_raise_allin_call_or_fold_only`, `::test_8_8_full_allin_updates_min_raise`
+  · core: `::test_2_3_raise_reopens_action`
+- 최소 레이즈: 요청 금액이 `현재 베팅 + min_raise` 미만이면 그 값으로 자동 보정한다.
+  보정 후 금액이 스택(`chips + current_bet`) 이상이면 올인으로 적용한다 — 스택보다 큰 레이즈
+  요청이 실제로 걸리지 않은 `current_bet`을 만들지 않는다 — 강제 장치:
+  `tests/test_poker_full.py::test_8_9_raise_over_stack_becomes_allin`(세션 경로),
+  `::test_4_6_minimum_raise_rule`, `::test_5_5_raise_amount_enforced`(core)
+- 액션 판정은 core `TexasHoldem.normalize_action`/`execute_action` 한 곳에서 하고
+  (`ActionResult`: 실제 액션·이동 칩·도달 베팅·재오픈 여부), 웹 세션과 core 베팅 루프가 같이 쓴다.
 - 사이드팟: `total_bet_this_round` 오름차순으로 계층을 나누고, 각 계층은 그 금액을 낸
   플레이어(eligible)끼리만 나눈다. **eligible이 1명뿐인 계층(초과 베팅 반환)은 승자 집계에서
   제외**한다 — 강제 장치: `tests/test_poker_full.py::test_6_5_sidepot_shortstack_wins_mainpot_only`,
@@ -92,7 +105,7 @@
 |---|---|
 | `POST /game/start` | 세션 생성, 첫 핸드 시작 후 사람 차례까지 자동 진행 |
 | `GET /game/{id}/state` | 현재 `GameState` 조회 |
-| `POST /game/{id}/action` | 사람 액션 제출 → 봇 자동 처리 → 다음 상태 |
+| `POST /game/{id}/action` | 사람 액션 제출 → 봇 자동 처리 → 다음 상태. 불법 액션은 400(상태 무변경) |
 | `POST /game/{id}/next-hand` | `hand_over=true`일 때 다음 핸드 시작(핸드 중이면 무시하고 현재 상태 반환) |
 | `GET /session/{id}/review` | 세션 누적 플레이 평가 요약 |
 
@@ -107,6 +120,9 @@ GTO 관리 API(`/gto/preflop/*`)는 이 문서 담당이 아니다 — 규칙은
   `HandResult` UI에는 아직 팟별 분해가 노출되지 않는다(팟은 합산 지급되어 결과는 맞지만
   화면에 계층이 안 보임).
 - 런잇트와이스는 미구현.
+- 불완전 올인으로 액션이 닫힌 사람에게도 프론트 `ActionBar`의 "올인" 버튼은 보인다
+  (레이즈 UI는 `min_raise_to=0`으로 꺼짐). 누르면 서버가 400으로 거절하고 오류 배너가 뜬다 —
+  버튼을 `can_raise`로 숨기는 것은 UI 변경이라 별도 확인 필요.
 - 이벤트 순서·카드 공개 규칙은 코드 동작으로만 보장되고(위 규칙들), 이벤트 스키마
   전체에 대한 전수 불변식 테스트는 없다.
 - `GameState.gto_hint`/`gto_key`는 서로 다른 판정 경로(advisor vs `action_log` 문자열

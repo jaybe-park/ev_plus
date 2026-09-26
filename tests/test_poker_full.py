@@ -289,25 +289,32 @@ def test_2_2_bb_gets_option_after_calls():
     assert new_state is not None
 
 def test_2_3_raise_reopens_action():
-    """레이즈 후 이전 액션한 플레이어에게 다시 기회가 돌아와야 함"""
+    """풀 레이즈만 액션을 다시 연다(reopens=True, min_raise 갱신).
+    최소 레이즈 미만 올인은 current_bet만 올리고 재오픈하지 않는다(min_raise 유지)."""
     game, players = make_game(3, chips=1000, sb=10)
     # 딜러=0, SB=1(P1), BB=2(P2), UTG=0(P0)
     game.start_hand()
     game.current_street = Street.PREFLOP
 
-    # P0(UTG) 레이즈
-    game.apply_action(players[0], Action.RAISE, 60)
-    # P1(SB) 콜
-    game.apply_action(players[1], Action.CALL, 50)
-    # P2(BB) 재레이즈(3-bet)
-    game.apply_action(players[2], Action.RAISE, 180)
+    r = game.execute_action(players[0], Action.RAISE, 60)      # 오픈 60 (+40)
+    assert r.reopens and game.min_raise == 40, (r, game.min_raise)
+    r = game.execute_action(players[1], Action.CALL)
+    assert not r.reopens and r.moved == 50, r
+    r = game.execute_action(players[2], Action.RAISE, 180)     # 3벳 180 (+120)
+    assert r.reopens and game.current_bet == 180 and game.min_raise == 120, (r, game.min_raise)
+    assert game.current_bet - players[0].current_bet == 120
 
-    # 이제 P0에게 다시 액션 기회가 있어야 함
-    # current_bet=180, P0.current_bet=60 이므로 P0는 아직 콜/폴드/레이즈 가능
-    assert game.current_bet == 180
-    assert players[0].current_bet == 60
-    call_needed = game.current_bet - players[0].current_bet
-    assert call_needed == 120, f"P0가 콜하려면 120 필요, got {call_needed}"
+    # P1이 140만 남기고 올인 → 200(+20, 최소 레이즈 120 미만) = 불완전 레이즈
+    players[1].chips = 140
+    r = game.execute_action(players[1], Action.ALL_IN)
+    assert r.action == Action.ALL_IN and not r.reopens, r
+    assert game.current_bet == 200 and game.min_raise == 120, \
+        f"불완전 올인은 current_bet만 올리고 min_raise 유지: {game.current_bet}, {game.min_raise}"
+    # 이미 행동한 P0는 레이즈 불가(콜/폴드만)
+    acted = {"P0", "P1", "P2"}
+    assert not game.raise_allowed(players[0], acted)
+    assert not game.apply_action(players[0], Action.RAISE, 400, raise_allowed=False)
+    assert game.apply_action(players[0], Action.CALL, raise_allowed=False)
 
 def test_2_4_allin_ends_round_when_no_callers():
     """모두 폴드하고 올인한 사람 혼자 남으면 라운드 즉시 종료"""
@@ -375,8 +382,10 @@ def test_3_1_pot_conservation():
             if not state["waiting_for_action"]:
                 break
             action = random.choice(["call", "check", "fold"])
-            if action == "fold" and state["call_amount"] == 0:
+            if state["call_amount"] == 0 and action == "fold":
                 action = "check"
+            if state["call_amount"] > 0 and action == "check":
+                action = "call"  # 벳을 마주한 체크는 불법(거절됨)
             sess.submit_action(action, 0)
 
         state = sess.get_state()
@@ -1646,6 +1655,79 @@ def test_8_5_headsup_btnsb_first_decision_has_gto_hint():
     assert state["gto_hint"], f"헤즈업 BTN/SB 첫 결정에 GTO 힌트가 없음: {state['gto_hint']}"
 
 
+def _flop_bet_scenario(beta_stack):
+    """3인, 딜러=Beta → 사람=SB(플랍 선행동), Alpha=BB. 프리플랍은 모두 20으로 림프/체크.
+    플랍: 사람 벳 100 → Alpha 콜 → Beta 올인(플랍 시작 스택 beta_stack - 20)."""
+    sess, _ = _scripted_session(
+        2, dealer_index=2, chips=[1000, 1000, beta_stack],
+        scripts={"🤖 Alpha": [(Action.CHECK, 0), (Action.CALL, 100)],
+                 "🤖 Beta": [(Action.CALL, 20), (Action.ALL_IN, 0)]})
+    assert sess.get_state()["call_amount"] == 10, "사람(SB) 프리플랍 차례여야 함"
+    sess.submit_action("call", 0)
+    state = sess.get_state()
+    assert state["street"] == "플랍" and state["waiting_for_action"], state["street"]
+    sess.submit_action("raise", 100)
+    return sess
+
+
+def test_8_6_short_allin_under_call_does_not_reopen():
+    """T-020: 벳 100 → 콜 → 50 올인(콜도 못 채움) 뒤 처음 벳한 사람에게 액션이 다시
+    오지 않는다(라운드 종료)."""
+    sess = _flop_bet_scenario(beta_stack=70)
+    state = sess.get_state()
+    flop_acts = [(a["player"], a["action"]) for a in _action_events(state["events"])
+                 if a["street"] == "플랍"]
+    assert flop_acts == [("Human", "raise"), ("🤖 Alpha", "call"), ("🤖 Beta", "allin")], \
+        f"50 올인 뒤 재오픈되면 안 됨: {flop_acts}"
+    assert state["street"] == "턴", f"플랍 라운드가 끝나야 함: {state['street']}"
+
+
+def test_8_7_incomplete_raise_allin_call_or_fold_only():
+    """T-020: 벳 100 → 콜 → 150 올인(최소 레이즈 미만) 뒤 처음 벳한 사람은 콜/폴드만."""
+    from core.game import IllegalActionError
+    sess = _flop_bet_scenario(beta_stack=170)
+    state = sess.get_state()
+    assert state["waiting_for_action"] and state["call_amount"] == 50, \
+        f"사람이 50을 더 콜해야 함: call={state['call_amount']}"
+    assert state["can_raise"] is False and state["min_raise_to"] == 0, \
+        f"레이즈 불가가 응답에 보여야 함: can_raise={state['can_raise']} min_raise_to={state['min_raise_to']}"
+    for bad in [("raise", 400), ("allin", 0)]:
+        try:
+            sess.submit_action(*bad)
+            raise AssertionError(f"닫힌 액션에서 {bad}가 거절되지 않음")
+        except IllegalActionError:
+            pass
+    sess.submit_action("call", 0)
+    assert sess.game.current_street == Street.TURN and sess.human.chips == 1000 - 20 - 150, \
+        f"콜 후 턴으로: street={sess.game.current_street} chips={sess.human.chips}"
+
+
+def test_8_8_full_allin_updates_min_raise():
+    """T-020: BB 20에서 500 올인(레이즈 480) 뒤 최소 레이즈-투가 980으로 보인다."""
+    # 딜러=Alpha → Beta=SB, 사람=BB, 프리플랍 첫 행동 Alpha
+    sess, events = _scripted_session(
+        2, dealer_index=1, chips=[1000, 500, 1000],
+        scripts={"🤖 Alpha": [(Action.ALL_IN, 0)]})
+    state = sess.get_state()
+    assert state["waiting_for_action"] and state["current_bet"] == 500, state["current_bet"]
+    assert state["min_raise_to"] == 980, f"최소 레이즈-투 980이어야 함: {state['min_raise_to']}"
+
+
+def test_8_9_raise_over_stack_becomes_allin():
+    """T-020: 칩 300으로 1000 레이즈를 보내면 300 올인이 되고, 유령 베팅이 생기지 않는다."""
+    # 딜러=사람(3인이라 UTG 겸 BTN, 프리플랍 첫 행동). 봇은 콜 금액만큼 콜(스텁).
+    sess, _ = _scripted_session(2, dealer_index=0, chips=[300, 1000, 1000])
+    sess.submit_action("raise", 1000)
+    events = _action_events(sess.get_state()["events"])
+    h_act = next(a for a in events if a["player"] == "Human")
+    assert h_act["action"] == "allin", f"스택 초과 레이즈는 올인: {h_act}"
+    assert sess.human.is_all_in and sess.human.total_bet_this_round == 300
+    # 유령 current_bet(1000)이 있었다면 봇이 1000을 콜했을 것 — 실제로는 300만 콜해야 함
+    for name in ("🤖 Alpha", "🤖 Beta"):
+        call = next(a for a in events if a["player"] == name and a["street"] == "프리플랍")
+        assert call["chips_after"] == 700, f"{name}은 300까지만 콜해야 함: {call}"
+
+
 # ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
@@ -1733,6 +1815,10 @@ ALL_TESTS = [
     ("8-3  헤즈업 BTN/SB 선행동 + BB 옵션",      test_8_3_headsup_btnsb_first_and_bb_option),
     ("8-4  헤즈업 사람 BTN/SB 첫 결정",           test_8_4_headsup_human_btnsb_acts_first),
     ("8-5  헤즈업 BTN/SB 첫 결정 GTO 힌트",       test_8_5_headsup_btnsb_first_decision_has_gto_hint),
+    ("8-6  콜 미만 올인은 재오픈 없음",           test_8_6_short_allin_under_call_does_not_reopen),
+    ("8-7  불완전 레이즈 올인 → 콜/폴드만",       test_8_7_incomplete_raise_allin_call_or_fold_only),
+    ("8-8  풀 레이즈 올인이 min_raise 갱신",      test_8_8_full_allin_updates_min_raise),
+    ("8-9  스택 초과 레이즈 → 올인",              test_8_9_raise_over_stack_becomes_allin),
 ]
 
 
