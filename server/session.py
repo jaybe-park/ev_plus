@@ -80,6 +80,7 @@ class WebGameSession:
         # 베팅 라운드 상태
         self._order: List[Player] = []
         self._acted: set = set()
+        self._bet_seen: Dict[str, int] = {}  # 각자 마지막 행동 직후 current_bet(레이즈 권한, TDA 47)
         self._round_i: int = 0
         self.street_index: int = 0
 
@@ -325,10 +326,11 @@ class WebGameSession:
         # 블라인드 포스팅은 행동이 아니다 — SB도 자기 차례에 레이즈할 수 있고 BB는 옵션 보유.
         self._order = self.game._betting_order(street)
         self._acted = set()
+        self._bet_seen = {}
         self._round_i = 0
 
     def _can_raise(self, player: Player) -> bool:
-        return self.game.raise_allowed(player, self._acted)
+        return self.game.raise_allowed(player, self._bet_seen)
 
     def _is_round_over(self) -> bool:
         # core 규칙 그대로(행동 가능 1명 + 콜할 금액 없음 → 라운드 종료, 런아웃 포함)
@@ -372,6 +374,8 @@ class WebGameSession:
             logger.warning("봇 불법 액션 대체: %s %s(%s) → %s (%s)",
                            player.name, action.value, amount, fallback.value, e)
             action, amount = self.game.normalize_action(player, fallback, 0, can_raise), 0
+        # 이후 평가·적용은 실제로 걸리는 금액(최소 레이즈 보정·스택 한도 반영한 도달 베팅)으로
+        amount = self.game.bet_target(player, action, amount)
 
         # 콜 금액은 apply_action 전에 계산
         call_amt = max(0, self.game.current_bet - player.current_bet)
@@ -418,6 +422,7 @@ class WebGameSession:
         except Exception:
             pass
         self._acted.add(player.name)
+        self._bet_seen[player.name] = self.game.current_bet
         if result.reopens:
             # 풀 레이즈만 액션을 다시 연다. 불완전 올인 뒤 이미 행동한 사람은 콜/폴드만.
             self._acted = {player.name}

@@ -310,11 +310,61 @@ def test_2_3_raise_reopens_action():
     assert r.action == Action.ALL_IN and not r.reopens, r
     assert game.current_bet == 200 and game.min_raise == 120, \
         f"불완전 올인은 current_bet만 올리고 min_raise 유지: {game.current_bet}, {game.min_raise}"
-    # 이미 행동한 P0는 레이즈 불가(콜/폴드만)
-    acted = {"P0", "P1", "P2"}
-    assert not game.raise_allowed(players[0], acted)
+    # 180에서 마지막으로 행동한 P0는 마주한 증가분 20 < 120이라 레이즈 불가(콜/폴드만).
+    # 아직 행동 안 한 사람은 가능.
+    bet_seen = {"P0": 180, "P1": 200, "P2": 180}
+    assert not game.raise_allowed(players[0], bet_seen)
+    assert game.raise_allowed(players[0], {})
+    # 60에서 행동한 뒤 200을 마주하면 증가분 140 ≥ 120 → 레이즈 가능(TDA Rule 47, T-038)
+    assert game.raise_allowed(players[0], {"P0": 60})
     assert not game.apply_action(players[0], Action.RAISE, 400, raise_allowed=False)
     assert game.apply_action(players[0], Action.CALL, raise_allowed=False)
+
+def _scripted_core_game(stacks, scripts, sb=10):
+    """core 베팅 루프(_betting_round, CLI 경로)용: 스크립트 콜백을 단 게임.
+    scripts: {이름: [(Action, amount), ...]} — 소진되면 콜/체크."""
+    game, players = make_game(len(stacks), sb=sb)
+    for p, s in zip(players, stacks):
+        p.chips = s
+    queues = {k: list(v) for k, v in scripts.items()}
+
+    def cb(player, state):
+        q = queues.get(player.name)
+        if q:
+            return q.pop(0)
+        to_call = state["current_bet"] - player.current_bet
+        return (Action.CALL, 0) if to_call > 0 else (Action.CHECK, 0)
+
+    game._action_callback = cb
+    return game, players
+
+
+def _core_actions(game, street=None):
+    return [(e.data["player"], e.data["action"], e.data.get("to_amount"))
+            for e in game.event_log if e.event_type == "action"
+            and (street is None or e.data["street"] == street)]
+
+
+def test_2_8_core_cumulative_short_allins_reopen():
+    """T-038(core 베팅 루프, CLI 경로): 플랍 벳 100 → 콜 → 150 올인 → 220 올인이면 처음 벳한
+    사람이 레이즈할 수 있고(+120 ≥ 100), 190 올인(+90)이면 레이즈 요청이 콜로 대체된다."""
+    for last_allin, can_raise in [(220, True), (190, False)]:
+        # 딜러 P0 → 플랍 순서 P1(SB), P2, P3, P0. 프리플랍은 체크/콜로 20씩.
+        game, players = _scripted_core_game(
+            [last_allin + 20, 1000, 1000, 170],
+            {"P1": [(Action.CALL, 0), (Action.RAISE, 100), (Action.RAISE, 500)],
+             "P3": [(Action.CALL, 0), (Action.ALL_IN, 0)],
+             "P0": [(Action.CALL, 0), (Action.ALL_IN, 0)]})
+        game.start_hand()
+        game.run_street(Street.PREFLOP)
+        game.deal_community(Street.FLOP)
+        game.run_street(Street.FLOP)
+        flop = _core_actions(game, Street.FLOP.value)
+        assert flop[:4] == [("P1", "레이즈", 100), ("P2", "콜", 100),
+                            ("P3", "올인", 150), ("P0", "올인", last_allin)], flop
+        want = ("P1", "레이즈", 500) if can_raise else ("P1", "콜", last_allin)
+        assert flop[4] == want, f"마지막 올인 {last_allin}: P1 두 번째 액션 {flop[4]} ≠ {want}"
+
 
 def test_2_4_allin_ends_round_when_no_callers():
     """모두 폴드하고 올인한 사람 혼자 남으면 라운드 즉시 종료"""
@@ -2002,6 +2052,69 @@ def test_8_7_incomplete_raise_allin_call_or_fold_only():
         f"콜 후 턴으로: street={sess.game.current_street} chips={sess.human.chips}"
 
 
+def _two_short_allins_scenario(beta_stack, gamma_stack):
+    """4인, 딜러=Gamma → 사람=SB(플랍 선행동), Alpha=BB, Beta=UTG. 프리플랍은 모두 20 림프/체크.
+    플랍: 사람 벳 100 → Alpha 콜 → Beta 올인 → Gamma 올인(각 플랍 시작 스택 = 스택 - 20)."""
+    sess, _ = _scripted_session(
+        3, dealer_index=3, chips=[1000, 1000, beta_stack, gamma_stack],
+        scripts={"🤖 Alpha": [(Action.CHECK, 0), (Action.CALL, 100)],
+                 "🤖 Beta": [(Action.CALL, 20), (Action.ALL_IN, 0)],
+                 "🤖 Gamma": [(Action.CALL, 20), (Action.ALL_IN, 0)]})
+    assert sess.get_state()["call_amount"] == 10, "사람(SB) 프리플랍 차례여야 함"
+    sess.submit_action("call", 0)
+    assert sess.get_state()["street"] == "플랍"
+    return sess, sess.submit_action("raise", 100)
+
+
+def test_8_25_cumulative_short_allins_reopen():
+    """T-038(TDA Rule 47): 벳 100 → 콜 → 150 올인 → 220 올인. 올인 하나하나는 풀 레이즈가
+    아니지만 처음 벳한 사람이 마주한 증가분 합계(+120)가 최소 레이즈(100) 이상이라 레이즈할 수 있다."""
+    sess, events = _two_short_allins_scenario(beta_stack=170, gamma_stack=240)
+    flop = [(a["player"], a["action"], a["amount"]) for a in _action_events(events)
+            if a["street"] == "플랍"]
+    assert flop == [("Human", "raise", 100), ("🤖 Alpha", "call", 100),
+                    ("🤖 Beta", "allin", 150), ("🤖 Gamma", "allin", 220)], flop
+    st = sess.get_state()
+    assert st["waiting_for_action"] and st["call_amount"] == 120, st["call_amount"]
+    assert st["can_raise"] is True and st["min_raise_to"] == 320, \
+        f"누적 +120 ≥ 100이면 레이즈 가능: can_raise={st['can_raise']} min_raise_to={st['min_raise_to']}"
+    ev = _action_events(sess.submit_action("raise", 400))
+    assert (ev[0]["player"], ev[0]["action"], ev[0]["amount"]) == ("Human", "raise", 400), ev[0]
+    # 콜했던 Alpha도 마주한 증가분(400-100)이 풀 레이즈 이상이라 다시 행동한다(스텁은 콜)
+    assert ev[1]["player"] == "🤖 Alpha" and ev[1]["action"] == "call", ev[1]
+
+
+def test_8_26_cumulative_short_allins_below_full_raise_stay_closed():
+    """T-038: 벳 100 → 콜 → 150 올인 → 190 올인. 증가분 합계(+90)가 최소 레이즈(100) 미만이면
+    처음 벳한 사람은 여전히 콜/폴드만 할 수 있다."""
+    from core.game import IllegalActionError
+    sess, _ = _two_short_allins_scenario(beta_stack=170, gamma_stack=210)
+    st = sess.get_state()
+    assert st["waiting_for_action"] and st["call_amount"] == 90, st["call_amount"]
+    assert st["can_raise"] is False and st["min_raise_to"] == 0, \
+        f"누적 +90 < 100이면 레이즈 불가: can_raise={st['can_raise']} min_raise_to={st['min_raise_to']}"
+    for bad in [("raise", 400), ("allin", 0)]:
+        try:
+            sess.submit_action(*bad)
+            raise AssertionError(f"닫힌 액션에서 {bad}가 거절되지 않음")
+        except IllegalActionError:
+            pass
+
+
+def test_8_27_grade_receives_real_raise_amount():
+    """T-038: 플레이 평가(_grade_human_action)는 요청값이 아니라 실제로 걸리는 레이즈 금액
+    (최소 레이즈 보정·스택 초과 올인 반영, 도달 베팅 기준)을 받는다."""
+    for req, want in [(25, 40), (5000, 1000)]:
+        sess, _ = _scripted_session(2, dealer_index=0)   # 사람=UTG, 콜 20 마주함
+        sess.equity_enabled = True
+        seen = []
+        sess._grade_human_action = lambda p, a, amt, st, ca: (seen.append((a, amt)), (None, None))[1]
+        ev = _action_events(sess.submit_action("raise", req))
+        h = next(e for e in ev if e["player"] == "Human")
+        assert seen and seen[0][1] == want == h["amount"], \
+            f"raise {req}: 평가 금액 {seen} ≠ 실제 {h['amount']} (기대 {want})"
+
+
 def test_8_8_full_allin_updates_min_raise():
     """T-020: BB 20에서 500 올인(레이즈 480) 뒤 최소 레이즈-투가 980으로 보인다."""
     # 딜러=Alpha → Beta=SB, 사람=BB, 프리플랍 첫 행동 Alpha
@@ -2694,6 +2807,7 @@ ALL_TESTS = [
     ("2-5  3인 프리플랍 베팅 순서",            test_2_5_preflop_betting_order_3players),
     ("2-6  헤즈업 BTN/SB 포지션",             test_2_6_headsup_btn_acts_first_preflop),
     ("2-7  포스트플랍 SB 선행동",             test_2_7_postflop_sb_acts_first),
+    ("2-8  core 루프: 불완전 올인 합계 재오픈(T-038)", test_2_8_core_cumulative_short_allins_reopen),
     # 영역 3
     ("3-1  100핸드 칩 총량 보존",             test_3_1_pot_conservation),
     ("3-2  Split pot 균등 분배",              test_3_2_split_pot_even),
@@ -2783,6 +2897,9 @@ ALL_TESTS = [
     ("8-22 생성 성공 후에만 세션 등록",             test_8_22_session_registered_only_after_successful_start),
     ("8-23 dev 서버는 서버 코드만 감시",            test_8_23_dev_server_reload_watches_server_code_only),
     ("8-24 오래된 세션 정리 → 404",                 test_8_24_old_sessions_pruned_and_return_404),
+    ("8-25 불완전 올인 합계 ≥ 풀 레이즈 → 재오픈",   test_8_25_cumulative_short_allins_reopen),
+    ("8-26 불완전 올인 합계 < 풀 레이즈 → 닫힘",     test_8_26_cumulative_short_allins_below_full_raise_stay_closed),
+    ("8-27 평가에 실제 레이즈 금액 전달",            test_8_27_grade_receives_real_raise_amount),
 ]
 
 

@@ -272,11 +272,7 @@ class TexasHoldem:
 
         else:  # RAISE / ALL_IN
             prev_bet = self.current_bet
-            if action == Action.RAISE:
-                target = max(amount, prev_bet + self.min_raise)
-                moved = player.place_bet(target - player.current_bet)
-            else:
-                moved = player.place_bet(player.chips)
+            moved = player.place_bet(self.bet_target(player, action, amount) - player.current_bet)
             self.pot += moved
             raise_by = player.current_bet - prev_bet
             if raise_by > 0:
@@ -340,10 +336,25 @@ class TexasHoldem:
             p.name: [str(c) for c in p.hole_cards] for p in self.players
         })
 
-    @staticmethod
-    def raise_allowed(player: Player, acted: set) -> bool:
-        """마지막 풀 레이즈 이후 아직 행동하지 않은 플레이어만 레이즈할 수 있다."""
-        return player.name not in acted
+    def raise_allowed(self, player: Player, bet_seen: Dict[str, int]) -> bool:
+        """레이즈 권한(TDA Rule 47). bet_seen = 이번 라운드에서 각 플레이어가 마지막으로
+        행동한 직후의 current_bet. 아직 행동하지 않았거나, 그 뒤로 오른 금액의 합계
+        (current_bet − 그 값)가 풀 레이즈(min_raise) 이상이면 레이즈할 수 있다 — 불완전
+        올인 여러 개의 합이 풀 레이즈가 되면 재오픈된다."""
+        seen = bet_seen.get(player.name)
+        return seen is None or self.current_bet - seen >= self.min_raise
+
+    def bet_target(self, player: Player, action: Action, amount: int = 0) -> int:
+        """정규화된 액션이 실제로 도달할 이번 스트리트 베팅(to_amount). 상태는 바꾸지 않는다.
+        RAISE = max(요청, 최소 레이즈-투), ALL_IN = 스택 전부, CALL = 콜(스택 한도), 그 외 현재 베팅."""
+        max_to = player.chips + player.current_bet
+        if action == Action.RAISE:
+            return min(max(amount, self.current_bet + self.min_raise), max_to)
+        if action == Action.ALL_IN:
+            return max_to
+        if action == Action.CALL:
+            return min(self.current_bet, max_to)
+        return player.current_bet
 
     def _is_round_over(self, acted: set) -> bool:
         """모든 액티브 플레이어가 액션했고 베팅액이 균등하면 True.
@@ -360,9 +371,11 @@ class TexasHoldem:
         """베팅 라운드 진행"""
         order = self._betting_order(street)
         n = len(order)
-        # acted = 마지막 풀 레이즈 이후 행동한 플레이어. 여기 없는 사람만 레이즈할 수 있다.
+        # acted = 마지막 풀 레이즈 이후 행동한 플레이어(라운드 종료 판정용).
+        # bet_seen = 각자 마지막 행동 직후의 current_bet(레이즈 권한 판정용, TDA Rule 47).
         # 블라인드 포스팅은 행동이 아니다(SB도 자기 차례에 레이즈 가능, BB는 옵션 보유).
         acted: set = set()
+        bet_seen: Dict[str, int] = {}
 
         i = 0
         while True:
@@ -380,16 +393,17 @@ class TexasHoldem:
                 continue
 
             action, amount = self._get_player_action(player)
-            can_raise = self.raise_allowed(player, acted)
+            can_raise = self.raise_allowed(player, bet_seen)
             try:
                 result = self.execute_action(player, action, amount, raise_allowed=can_raise)
             except IllegalActionError:
                 result = self.execute_action(player, self.fallback_action(player, action), 0,
                                              raise_allowed=can_raise)
             acted.add(player.name)
+            bet_seen[player.name] = self.current_bet
 
             # 풀 레이즈(재오픈) 시: 본인만 acted에 남기고 다음 플레이어부터 다시 순회.
-            # 불완전 올인은 재오픈하지 않는다 — 이미 행동한 사람은 콜/폴드만.
+            # 불완전 올인은 acted를 비우지 않는다 — 레이즈 권한은 bet_seen 누적으로 판정.
             if result.reopens:
                 acted = {player.name}
                 i = (order.index(player) + 1) % n

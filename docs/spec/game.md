@@ -1,6 +1,6 @@
 # 게임 엔진 / 웹 게임 흐름 — 현재 사양
 
-> 최종 갱신: 2026-09-26 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md), [0036](../decisions/0036-moving-button.md), [0038](../decisions/0038-action-validation-and-real-amounts.md), [0043](../decisions/0043-restore-session-on-reload.md)
+> 최종 갱신: 2026-09-26 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md), [0036](../decisions/0036-moving-button.md), [0038](../decisions/0038-action-validation-and-real-amounts.md), [0043](../decisions/0043-restore-session-on-reload.md), [0046](../decisions/0046-cumulative-short-allins-reopen.md)
 
 ## 무엇을 하는가
 
@@ -31,17 +31,21 @@
   레이즈/폴드, BB는 옵션(체크/레이즈)을 갖는다. 포스트플랍은 SB(딜러+1)부터 — 강제 장치:
   core 헬퍼만 `tests/test_poker_full.py::test_2_5_preflop_betting_order_3players`,
   `::test_2_7_postflop_sb_acts_first` (세션은 같은 함수를 호출하므로 간접 보장)
-- 재오픈(표준 불완전 레이즈 규칙): 레이즈 증가분(새 `current_bet` − 이전 `current_bet`)이
-  `min_raise` 이상인 풀 레이즈(올인 포함)만 액션을 다시 연다 — 이미 행동한 사람 전원이 다시
-  기회를 얻고 `min_raise`가 그 증가분으로 갱신된다. 증가분이 `min_raise` 미만인 올인은
-  `current_bet`만 올리고 재오픈하지 않는다: 이미 행동한 사람은 콜/폴드만 할 수 있고
-  (응답 `can_raise=false`, `min_raise_to=0`), 아직 행동하지 않은 사람은 레이즈할 수 있다.
-  콜도 못 채우는 올인은 `current_bet`을 바꾸지 않는다. 블라인드 포스팅은 행동이 아니다
-  (SB도 자기 차례에 레이즈 가능). 연속된 불완전 올인의 합이 풀 레이즈가 되는 경우도
-  재오픈하지 않는다(액션 단위 판정) — 강제 장치(세션 경로):
+- 재오픈(TDA Rule 47): 레이즈 증가분(새 `current_bet` − 이전 `current_bet`)이 `min_raise`
+  이상인 풀 레이즈(올인 포함)는 `min_raise`를 그 증가분으로 갱신하고 이미 행동한 사람 전원에게
+  다시 기회를 준다. 증가분이 `min_raise` 미만인 올인(불완전 레이즈)은 `current_bet`만 올린다.
+  레이즈 권한은 core `TexasHoldem.raise_allowed(player, bet_seen)` 한 곳에서 정한다: 이번
+  라운드에서 아직 행동하지 않았거나, 마지막으로 행동한 직후의 `current_bet`에서 지금까지 오른
+  금액의 합계가 `min_raise` 이상이면 레이즈할 수 있고, 아니면 콜/폴드만 할 수 있다(응답
+  `can_raise=false`, `min_raise_to=0`). 그래서 불완전 올인 여러 개의 합이 풀 레이즈 이상이면
+  재오픈된다(벳 100 → 콜 → 150 올인 → 220 올인이면 처음 벳한 사람은 +120을 마주해 레이즈 가능,
+  190 올인이면 +90이라 콜/폴드만). 콜도 못 채우는 올인은 `current_bet`을 바꾸지 않는다.
+  블라인드 포스팅은 행동이 아니다(SB도 자기 차례에 레이즈 가능) — 근거:
+  [0046](../decisions/0046-cumulative-short-allins-reopen.md) · 강제 장치(세션 경로):
   `tests/test_poker_full.py::test_8_6_short_allin_under_call_does_not_reopen`,
-  `::test_8_7_incomplete_raise_allin_call_or_fold_only`, `::test_8_8_full_allin_updates_min_raise`
-  · core: `::test_2_3_raise_reopens_action`
+  `::test_8_7_incomplete_raise_allin_call_or_fold_only`, `::test_8_8_full_allin_updates_min_raise`,
+  `::test_8_25_cumulative_short_allins_reopen`, `::test_8_26_cumulative_short_allins_below_full_raise_stay_closed`
+  · core 베팅 루프(CLI 경로): `::test_2_8_core_cumulative_short_allins_reopen`, `::test_2_3_raise_reopens_action`
 - 최소 레이즈: 요청 금액이 `현재 베팅 + min_raise` 미만이면 그 값으로 자동 보정한다.
   보정 후 금액이 스택(`chips + current_bet`) 이상이면 올인으로 적용한다 — 스택보다 큰 레이즈
   요청이 실제로 걸리지 않은 `current_bet`을 만들지 않는다 — 강제 장치:
@@ -58,9 +62,12 @@
   `::test_8_11_bot_illegal_action_falls_back`
 - 금액 불변식: 로그·`action`/`blind` 이벤트·RL 기록의 금액은 실제 칩 이동에서 만든다 —
   콜 = 이동액, 레이즈/올인 = 도달 베팅(이전 베팅 + 이동액, 로그 "레이즈 → X"/"올인! (X)"),
-  폴드/체크 = 0, 블라인드 = 실제로 낸 칩(숏스택이면 블라인드보다 적음) — 강제 장치:
+  폴드/체크 = 0, 블라인드 = 실제로 낸 칩(숏스택이면 블라인드보다 적음). 액션 적용 전에 금액을
+  쓰는 플레이 평가(`_grade_human_action`)도 요청값이 아니라 core `bet_target`(최소 레이즈
+  보정·스택 한도 반영한 도달 베팅)을 받는다 — 강제 장치:
   `tests/test_poker_full.py::test_8_12_session_fuzz_event_amounts_and_conservation`
-  (시드 고정 세션 퍼저 250핸드: 금액 불변식·칩 보존·사람 불법 액션 무변경)
+  (시드 고정 세션 퍼저 250핸드: 금액 불변식·칩 보존·사람 불법 액션 무변경),
+  `::test_8_27_grade_receives_real_raise_amount`
 - 사이드팟: `total_bet_this_round` 오름차순으로 계층을 나누고, 각 계층은 그 금액을 낸
   플레이어(eligible)끼리만 나눈다. **eligible이 1명뿐인 계층(초과 베팅 반환)은 승자 집계에서
   제외**한다 — 강제 장치: `tests/test_poker_full.py::test_6_5_sidepot_shortstack_wins_mainpot_only`,

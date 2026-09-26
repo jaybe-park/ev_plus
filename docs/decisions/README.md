@@ -38,7 +38,7 @@
 | [0035](0035-gto-lookup-sequence-first.md) | GTO 조회는 액션 순서 키 먼저, 간단 라벨은 "근사" 예비 | 유효 | gto-preflop |
 | [0036](0036-moving-button.md) | 파산으로 좌석이 빠질 때는 무빙 버튼 | 유효 | game |
 | [0037](0037-allin-only-snaps-to-allin-sibling.md) | 라이브 올인은 올인 형제에만 스냅한다(레이즈 형제와 구분) | 유효 | gto-preflop |
-| [0038](0038-action-validation-and-real-amounts.md) | 액션 판정은 core 한 곳 — 사람 불법 액션은 거절, 봇은 안전 폴백, 금액은 실제 칩 이동 | 유효 | game |
+| [0038](0038-action-validation-and-real-amounts.md) | 액션 판정은 core 한 곳 — 사람 불법 액션은 거절, 봇은 안전 폴백, 금액은 실제 칩 이동 | 유효 (재오픈 기준은 [0046](0046-cumulative-short-allins-reopen.md)에서 보완) | game |
 | [0039](0039-grader-uncertainty-band.md) | Play Grader 콜·폴드 판정에 추정 오차 기반 "경계" 구간 | 유효 | bot |
 | [0040](0040-no-arena-gate-audit-checks.md) | GTO 수집 뒤 아레나 게이트는 되살리지 않고 audit 무결성 검사로 대신한다 | 유효 | gto-preflop |
 | [0041](0041-bot-adoption-criterion.md) | 봇 개선 채택 기준 — 아레나 차이가 표준오차의 2배 이상 | 유효 | bot |
@@ -46,3 +46,4 @@
 | [0043](0043-restore-session-on-reload.md) | 새로고침하면 진행 중인 게임을 이어간다(서버 재시작은 복구하지 않음) | 유효 | game |
 | [0044](0044-node-row-key-is-action-seq.md) | 노드 행의 유일 키는 action_seq 하나, 3종 키는 action_seq에서 유도 | 유효 | gto-preflop |
 | [0045](0045-equity-precision-1pp-adaptive-mc.md) | 에퀴티 정밀도 목표 ±1%p(1σ) — vs 랜덤·레인지 반영 모두 적응형 MC(500~2,500샘플), easy만 고정 40 | 유효 | equity |
+| [0046](0046-cumulative-short-allins-reopen.md) | 불완전 올인 여러 개의 합이 풀 레이즈면 재오픈한다(TDA Rule 47) | 유효 | game |
