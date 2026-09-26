@@ -119,7 +119,9 @@ class WebGameSession:
         self._run_until_human()
 
     def next_hand(self) -> None:
-        if self.game_over:
+        # 핸드 진행 중(hand_over=False) 호출은 무시한다. 가드가 없으면 팟에 들어간 칩이
+        # _reset_hand()로 사라진다("다음 핸드" 연타·중복 요청 — T-025).
+        if self.game_over or not self.hand_over:
             return
         self._events = []
         self._start_new_hand()

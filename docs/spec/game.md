@@ -59,6 +59,11 @@
 - 게임오버: `game_over=true`가 되면 세션은 더 이상 액션을 받지 않는다
   (`submit_action`/`next_hand`이 조용히 무시) — 강제 장치:
   `tests/test_poker_full.py::test_5_2_action_ignored_when_hand_over`(핸드 종료 시점)
+- 다음 핸드: `next_hand`는 `hand_over=true`일 때만 새 핸드를 시작하고, 핸드 진행 중 요청은
+  조용히 무시한다(응답은 현재 상태). 연타·중복 요청이 와도 핸드는 하나만 넘어가고 팟 칩이
+  사라지지 않는다. 결과 창 "다음 핸드" 버튼은 요청 중(`loading`) 비활성 — 강제 장치:
+  `tests/test_poker_full.py::test_8_1_next_hand_double_call_keeps_chips`,
+  `::test_8_2_next_hand_during_hand_ignored` (버튼 비활성은 장치 없음 — `HandResult.tsx`)
 - 프론트 `useEventQueue`는 `events[]`를 소비해 지연 재생한다. `action` 이벤트만
   "생각 중"(THINKING_RATIO 구간) → 배지 표시 2단계이고, 나머지 이벤트는 단일 지연 후
   즉시 다음으로 넘어간다. `chips_after`가 실린 이벤트(`action`/`blind`/`winner`)만
@@ -83,7 +88,7 @@
 | `POST /game/start` | 세션 생성, 첫 핸드 시작 후 사람 차례까지 자동 진행 |
 | `GET /game/{id}/state` | 현재 `GameState` 조회 |
 | `POST /game/{id}/action` | 사람 액션 제출 → 봇 자동 처리 → 다음 상태 |
-| `POST /game/{id}/next-hand` | `hand_over=true`일 때 다음 핸드 시작 |
+| `POST /game/{id}/next-hand` | `hand_over=true`일 때 다음 핸드 시작(핸드 중이면 무시하고 현재 상태 반환) |
 | `GET /session/{id}/review` | 세션 누적 플레이 평가 요약 |
 
 GTO 관리 API(`/gto/preflop/*`)는 이 문서 담당이 아니다 — 규칙은 [`docs/spec/gto-preflop.md`](gto-preflop.md).

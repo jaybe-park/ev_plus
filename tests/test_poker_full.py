@@ -513,6 +513,7 @@ def test_4_2_bankrupt_player_removed():
             break
 
     initial_count = len(sess.game.players)
+    sess.hand_over = True  # next_hand는 핸드 종료 후에만 동작한다(T-025 가드)
     sess.next_hand()
     after_count = len(sess.game.players)
     assert after_count == initial_count - 1, \
@@ -1517,6 +1518,75 @@ def test_7_6_save_normalizes_vs3bet_half_format():
 
 
 # ═════════════════════════════════════════════════════════════
+# 영역 8 — 세션 경로 룰 (WebGameSession 실제 실행 경로)
+#   core 헬퍼(_betting_order, apply_action)만 부르는 테스트는 웹 경로의 버그를
+#   못 잡았다(2026-09-26 리뷰 RC1). 여기 테스트는 전부 WebGameSession 공개 API
+#   (submit_action / next_hand / get_state의 events)로 검사한다.
+# ═════════════════════════════════════════════════════════════
+
+def _total_chips(sess):
+    return sum(p.chips for p in sess.game.players) + sess.game.pot
+
+
+def _scripted_session(num_bots, scripts=None, chips=None, dealer_index=0, sb=10):
+    """원하는 좌석·스택·봇 스크립트로 '새 핸드'를 시작한 세션을 만든다.
+
+    WebGameSession 생성자는 첫 핸드를 바로 진행시키므로, 생성 후 스택·딜러·봇을
+    다시 세팅하고 핸드 종료 상태에서 next_hand()로 깨끗한 핸드를 시작한다.
+    scripts: {봇 이름: [(Action, amount), ...]} — 소진되면 콜/체크.
+    chips: 좌석 순서(사람 먼저)대로의 스택 리스트.
+    반환: (sess, events) — events는 새 핸드 시작~사람 차례까지의 이벤트.
+    """
+    from server.session import WebGameSession
+    sess = WebGameSession("s8", "Human", 1000, num_bots, "easy", sb, equity_enabled=False)
+    for i, p in enumerate(sess.game.players):
+        p.chips = chips[i] if chips else 1000
+    sess.game.pot = 0
+    sess.game.dealer_index = dealer_index
+    scripts = scripts or {}
+    for name, bot in list(sess.bots.items()):
+        sess.bots[name] = StubBot(bot.player, scripts.get(name))
+    sess.get_state()  # 생성자 이벤트 비우기
+    sess.hand_over = True
+    sess.next_hand()
+    return sess, sess.get_state()["events"]
+
+
+def _action_events(events):
+    return [e for e in events if e["type"] == "action"]
+
+
+def test_8_1_next_hand_double_call_keeps_chips():
+    """T-025: 핸드 종료 후 next_hand를 연달아 두 번 불러도 핸드는 하나만 넘어가고
+    칩 합계가 그대로다."""
+    sess, _ = _scripted_session(2)
+    total = _total_chips(sess)
+    sess.submit_action("fold", 0)
+    assert sess.hand_over, "사람 폴드 후 봇 2명이 핸드를 끝내야 함"
+    hand_no = sess.hand_number
+    sess.next_hand()
+    sess.next_hand()  # 연타 — 무시돼야 함
+    assert sess.hand_number == hand_no + 1, \
+        f"핸드가 한 번만 넘어가야 함: {hand_no} → {sess.hand_number}"
+    assert _total_chips(sess) == total, f"칩 합계 변화: {total} → {_total_chips(sess)}"
+
+
+def test_8_2_next_hand_during_hand_ignored():
+    """T-025: 핸드 진행 중 next_hand 요청은 무시된다(팟 칩이 사라지지 않음)."""
+    sess, _ = _scripted_session(3)
+    assert sess.get_state()["waiting_for_action"]
+    sess.submit_action("raise", 200)
+    total = _total_chips(sess)
+    hand_no = sess.hand_number
+    pot = sess.game.pot
+    assert not sess.hand_over and pot > 0
+    sess.next_hand()
+    assert sess.hand_number == hand_no, "핸드 중 next_hand가 새 핸드를 시작함"
+    assert sess.game.pot == pot, f"팟 변화: {pot} → {sess.game.pot}"
+    assert _total_chips(sess) == total, f"칩 합계 변화: {total} → {_total_chips(sess)}"
+
+
+# ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
 
@@ -1597,6 +1667,9 @@ ALL_TESTS = [
     ("7-4  BB RFI 불가+큐 미기록(G6)",          test_7_4_bb_never_rfi_and_no_queue),
     ("7-5  오프너가 히어로보다 뒤 좌석→None(G6)", test_7_5_vs_open_opener_after_hero_is_none),
     ("7-6  save의 vs_3bet 반쪽 포맷 정규화(G17)", test_7_6_save_normalizes_vs3bet_half_format),
+    # 영역 8 — 세션 경로 룰
+    ("8-1  next_hand 연타 → 한 핸드만, 칩 보존",  test_8_1_next_hand_double_call_keeps_chips),
+    ("8-2  핸드 중 next_hand 무시",              test_8_2_next_hand_during_hand_ignored),
 ]
 
 
@@ -1608,8 +1681,9 @@ AREA_LABELS = {
     "5": "영역 5 — 웹 세션",
     "6": "영역 6 — 버그 픽스",
     "7": "영역 7 — 프리플랍 GTO 원칙",
+    "8": "영역 8 — 세션 경로 룰",
 }
-AREA_ORDER = ["1", "2", "3", "4", "5", "6", "7"]
+AREA_ORDER = ["1", "2", "3", "4", "5", "6", "7", "8"]
 
 
 if __name__ == "__main__":
