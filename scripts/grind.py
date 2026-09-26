@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-그라인드 모드 — 아레나(실전 스팟 생산) + 워커(정확값 계산) 동시 실행
+그라인드 모드 — 봇 대결(아레나)을 새 시드로 무한 반복
 
-아레나가 실전 빈도대로 equity_cache 큐를 채우고,
-워커가 그 스팟들을 리버→턴→플랍 순으로 전수조사한다.
-아레나는 한 라운드(--hands-per-run) 끝날 때마다 새 시드로 무한 반복.
+아레나는 한 라운드(--hands-per-run) 끝날 때마다 새 시드로 다시 시작한다.
+핸드 기록(games/preflop_actions/postflop_actions)만 쌓인다 — 에퀴티 캐시와
+그것을 채우던 워커는 폐기됐다(ADR 0034).
 
 사용법:
   python3 scripts/grind.py                      # 무한 실행 (Ctrl+C 안전 종료)
@@ -72,7 +72,7 @@ def _arena_loop(seats: str, hands_per_run: int):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="아레나 + 워커 동시 실행")
+    parser = argparse.ArgumentParser(description="아레나 무한 반복 실행")
     parser.add_argument("--minutes", type=float, default=None, help="실행 시간 제한(분)")
     parser.add_argument("--seats", type=str,
                         default="hard,hard,medium,medium,easy,easy")
@@ -90,36 +90,22 @@ def main():
 
     print("그라인드 시작 — Ctrl+C로 안전 종료 (진행분은 모두 DB에 저장됨)\n", flush=True)
 
-    worker_args = ["scripts/equity_worker.py", "--max-db-gb", str(args.max_db_gb)]
-    worker = _spawn(worker_args, "워커")
     arena_thread = threading.Thread(
         target=_arena_loop, args=(args.seats, args.hands_per_run), daemon=True)
     arena_thread.start()
 
     deadline = time.time() + args.minutes * 60 if args.minutes else None
     try:
-        while True:
+        while arena_thread.is_alive():
             if deadline and time.time() >= deadline:
                 print("\n[그라인드] ⏰ 시간 제한 도달 — 종료 중", flush=True)
                 break
-            if worker.poll() is not None:
-                # 워커가 스스로 끝나는 일은 사실상 없음 (스윕이 무한) — 재시작
-                print("[그라인드] 워커 재시작", flush=True)
-                worker = _spawn(worker_args, "워커")
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\n[그라인드] ⏸ 중단 요청 — 자식 프로세스 정리 중", flush=True)
+        print("\n[그라인드] ⏸ 중단 요청 — 아레나 정리 중", flush=True)
 
     _stop.set()
-    worker.send_signal(signal.SIGINT)
     arena_thread.join(timeout=15)
-    try:
-        worker.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        worker.kill()
-
-    # 최종 현황
-    subprocess.run([sys.executable, "scripts/equity_worker.py", "--status"], cwd=ROOT)
 
 
 if __name__ == "__main__":

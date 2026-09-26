@@ -11,14 +11,13 @@
 ./start.sh                         # 개발 모드 (./prod.sh = 프로덕션 단일 포트)
 python3 tests/run_all.py           # 빠른 테스트 (--full: 전체, 커밋 전 1회)
 cd web && npm run build            # 프론트 빌드 확인
-python3 scripts/equity_worker.py --status   # 에퀴티 캐시 현황
 ```
 
 ## 절대 규칙 (위반 시 사고)
 
 - 커밋은 바꾼 파일만 경로 지정(`git add -- <경로>`). 전체 add·`commit -a` 금지 — 강제 장치: hook `.claude/hooks/block_dangerous.py`
 - `poker.db`에 직접 쓰기(sqlite3/`python -c`) 금지 — `--dry-run`을 지원하는 스크립트로만 — 강제 장치: hook
-- 에퀴티 워커 2개, 그라인드+워커, 그라인드/튜닝 동시 실행 금지 — 강제 장치: hook(에이전트 실행분만)
+- 그라인드·튜닝 동시 실행 금지(CPU/DB 경합) — 강제 장치: hook(에이전트 실행분만)
 - 테스트는 `EV_PLUS_DB` 임시 DB로 격리한다. 공유 `poker.db`를 테스트에서 쓰지 않는다 — 강제 장치: `tests/test_poker_full.py` 픽스처(부분)
 - GTO 값은 화면에서 읽은 그대로만. 추측·보간·잔여를 fold로 채우기 금지 — 강제 장치: `tests/test_poker_full.py` 영역 6·7, `tests/test_gto_tree.py` · 근거 ADR 0002
 - UI 변경·새 기능·아키텍처 변경은 **사용자 확인 후** 커밋. 버그 수정·문서·설정은 바로 커밋 가능 — 장치 없음

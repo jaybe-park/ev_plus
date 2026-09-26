@@ -15,7 +15,7 @@ from core.game import TexasHoldem, Action, Street, IllegalActionError
 from core.player import Player
 from core.pot_odds import effective_call_pot, pot_odds as calc_pot_odds, call_ev as calc_call_ev
 from ai.bot import PokerBot, BotDifficulty, opponent_range_info
-from ai.equity import smart_equity, ranged_equity
+from ai.equity import smart_equity, equity_detail, ranged_equity
 from gto.advisor import GTOAdvisor
 from gto.grader import (
     grade_preflop_action, grade_postflop_call, grade_postflop_fold,
@@ -730,13 +730,11 @@ class WebGameSession:
         pot = self.game.pot
         big_blind = self.game.big_blind
 
-        exact_river = (street == Street.RIVER and len(opponents) == 1)
-        sims = 1000
-        vs_random = smart_equity(
-            hole, community, n_opps, sims,
-            use_cache=True, contribute=True, exact_river=exact_river,
-        )
-        source = "exact" if exact_river else f"mc:{sims}"
+        # vs_random: 프리플랍 = 상수 테이블, 리버 1:1 = 전수, 그 밖 = 적응형 MC (ADR 0034).
+        # source/samples는 실제로 탄 경로("preflop-table"/"exact"/"mc:N")와 그 샘플 수.
+        detail = equity_detail(hole, community, n_opps)
+        vs_random = detail.equity
+        source = detail.source
 
         self._record_equity_history(vs_random)
 
@@ -747,18 +745,21 @@ class WebGameSession:
 
         samplers = [s for s, _ in samplers_with_roles]
         if any(samplers):
-            vs_range = ranged_equity(hole, community, samplers, sims)
+            vs_range = ranged_equity(hole, community, samplers)  # 적응형 MC (ADR 0045)
         else:
             vs_range = vs_random
 
         # 상대별 1:1 추정 (곱해서 종합이 되지 않음 — 개별 지표로 유지)
         opponents_out = []
+        random_1v1 = None  # 정보 없는 상대들은 모두 같은 값(랜덤 1:1) → 한 번만 계산
         for opp, (sampler, role) in zip(opponents, samplers_with_roles):
             if sampler is not None:
-                one_on_one = ranged_equity(hole, community, [sampler], sims)
+                one_on_one = ranged_equity(hole, community, [sampler])
             else:
                 # 정보 없음 → 랜덤 1:1로 근사 (n_opps 기준 vs_random과는 상대 수가 달라 별도 계산)
-                one_on_one = smart_equity(hole, community, 1, sims, use_cache=True, contribute=False)
+                if random_1v1 is None:
+                    random_1v1 = vs_random if n_opps == 1 else smart_equity(hole, community, 1)
+                one_on_one = random_1v1
             opponents_out.append({
                 "name": opp.name,
                 "position": self.game.get_positions().get(opp.name, ""),
@@ -780,7 +781,7 @@ class WebGameSession:
             "pot_odds": round(pot_odds, 4),
             "call_ev_bb": round(call_ev_bb, 2) if call_ev_bb is not None else None,
             "source": source,
-            "samples": sims,
+            "samples": detail.samples,
             "num_opponents": n_opps,
             "opponents": opponents_out,
             "history": list(self.equity_history),

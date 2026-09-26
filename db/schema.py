@@ -261,68 +261,10 @@ CREATE_GTO_MISSING_PREFLOP_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_gto_missing_preflop_collected ON gto_missing_spots_preflop(collected);
 """
 
-CREATE_EQUITY_CACHE = """
-CREATE TABLE IF NOT EXISTS equity_cache (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    street          TEXT    NOT NULL,   -- preflop | flop | turn | river
-    spot_key        TEXT    NOT NULL,   -- 수트 정규화된 (홀카드|플랍|턴|리버) 키
-    num_opponents   INTEGER NOT NULL,
-    wins            REAL    NOT NULL DEFAULT 0,   -- 누적 승리 수
-    ties            REAL    NOT NULL DEFAULT 0,   -- 누적 무승부 수
-    total           INTEGER NOT NULL DEFAULT 0,   -- 누적 샘플 수 (0 = 계산 대기)
-    exact           INTEGER NOT NULL DEFAULT 0,   -- 1 = 전수조사 완료 (정확값)
-    updated_at      TEXT    DEFAULT (datetime('now')),
-    UNIQUE(spot_key, num_opponents)
-);
-"""
-
-# v8: idx_equity_street(766만 행 전체 인덱스) 제거됨 — idx_equity_pending 부분 인덱스가
-# 대기 조회를 전담하므로 잉여. 쓰기 비용만 유발해 DROP.
-
-# v7: exact=0 & num_opponents=1 대기 행만 담는 부분 인덱스.
-# exact=1로 승격되면 인덱스에서 자동 제거되어 항상 작게 유지됨 (760만 행 스캔 회피).
-CREATE_EQUITY_PENDING_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_equity_pending
-ON equity_cache(street, total, id) WHERE exact = 0 AND num_opponents = 1;
-"""
-
-# v7: 멀티웨이(상대 2명+) 샘플링 대상 대기 행 전용 부분 인덱스 (next_mc_job 병목 해소)
-CREATE_EQUITY_MULTIWAY_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_equity_multiway_pending
-ON equity_cache(total) WHERE exact = 0 AND num_opponents > 1;
-"""
-
-# v9: equity_cache(9,600만 행+) 풀스캔 GROUP BY가 --status에서 59초 걸리는 문제 해결.
-# (street, num_opponents)별 요약을 쓰기 시점마다 증분 갱신해 --status가 이 작은
-# 테이블만 읽도록 한다 (행 수 무관 즉시 응답). 정합성은 반드시 실제 풀스캔과 대조 검증.
-CREATE_EQUITY_CACHE_STATS = """
-CREATE TABLE IF NOT EXISTS equity_cache_stats (
-    street          TEXT    NOT NULL,
-    num_opponents   INTEGER NOT NULL,
-    spots           INTEGER NOT NULL DEFAULT 0,
-    exact_done      INTEGER NOT NULL DEFAULT 0,
-    total_sum       INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY(street, num_opponents)
-);
-"""
-
-# v10: next_mc_job/next_mc_batch의 프리플랍 대기 체크 쿼리
-# (WHERE exact=0 AND street='preflop' AND total < ?)를 뒷받침하는 인덱스가
-# 없어(v8에서 idx_equity_street를 "잉여"로 제거하며 이 쿼리를 놓침) 매 배치
-# 호출마다 equity_cache 전체(1억 행)를 풀스캔(~3.1초) — 프리플랍은 이미
-# 100% 완료라 항상 0건인데도 반복 발생. 프리플랍 대기 행만 담는(최대 845행)
-# 부분 인덱스로 해소.
-CREATE_EQUITY_PREFLOP_PENDING_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_equity_preflop_pending
-ON equity_cache(total) WHERE exact = 0 AND street = 'preflop';
-"""
-
-CREATE_WORKER_META = """
-CREATE TABLE IF NOT EXISTS worker_meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-"""
+# v4~v10의 에퀴티 캐시 스키마(equity_cache, worker_meta, equity_cache_stats와 대기 큐
+# 부분 인덱스들)는 ADR 0034로 폐기됐다. 새 DB는 이 테이블들을 만들지 않고, 코드도 읽거나
+# 쓰지 않는다. 기존 DB의 테이블은 DROP하지 않는다(운영 DB 직접 변경 금지 — 파일 정리는
+# scripts/slim_db.py, D-15). 아래 MIGRATIONS의 v7·v9·v10 스텝은 이력 보존용 no-op이다.
 
 def backfill_v12(conn):
     """v12 백필: 기존 gto_preflop_situations 행에 캐노니컬 노드 키(action_seq) +
@@ -434,8 +376,7 @@ MIGRATIONS = {
         "DROP TABLE IF EXISTS games;",
     ],
     7: [
-        CREATE_EQUITY_PENDING_INDEX,
-        CREATE_EQUITY_MULTIWAY_INDEX,
+        # (폐기, ADR 0034) equity_cache 대기 큐 부분 인덱스 2개 — no-op
     ],
     8: [
         # 저선택도 idx_preflop_pos/idx_postflop_pos 위 game_uuid 단일 인덱스는
@@ -447,10 +388,10 @@ MIGRATIONS = {
         "DROP INDEX IF EXISTS idx_equity_street;",
     ],
     9: [
-        CREATE_EQUITY_CACHE_STATS,
+        # (폐기, ADR 0034) equity_cache_stats 요약 테이블 — no-op
     ],
     10: [
-        CREATE_EQUITY_PREFLOP_PENDING_INDEX,
+        # (폐기, ADR 0034) equity_cache 프리플랍 대기 부분 인덱스 — no-op
     ],
     11: [
         # 근본 버그(콜/올인 색상 임계값 오탐)로 손상된 프리플랍 GTO 데이터 전량
@@ -496,17 +437,6 @@ ALL_STATEMENTS = [
     # v3: 미수집 스팟 큐 (v11: gto_missing_spots → gto_missing_spots_preflop 개명)
     CREATE_GTO_MISSING_SPOTS_PREFLOP,
     CREATE_GTO_MISSING_PREFLOP_INDEX,
-    # v4: 에퀴티 캐시 (전수조사 워커 + 봇 런타임 공유)
-    CREATE_EQUITY_CACHE,
-    # v5: 워커 진행 커서 (체계적 플랍 스윕 재개용)
-    CREATE_WORKER_META,
-    # v7: 대기 행 전용 부분 인덱스 (next_exact_job / next_mc_job 병목 해소)
-    CREATE_EQUITY_PENDING_INDEX,
-    CREATE_EQUITY_MULTIWAY_INDEX,
     # v8: (game_uuid, position) 복합 인덱스 — reward 역산 UPDATE 최적화
     CREATE_GAME_POS_INDEXES,
-    # v9: equity_cache 집계 요약 테이블 (--status 풀스캔 회피)
-    CREATE_EQUITY_CACHE_STATS,
-    # v10: 프리플랍 대기 체크 쿼리(next_mc_job/next_mc_batch) 전용 부분 인덱스
-    CREATE_EQUITY_PREFLOP_PENDING_INDEX,
 ]

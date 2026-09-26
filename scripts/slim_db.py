@@ -218,8 +218,8 @@ def do_real_run(src: str, dst: str, exclude: set[str]) -> None:
 
 def apply_app_migration(dst: str) -> None:
     """앱의 get_connection()으로 dst를 한 번 열어 _migrate가 받아들이는지
-    확인한다. equity_cache 등 빈 테이블이 재생성될 수 있는데, 이는 의도된
-    동작이다(새 코드가 쓰지 않을 뿐 스키마는 있어도 무방)."""
+    확인한다. 현재 스키마(ADR 0034 이후)는 equity_cache 등 에퀴티 테이블을
+    만들지 않으므로 제외한 테이블이 다시 생기지 않는다."""
     sys.path.insert(0, REPO_ROOT)
     from db.connection import get_connection  # noqa: E402
 

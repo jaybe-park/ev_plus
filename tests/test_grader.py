@@ -120,12 +120,10 @@ def test_short_stack_effective_call():
 
     # 실제 세션 경로: 패널 팟오즈·콜 EV + 복기 판정이 유효값 기준인지
     import tempfile
-    import ai.equity as eq
     from server.session import WebGameSession
     from core.game import Street, Action
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    prev_db, prev_env = eq.DB_PATH, os.environ.get("EV_PLUS_DB")
-    eq.DB_PATH = tmp
+    prev_env = os.environ.get("EV_PLUS_DB")
     os.environ["EV_PLUS_DB"] = tmp
     try:
         random.seed(5)
@@ -162,8 +160,6 @@ def test_short_stack_effective_call():
         check("복기: 숏스택 콜 = ✅", rv.get("grade") == "✅", f"={rv}")
         check("복기 팟오즈 = 유효값", rv.get("pot_odds") == info["pot_odds"], f"={rv.get('pot_odds')}")
     finally:
-        eq._flush_contributions()
-        eq.DB_PATH = prev_db
         if prev_env is None:
             os.environ.pop("EV_PLUS_DB", None)
         else:

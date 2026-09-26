@@ -13,20 +13,17 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── 테스트 격리 ──────────────────────────────────────────
-# 이 파일 대부분의 테스트는 ai.equity.DB_PATH를 개별적으로 임시 파일로
-# 바꾸지만, gto.loader.get_raise_range 등 db.connection.get_connection()을
-# 인자 없이 호출하는 경로는 EV_PLUS_DB가 비어 있으면 운영 poker.db를 만들어
-# 버린다. run_all.py의 poker.db 무결성 가드가 이를 실제로 잡아냈다 — 다른
-# 테스트 파일과 동일하게 모듈 임포트 시점에 환경변수 자체를 격리한다.
+# 에퀴티 계산은 DB를 쓰지 않지만(ADR 0034), gto.loader.get_raise_range·세션 기록 등
+# db.connection.get_connection()을 인자 없이 호출하는 경로는 EV_PLUS_DB가 비어 있으면
+# 운영 poker.db를 만들어 버린다 — 모듈 임포트 시점에 환경변수 자체를 격리한다.
 os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
 
 from core.card import Card, Suit, Rank
 from core.game import Action
 from core.player import Player
-import ai.equity as eq
 from ai.equity import (
-    canonical_key, decode_key, calculate_equity, exact_counts_river,
-    smart_equity, cache_lookup, made_hand_rank,
+    calculate_equity, exact_counts_river, exact_counts_turn,
+    smart_equity, equity_detail, made_hand_rank,
 )
 from ai.bot import PokerBot, BotDifficulty, board_wetness
 
@@ -56,29 +53,39 @@ def check(name: str, cond: bool, detail: str = ""):
         print(f"  ❌ {name} {detail}")
 
 
-def test_canonical_key():
-    print("\n[E-1] 수트 정규화 키")
-    # 수트만 바꾼 같은 스팟 → 같은 키
-    k1 = canonical_key(cards("Ah", "Kh"), cards("Qh", "7s", "2d"))
-    k2 = canonical_key(cards("As", "Ks"), cards("Qs", "7d", "2c"))
-    check("수트 치환 불변", k1 == k2, f"{k1} != {k2}")
-
-    # 수티드 vs 오프수트 → 다른 키
-    k3 = canonical_key(cards("Ah", "Kh"), [])
-    k4 = canonical_key(cards("Ah", "Ks"), [])
-    check("AKs != AKo", k3 != k4)
-
-    # 홀카드 순서 무관
-    k5 = canonical_key(cards("Kh", "Ah"), [])
-    k6 = canonical_key(cards("Ah", "Kh"), [])
-    check("홀카드 순서 불변", k5 == k6)
-
-    # 인코딩/디코딩 왕복
-    hole, board = cards("Ah", "Kh"), cards("Qh", "7s", "2d", "3c")
-    key = canonical_key(hole, board)
-    h2, b2 = decode_key(key)
-    check("디코딩 왕복 (키 재생성 일치)", canonical_key(h2, b2) == key)
-    check("디코딩 보드 길이", len(b2) == 4)
+def test_preflop_table():
+    print("\n[E-1] 프리플랍 상수 테이블 — 기준값 대조 (ADR 0034)")
+    from ai.preflop_equity_table import PREFLOP_EQUITY, PREFLOP_SAMPLES
+    from ai.equity import preflop_notation
+    check("169핸드 × 상대 1~5명 = 845값",
+          len(PREFLOP_EQUITY) == 169 and all(len(v) == 5 for v in PREFLOP_EQUITY.values()),
+          f"={len(PREFLOP_EQUITY)}")
+    check("값마다 100만 샘플", PREFLOP_SAMPLES >= 1_000_000, f"={PREFLOP_SAMPLES}")
+    # 알려진 기준값 (±1%p 목표보다 좁은 ±0.2%p로 검사) — T-036 완료 조건
+    for hole, n_opp, expect in ((("As", "Ah"), 1, 0.852), (("Ah", "Kh"), 1, 0.670),
+                                (("7s", "2h"), 1, 0.346), (("Ad", "Ac"), 5, 0.492)):
+        r = equity_detail(cards(*hole), [], n_opp)
+        check(f"{preflop_notation(cards(*hole))} vs{n_opp} ≈ {expect:.1%} (테이블 경로)",
+              abs(r.equity - expect) <= 0.002 and r.source == "preflop-table"
+              and r.samples == PREFLOP_SAMPLES, f"={r}")
+    # 표기 변환: 수트 치환·홀카드 순서 불변, 수티드/오프수트 구분, 10 → T
+    check("수트 치환 불변 (AhKh == AsKs)",
+          smart_equity(cards("Ah", "Kh"), [], 1) == smart_equity(cards("As", "Ks"), [], 1))
+    check("홀카드 순서 불변", preflop_notation(cards("Kh", "Ah")) == "AKs")
+    check("AKo 표기", preflop_notation(cards("Ah", "Kd")) == "AKo")
+    check("10 → T 표기", preflop_notation(cards("Th", "9h")) == "T9s")
+    # 상대가 늘수록 단조 감소 (AA)
+    aa = PREFLOP_EQUITY["AA"]
+    check("AA 상대 수 증가 시 단조 감소", all(aa[i] > aa[i + 1] for i in range(4)), f"={aa}")
+    # 테이블 값 = 지금 코드의 MC와 일치 (vs2 이상은 옛 동률 공식 과대분 ≤ 0.15%p 허용)
+    from ai.equity import mc_adaptive, _ratio
+    random.seed(21)
+    for hole, n_opp in ((("As", "Ah"), 2), (("Qh", "Jh"), 3), (("7s", "2h"), 1)):
+        w, t, n, se = mc_adaptive(cards(*hole), [], n_opp, target_se=0.004, max_samples=20_000)
+        est = _ratio(w, t, n)
+        tab = PREFLOP_EQUITY[preflop_notation(cards(*hole))][n_opp - 1]
+        check(f"{preflop_notation(cards(*hole))} vs{n_opp} 테이블 {tab:.4f} ≈ MC {est:.4f} (3σ+0.15%p)",
+              abs(est - tab) <= 3 * se + 0.0015, f"차이={est - tab:+.4f}, se={se:.4f}")
 
 
 def test_exact_river():
@@ -138,21 +145,16 @@ def test_multiway_tie_share():
         [RangeSampler({"QJo": 1.0}), RangeSampler({"76s": 1.0})], 300))
     check("나·상대A 동률 + 상대B 패 = 1/2", abs(e - 0.5) < 1e-9, f"={e:.4f}")
 
-    # 멀티웨이 캐시 행은 읽지 않는다 (과거 1/2 공식 오염값)
+    # smart_equity 멀티웨이(적응형 MC) 경로도 같은 공식
+    e2 = smart_equity(hole, royal, 2)
+    check("smart_equity 로열 보드 vs2 = 1/3", abs(e2 - 1 / 3) < 1e-9, f"={e2:.4f}")
+    e1 = smart_equity(hole, royal, 1)  # 리버 1:1 = 전수
+    check("smart_equity 로열 보드 vs1 (전수) = 1/2", abs(e1 - 1 / 2) < 1e-9, f"={e1:.4f}")
+
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    eq.DB_PATH = tmp
     prev_env = os.environ.get("EV_PLUS_DB")
     os.environ["EV_PLUS_DB"] = tmp  # 세션 기록(recorder)도 임시 DB로
     try:
-        key = canonical_key(hole, royal)
-        eq.cache_contribute("river", key, 2, 0.0, 1_000_000.0, 1_000_000, exact=True)  # 오염값 0.5
-        # 헤즈업 행에는 식별용 가짜 값(1.0)을 심어 "읽었는지"를 구분한다
-        eq.cache_contribute("river", key, 1, 990.0, 0.0, 990, exact=True)
-        e2 = smart_equity(hole, royal, 2, 300, use_cache=True, contribute=False)
-        check("멀티웨이 캐시 오염값(0.5) 무시 → 1/3", abs(e2 - 1 / 3) < 1e-9, f"={e2:.4f}")
-        e1 = smart_equity(hole, royal, 1, 300, use_cache=True, contribute=False)
-        check("헤즈업 캐시는 그대로 사용", e1 == 1.0, f"={e1:.4f}")
-
         # 실제 패널 경로(세션 _get_equity_info): 3인 스플릿 → vs_random·vs_range 모두 1/3
         from server.session import WebGameSession
         from core.game import Street
@@ -170,9 +172,10 @@ def test_multiway_tie_share():
               and abs(info["vs_random"] - 1 / 3) < 1e-3, f"={info and info['vs_random']}")
         check("패널 vs_range 3인 스플릿 = 1/3", info is not None
               and abs(info["vs_range"] - 1 / 3) < 1e-3, f"={info and info['vs_range']}")
+        check("패널 source = 실제 경로 mc:N", info is not None
+              and info["source"] == f"mc:{info['samples']}" and info["samples"] >= 500,
+              f"={info and (info['source'], info['samples'])}")
     finally:
-        eq._flush_contributions()
-        eq.DB_PATH = None
         if prev_env is None:
             os.environ.pop("EV_PLUS_DB", None)
         else:
@@ -181,43 +184,166 @@ def test_multiway_tie_share():
             os.remove(tmp)
 
 
-def test_cache():
-    print("\n[E-4] equity_cache DB 누적")
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    eq.DB_PATH = tmp
+def test_equity_paths():
+    print("\n[E-4] 계산 경로 선택 — 프리플랍=테이블, 리버 1:1=전수, 그 밖=MC (ADR 0034)")
+    random.seed(1)
+    flop = (cards("Ah", "Kd"), cards("Qs", "7h", "2c"))
+    river = (cards("As", "Ah"), cards("Ad", "Ac", "Kh", "Qd", "2s"))
+    r = equity_detail(*river, 1)
+    check("리버 1:1 → exact 990조합 (쿼드 = 1.0)",
+          r.source == "exact" and r.samples == 990 and r.equity == 1.0, f"={r}")
+    r = equity_detail(*river, 1, 40)
+    check("리버 1:1은 샘플 수를 고정해도(easy) 전수", r.source == "exact", f"={r}")
+    r = equity_detail(*flop, 1)
+    check("플랍 → 적응형 MC (500~2,500 샘플)",
+          r.source == f"mc:{r.samples}" and 500 <= r.samples <= 2_500, f"={r}")
+    r = equity_detail(*flop, 1, 40)
+    check("샘플 수 고정(easy 40) → mc:40", r.source == "mc:40" and r.samples == 40, f"={r}")
+    r = equity_detail(cards("Ah", "Kd"), [], 1, 40)
+    check("프리플랍은 샘플 수를 고정해도 테이블", r.source == "preflop-table", f"={r}")
+    r = equity_detail(river[0], river[1], 2)
+    check("리버 멀티웨이 → MC", r.source.startswith("mc:"), f"={r}")
     try:
-        random.seed(1)
-        hole, board = cards("Ah", "Kd"), cards("Qs", "7h", "2c")
-        key = canonical_key(hole, board)
+        equity_detail(cards("Ah", "Kd"), cards("Ah", "7h", "2c"), 1)
+        check("중복 카드 → ValueError", False)
+    except ValueError:
+        check("중복 카드 → ValueError", True)
 
-        smart_equity(hole, board, 1, 100, use_cache=True, contribute=True)
-        eq._flush_contributions()  # 기여는 배치 버퍼링 → 명시 플러시
-        row = cache_lookup(key, 1)
-        check("MC 결과 캐시 저장 (플러시 후)", row is not None and row["total"] == 100,
-              f"row={row}")
 
-        smart_equity(hole, board, 1, 100, use_cache=True, contribute=True)
-        eq._flush_contributions()
-        row = cache_lookup(key, 1)
-        check("재호출 시 누적 (200)", row["total"] == 200, f"={row['total']}")
+def test_mc_precision():
+    print("\n[E-15] 적응형 MC 정밀도 — 같은 스팟 반복 시 표준오차 ≤ 1%p (ADR 0045)")
+    import statistics
+    from ai.equity import TARGET_SE
+    random.seed(15)
+    # 턴 1:1: 정답을 전수(4.5만 조합)로 구해 추정치와 대조. p≈0.5 근처라 샘플이 가장 많이 필요한 스팟.
+    hole, board = cards("Ah", "5h"), cards("Kh", "9h", "2s", "3c")  # 넛플러시 드로우 + 휠 드로우
+    w, t, n = exact_counts_turn(hole, board)
+    truth = (w + 0.5 * t) / n
+    runs = [equity_detail(hole, board, 1) for _ in range(30)]
+    ests = [r.equity for r in runs]
+    sd = statistics.pstdev(ests)
+    bias = statistics.mean(ests) - truth
+    # 30회 표본 표준편차의 상대 오차 ≈ 13% → 3σ 상한 ≈ 1.4배
+    check(f"턴 1:1 반복 30회 표준편차 {sd:.4f} ≤ {TARGET_SE}×1.4", sd <= TARGET_SE * 1.4,
+          f"={sd:.4f}")
+    check(f"턴 1:1 평균 {statistics.mean(ests):.4f} ≈ 전수 {truth:.4f} (±3·SE/√30)",
+          abs(bias) <= 3 * TARGET_SE / 30 ** 0.5, f"차이={bias:+.4f}")
+    within = sum(1 for e in ests if abs(e - truth) <= 2 * TARGET_SE)
+    check(f"개별 추정 {within}/30이 전수값 ±2%p(2σ) 안", within >= 25, f"={within}")
+    # 플랍 3인: 반복 표준편차만 검사(정답 전수는 비쌈)
+    hole, board = cards("Jc", "Td"), cards("9s", "8h", "2c")
+    ests = [smart_equity(hole, board, 2) for _ in range(20)]
+    sd = statistics.pstdev(ests)
+    check(f"플랍 vs2 반복 20회 표준편차 {sd:.4f} ≤ {TARGET_SE}×1.5", sd <= TARGET_SE * 1.5,
+          f"={sd:.4f}")
+    # easy(고정 40샘플)는 의도적으로 목표보다 거칠다 (ADR 0014)
+    ests = [smart_equity(hole, board, 2, 40) for _ in range(30)]
+    check("easy 40샘플은 표준편차가 목표보다 크다(해상도 차이 유지)",
+          statistics.pstdev(ests) > TARGET_SE * 3, f"={statistics.pstdev(ests):.4f}")
 
-        # 리버 전수조사 → exact 플래그
-        hole_r, board_r = cards("As", "Ah"), cards("Ad", "Ac", "Kh", "Qd", "2s")
-        e = smart_equity(hole_r, board_r, 1, 50, use_cache=True,
-                         contribute=True, exact_river=True)
-        row = cache_lookup(canonical_key(hole_r, board_r), 1)
-        check("리버 exact 저장", row["exact"] == 1 and e == 1.0,
-              f"row={row}, e={e}")
+    # 레인지 반영 에퀴티(hard 봇·패널 vs_range)도 같은 목표 (ADR 0045)
+    from itertools import product
+    from ai.equity import ranged_equity, RangeSampler, _showdown_share, _notation_combos
+    from core.evaluator import evaluate_rank
+    hole, board = cards("Js", "Jh"), cards("2c", "3d", "4h", "Ks", "9c")
+    known = set(hole) | set(board)
+    ra = [p for n in ("AA", "55") for p in _notation_combos(n) if not (set(p) & known)]
+    rb = [p for n in ("AA", "66") for p in _notation_combos(n) if not (set(p) & known)]
+    mine = evaluate_rank(hole + board)
+    share = n_ok = 0
+    for a, b in product(ra, rb):
+        if set(a) & set(b):
+            continue
+        w, t = _showdown_share(mine, [evaluate_rank(list(a) + board), evaluate_rank(list(b) + board)])
+        share += w + 0.5 * t
+        n_ok += 1
+    truth = share / n_ok
+    samplers = [RangeSampler({"AA": 1, "55": 1}), RangeSampler({"AA": 1, "66": 1})]
+    ests = [ranged_equity(hole, board, samplers) for _ in range(30)]
+    sd = statistics.pstdev(ests)
+    check(f"레인지 2명 리버 반복 30회 표준편차 {sd:.4f} ≤ {TARGET_SE}×1.4", sd <= TARGET_SE * 1.4,
+          f"={sd:.4f}")
+    bias = statistics.mean(ests) - truth
+    check(f"레인지 2명 평균 {statistics.mean(ests):.4f} ≈ 전수 {truth:.4f} (±3·SE/√30)",
+          abs(bias) <= 3 * TARGET_SE / 30 ** 0.5, f"차이={bias:+.4f}")
+    ests = [ranged_equity(cards("Qh", "Qd"), cards("7c", "4d", "2s"),
+                          [RangeSampler({"AA": 1, "KK": 1, "AKs": 1})]) for _ in range(20)]
+    sd = statistics.pstdev(ests)
+    check(f"레인지 1명 플랍 반복 20회 표준편차 {sd:.4f} ≤ {TARGET_SE}×1.5", sd <= TARGET_SE * 1.5,
+          f"={sd:.4f}")
 
-        # exact 이후엔 MC가 덮어쓰지 않음
-        smart_equity(hole_r, board_r, 1, 50, use_cache=True, contribute=True)
-        eq._flush_contributions()
-        row = cache_lookup(canonical_key(hole_r, board_r), 1)
-        check("exact 보호 (누적 안 됨)", row["total"] == 990, f"={row['total']}")
+
+def test_no_db_writes():
+    print("\n[E-16] 에퀴티 계산은 DB를 열지 않는다 — 게임을 쳐도 에퀴티 행이 늘지 않음 (ADR 0034)")
+    import sqlite3
+    import ai.equity as eq_mod
+    from ai.equity import ranged_equity, RangeSampler
+    real_connect = sqlite3.connect
+    calls = []
+
+    def spy(*a, **k):
+        calls.append(a)
+        return real_connect(*a, **k)
+
+    sqlite3.connect = spy
+    try:
+        random.seed(2)
+        hole = cards("Ah", "Kd")
+        for board in ([], cards("Qs", "7h", "2c"), cards("Qs", "7h", "2c", "9d"),
+                      cards("Qs", "7h", "2c", "9d", "3s")):
+            for n_opp in (1, 3):
+                equity_detail(hole, board, n_opp)
+                smart_equity(hole, board, n_opp, 40)
+        ranged_equity(hole, cards("Qs", "7h", "2c"), [RangeSampler({"QQ": 1.0})], 100)
+        # medium 봇 포스트플랍 판단(적응형 MC 경로)
+        bot = _make_bot(["Ah", "Kd"], BotDifficulty.MEDIUM)
+        bot.decide_action(_bot_state("플랍", ["Qs", "7h", "2c"], 100, 0))
     finally:
-        eq.DB_PATH = None
-        if os.path.exists(tmp):
-            os.remove(tmp)
+        sqlite3.connect = real_connect
+    check("에퀴티·봇 판단 중 sqlite3.connect 호출 0회", not calls, f"={len(calls)}회")
+    src = open(eq_mod.__file__, encoding="utf-8").read()
+    check("ai/equity.py가 DB 모듈을 참조하지 않음",
+          "get_connection" not in src and "import sqlite3" not in src and "db.connection" not in src)
+
+    # 실제 세션 경로: 새 DB에 에퀴티 테이블이 생기지 않고, 패널을 여러 번 계산해도 그대로
+    from server.session import WebGameSession
+    from core.game import Street
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    os.remove(tmp)  # get_connection이 새로 만들게
+    prev_env = os.environ.get("EV_PLUS_DB")
+    os.environ["EV_PLUS_DB"] = tmp
+    try:
+        s = WebGameSession(session_id="t036", human_name="Hero", chips=2000,
+                           num_bots=2, difficulty="medium", small_blind=10)
+        for p in s.game.players:
+            p.is_folded = False
+        s.human.hole_cards = cards("Ah", "Kd")
+        for st, board in ((Street.PREFLOP, []), (Street.FLOP, cards("Qs", "7h", "2c")),
+                          (Street.RIVER, cards("Qs", "7h", "2c", "9d", "3s"))):
+            s.game.community_cards = board
+            s.game.current_street = st
+            s._equity_cache = {}
+            info = s._get_equity_info()
+            if st == Street.PREFLOP:
+                check("패널 프리플랍 source = preflop-table", info["source"] == "preflop-table",
+                      f"={info['source']}")
+        from db.connection import get_connection
+        conn = get_connection(tmp)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        conn.close()
+        eq_tables = sorted(t for t in tables if t.startswith("equity") or t == "worker_meta")
+        check("새 DB에 equity_cache·equity_cache_stats·worker_meta 없음", not eq_tables,
+              f"={eq_tables}")
+        check("게임 기록 테이블은 그대로 생성", "games" in tables, f"={sorted(tables)}")
+    finally:
+        if prev_env is None:
+            os.environ.pop("EV_PLUS_DB", None)
+        else:
+            os.environ["EV_PLUS_DB"] = prev_env
+        for suffix in ("", "-wal", "-shm"):
+            if os.path.exists(tmp + suffix):
+                os.remove(tmp + suffix)
 
 
 def test_board_wetness():
@@ -258,124 +384,118 @@ def _make_bot(hole_specs, difficulty=BotDifficulty.MEDIUM):
 
 def test_bot_decisions():
     print("\n[E-6] 봇 의사결정")
-    eq.DB_PATH = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    try:
-        random.seed(7)
+    random.seed(7)
 
-        # 리버 넛 (로열 플러시) + 상대 벳 → 절대 폴드하지 않음
-        folds = 0
-        for _ in range(10):
-            bot = _make_bot(["Ah", "Kh"])
-            bot.player.current_bet = 0
-            st = _bot_state("리버", ["Qh", "Jh", "Th", "2s", "3d"], 300, 100)
-            action, _ = bot.decide_action(st)
-            if action == Action.FOLD:
-                folds += 1
-        check("리버 넛으로 폴드 없음", folds == 0, f"folds={folds}/10")
-
-        # 트래시 + 거대 벳 → 대부분 폴드
-        folds = 0
-        for _ in range(10):
-            bot = _make_bot(["7c", "2d"])
-            st = _bot_state("리버", ["As", "Kh", "Qd", "Jc", "9s"], 200, 400)
-            action, _ = bot.decide_action(st)
-            if action == Action.FOLD:
-                folds += 1
-        check("리버 트래시 폴드 다수", folds >= 8, f"folds={folds}/10")
-
-        # 벳 없음 + 트래시 → 대부분 체크 (블러프 소수 허용)
-        checks = 0
-        for _ in range(20):
-            bot = _make_bot(["7c", "2d"])
-            st = _bot_state("플랍", ["As", "Kh", "Qd"], 100, 0)
-            action, _ = bot.decide_action(st)
-            if action == Action.CHECK:
-                checks += 1
-        check("트래시는 대부분 체크", checks >= 14, f"checks={checks}/20")
-
-        # 플러시 드로우 + 팟오즈 좋은 콜 → 폴드하지 않음 (콜 or 레이즈)
-        folds = 0
-        for _ in range(10):
-            bot = _make_bot(["Ah", "5h"])
-            st = _bot_state("플랍", ["Kh", "9h", "2s"], 300, 60)
-            action, _ = bot.decide_action(st)
-            if action == Action.FOLD:
-                folds += 1
-        check("좋은 오즈 드로우 폴드 없음", folds == 0, f"folds={folds}/10")
-
-        # 세미블러프 존재 확인: 드로우로 벳 없는 상황에서 가끔 벳
-        bets = 0
-        for _ in range(30):
-            bot = _make_bot(["Ah", "5h"], BotDifficulty.HARD)
-            st = _bot_state("플랍", ["Kh", "9h", "2s"], 100, 0)
-            action, _ = bot.decide_action(st)
-            if action in (Action.RAISE, Action.ALL_IN):
-                bets += 1
-        check("세미블러프 발생 (hard)", bets >= 3, f"bets={bets}/30")
-
-        # 포지션 점수
+    # 리버 넛 (로열 플러시) + 상대 벳 → 절대 폴드하지 않음
+    folds = 0
+    for _ in range(10):
         bot = _make_bot(["Ah", "Kh"])
-        st = _bot_state("플랍", ["Ks", "7h", "2d"], 100, 0,
-                        positions={"Bot": "BTN", "V1": "SB", "V2": "BB"},
-                        players=[
-                            {"name": "Bot", "chips": 1000, "current_bet": 0,
-                             "is_folded": False, "is_all_in": False, "is_human": False},
-                            {"name": "V1", "chips": 1000, "current_bet": 0,
-                             "is_folded": False, "is_all_in": False, "is_human": True},
-                            {"name": "V2", "chips": 1000, "current_bet": 0,
-                             "is_folded": False, "is_all_in": False, "is_human": True},
-                        ])
-        check("BTN 포지션 = 1.0", bot._position_score(st) == 1.0)
-        st["positions"] = {"Bot": "SB", "V1": "BTN", "V2": "BB"}
-        check("SB 포지션 = 0.0", bot._position_score(st) == 0.0)
-
-        # 숏스택 팟오즈 (T-033): 44 on K9532 리버 vs1 exact 0.562.
-        # 상대 1,000 올인(팟 150 → 1,150). 원값 팟오즈 46.5%+마진 → 폴드,
-        # 스택 100이면 유효 팟오즈 100/350=28.6%+마진 → 콜이어야 한다.
-        def _shove_state():
-            return _bot_state("리버", ["Ks", "9d", "5c", "3h", "2s"], 1150, 1000, players=[
-                {"name": "Bot", "chips": 0, "current_bet": 0,
-                 "is_folded": False, "is_all_in": False, "is_human": False},
-                {"name": "Villain", "chips": 0, "current_bet": 1000,
-                 "is_folded": False, "is_all_in": True, "is_human": True},
-            ])
-        for chips, expect, label in ((100, Action.CALL, "숏스택(100) 큰 올인 → 콜"),
-                                     (5000, Action.FOLD, "딥스택(5000) 같은 올인 → 폴드")):
-            bot = _make_bot(["4h", "4d"], BotDifficulty.HARD)
-            bot.player.chips = chips
-            action, _ = bot.decide_action(_shove_state())
-            check(f"봇 팟오즈 {label}", action == expect, f"={action}")
-        bot = _make_bot(["4h", "4d"], BotDifficulty.HARD)
-        bot.player.chips = 100
-        check("봇 유효 콜·팟 = (100, 250)", bot._effective_call_pot(_shove_state()) == (100, 250),
-              f"={bot._effective_call_pot(_shove_state())}")
-
-        # bet_ratio (T-034): 팟 100에 내가 50 벳, 상대 150으로 레이즈 → 1.0 (이전 공식 0.5)
-        from ai.bot import facing_bet_ratio
-        r = facing_bet_ratio(300, 150, [50, 150])
-        check("레이즈 받음 bet_ratio = 1.0", abs(r - 1.0) < 1e-9, f"={r}")
-        r = facing_bet_ratio(150, 50, [0, 50])
-        check("단순 벳 bet_ratio = 0.5 (팟 100에 50)", abs(r - 0.5) < 1e-9, f"={r}")
-        r = facing_bet_ratio(200, 50, [0, 50, 50])
-        check("벳+콜러 뒤 bet_ratio = 0.5 (콜러 칩 제외)", abs(r - 0.5) < 1e-9, f"={r}")
-        r = facing_bet_ratio(300, 150, [0, 50, 150])
-        check("제3자 벳 후 레이즈 bet_ratio = 1.0", abs(r - 1.0) < 1e-9, f"={r}")
-        # 실제 판단에 반영: A7 on K9532 리버 exact 0.316, 팟오즈 100/400=25%.
-        # hard 마진 0.02+0.08×ratio → ratio 1.0이면 35% 필요(폴드), 0.5였다면 31%(콜)
-        bot = _make_bot(["Ah", "7d"], BotDifficulty.HARD)
-        bot.player.current_bet = 50
-        st = _bot_state("리버", ["Ks", "9d", "5c", "3h", "2s"], 300, 150, players=[
-            {"name": "Bot", "chips": 950, "current_bet": 50,
-             "is_folded": False, "is_all_in": False, "is_human": False},
-            {"name": "Villain", "chips": 850, "current_bet": 150,
-             "is_folded": False, "is_all_in": False, "is_human": True},
-        ])
+        bot.player.current_bet = 0
+        st = _bot_state("리버", ["Qh", "Jh", "Th", "2s", "3d"], 300, 100)
         action, _ = bot.decide_action(st)
-        check("벳 후 팟 크기 레이즈를 받으면 A-high 폴드", action == Action.FOLD, f"={action}")
-    finally:
-        if os.path.exists(eq.DB_PATH):
-            os.remove(eq.DB_PATH)
-        eq.DB_PATH = None
+        if action == Action.FOLD:
+            folds += 1
+    check("리버 넛으로 폴드 없음", folds == 0, f"folds={folds}/10")
+
+    # 트래시 + 거대 벳 → 대부분 폴드
+    folds = 0
+    for _ in range(10):
+        bot = _make_bot(["7c", "2d"])
+        st = _bot_state("리버", ["As", "Kh", "Qd", "Jc", "9s"], 200, 400)
+        action, _ = bot.decide_action(st)
+        if action == Action.FOLD:
+            folds += 1
+    check("리버 트래시 폴드 다수", folds >= 8, f"folds={folds}/10")
+
+    # 벳 없음 + 트래시 → 대부분 체크 (블러프 소수 허용)
+    checks = 0
+    for _ in range(20):
+        bot = _make_bot(["7c", "2d"])
+        st = _bot_state("플랍", ["As", "Kh", "Qd"], 100, 0)
+        action, _ = bot.decide_action(st)
+        if action == Action.CHECK:
+            checks += 1
+    check("트래시는 대부분 체크", checks >= 14, f"checks={checks}/20")
+
+    # 플러시 드로우 + 팟오즈 좋은 콜 → 폴드하지 않음 (콜 or 레이즈)
+    folds = 0
+    for _ in range(10):
+        bot = _make_bot(["Ah", "5h"])
+        st = _bot_state("플랍", ["Kh", "9h", "2s"], 300, 60)
+        action, _ = bot.decide_action(st)
+        if action == Action.FOLD:
+            folds += 1
+    check("좋은 오즈 드로우 폴드 없음", folds == 0, f"folds={folds}/10")
+
+    # 세미블러프 존재 확인: 드로우로 벳 없는 상황에서 가끔 벳
+    bets = 0
+    for _ in range(30):
+        bot = _make_bot(["Ah", "5h"], BotDifficulty.HARD)
+        st = _bot_state("플랍", ["Kh", "9h", "2s"], 100, 0)
+        action, _ = bot.decide_action(st)
+        if action in (Action.RAISE, Action.ALL_IN):
+            bets += 1
+    check("세미블러프 발생 (hard)", bets >= 3, f"bets={bets}/30")
+
+    # 포지션 점수
+    bot = _make_bot(["Ah", "Kh"])
+    st = _bot_state("플랍", ["Ks", "7h", "2d"], 100, 0,
+                    positions={"Bot": "BTN", "V1": "SB", "V2": "BB"},
+                    players=[
+                        {"name": "Bot", "chips": 1000, "current_bet": 0,
+                         "is_folded": False, "is_all_in": False, "is_human": False},
+                        {"name": "V1", "chips": 1000, "current_bet": 0,
+                         "is_folded": False, "is_all_in": False, "is_human": True},
+                        {"name": "V2", "chips": 1000, "current_bet": 0,
+                         "is_folded": False, "is_all_in": False, "is_human": True},
+                    ])
+    check("BTN 포지션 = 1.0", bot._position_score(st) == 1.0)
+    st["positions"] = {"Bot": "SB", "V1": "BTN", "V2": "BB"}
+    check("SB 포지션 = 0.0", bot._position_score(st) == 0.0)
+
+    # 숏스택 팟오즈 (T-033): 44 on K9532 리버 vs1 exact 0.562.
+    # 상대 1,000 올인(팟 150 → 1,150). 원값 팟오즈 46.5%+마진 → 폴드,
+    # 스택 100이면 유효 팟오즈 100/350=28.6%+마진 → 콜이어야 한다.
+    def _shove_state():
+        return _bot_state("리버", ["Ks", "9d", "5c", "3h", "2s"], 1150, 1000, players=[
+            {"name": "Bot", "chips": 0, "current_bet": 0,
+             "is_folded": False, "is_all_in": False, "is_human": False},
+            {"name": "Villain", "chips": 0, "current_bet": 1000,
+             "is_folded": False, "is_all_in": True, "is_human": True},
+        ])
+    for chips, expect, label in ((100, Action.CALL, "숏스택(100) 큰 올인 → 콜"),
+                                 (5000, Action.FOLD, "딥스택(5000) 같은 올인 → 폴드")):
+        bot = _make_bot(["4h", "4d"], BotDifficulty.HARD)
+        bot.player.chips = chips
+        action, _ = bot.decide_action(_shove_state())
+        check(f"봇 팟오즈 {label}", action == expect, f"={action}")
+    bot = _make_bot(["4h", "4d"], BotDifficulty.HARD)
+    bot.player.chips = 100
+    check("봇 유효 콜·팟 = (100, 250)", bot._effective_call_pot(_shove_state()) == (100, 250),
+          f"={bot._effective_call_pot(_shove_state())}")
+
+    # bet_ratio (T-034): 팟 100에 내가 50 벳, 상대 150으로 레이즈 → 1.0 (이전 공식 0.5)
+    from ai.bot import facing_bet_ratio
+    r = facing_bet_ratio(300, 150, [50, 150])
+    check("레이즈 받음 bet_ratio = 1.0", abs(r - 1.0) < 1e-9, f"={r}")
+    r = facing_bet_ratio(150, 50, [0, 50])
+    check("단순 벳 bet_ratio = 0.5 (팟 100에 50)", abs(r - 0.5) < 1e-9, f"={r}")
+    r = facing_bet_ratio(200, 50, [0, 50, 50])
+    check("벳+콜러 뒤 bet_ratio = 0.5 (콜러 칩 제외)", abs(r - 0.5) < 1e-9, f"={r}")
+    r = facing_bet_ratio(300, 150, [0, 50, 150])
+    check("제3자 벳 후 레이즈 bet_ratio = 1.0", abs(r - 1.0) < 1e-9, f"={r}")
+    # 실제 판단에 반영: A7 on K9532 리버 exact 0.316, 팟오즈 100/400=25%.
+    # hard 마진 0.02+0.08×ratio → ratio 1.0이면 35% 필요(폴드), 0.5였다면 31%(콜)
+    bot = _make_bot(["Ah", "7d"], BotDifficulty.HARD)
+    bot.player.current_bet = 50
+    st = _bot_state("리버", ["Ks", "9d", "5c", "3h", "2s"], 300, 150, players=[
+        {"name": "Bot", "chips": 950, "current_bet": 50,
+         "is_folded": False, "is_all_in": False, "is_human": False},
+        {"name": "Villain", "chips": 850, "current_bet": 150,
+         "is_folded": False, "is_all_in": False, "is_human": True},
+    ])
+    action, _ = bot.decide_action(st)
+    check("벳 후 팟 크기 레이즈를 받으면 A-high 폴드", action == Action.FOLD, f"={action}")
 
 
 def test_ranged_equity():
@@ -467,8 +587,7 @@ def test_headsup_range_uses_sb():
     from core.game import Street
 
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    prev_db, prev_env = eq.DB_PATH, os.environ.get("EV_PLUS_DB")
-    eq.DB_PATH = tmp
+    prev_env = os.environ.get("EV_PLUS_DB")
     os.environ["EV_PLUS_DB"] = tmp
     try:
         conn = get_connection()
@@ -527,10 +646,8 @@ def test_headsup_range_uses_sb():
               info["vs_range"] < 0.35 and info["vs_random"] > 0.65,
               f"range={info['vs_range']} random={info['vs_random']}")
     finally:
-        eq._flush_contributions()
         gto_loader._cache = {}
         gto_loader._loaded = False
-        eq.DB_PATH = prev_db
         if prev_env is None:
             os.environ.pop("EV_PLUS_DB", None)
         else:
@@ -553,30 +670,6 @@ def test_fast_evaluator():
         if (old.hand_rank.rank_value, old.tiebreakers) != evaluate_rank(hand):
             mismatch += 1
     check("랜덤 3000세트 완전 일치", mismatch == 0, f"불일치={mismatch}")
-
-
-def test_street_dp():
-    print("\n[E-10] 스트리트 분해 DP 정합성")
-    import importlib
-    from db.connection import get_connection
-    w = importlib.import_module("scripts.equity_worker")
-    from ai.equity import exact_counts_turn
-
-    hole = cards("Ah", "Kd")
-    board4 = cards("Kh", "9s", "2c", "7d")
-    direct = exact_counts_turn(hole, board4)
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    conn = get_connection(tmp)
-    try:
-        W, T, N, hits = w.exact_turn_dp(conn, hole, board4)
-        conn.commit()
-        check("턴 DP == 직접 열거", (W, T, N) == direct, f"{(W,T,N)} vs {direct}")
-        W2, T2, N2, hits2 = w.exact_turn_dp(conn, hole, board4)
-        check("웜 캐시 46/46 적중 + 동일값", hits2 == 46 and (W2, T2, N2) == direct)
-    finally:
-        conn.close()
-        os.remove(tmp)
 
 
 def test_made_hand_rank():
@@ -739,17 +832,18 @@ if __name__ == "__main__":
     print("  에퀴티 엔진 + 봇 테스트")
     print("=" * 50)
 
-    test_canonical_key()
+    test_preflop_table()
     test_exact_river()
     test_mc_sanity()
     test_multiway_tie_share()
-    test_cache()
+    test_equity_paths()
+    test_mc_precision()
+    test_no_db_writes()
     test_board_wetness()
     test_bot_decisions()
     test_ranged_equity()
     test_headsup_range_uses_sb()
     test_fast_evaluator()
-    test_street_dp()
     test_made_hand_rank()
     test_grader()
     test_board_rank_table()

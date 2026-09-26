@@ -3,8 +3,8 @@
 테스트 인프라 가드 테스트
 
 - run_all.py의 poker.db 무결성 검사(스냅샷 비교) 로직
-- ai/equity.py canonical_key의 중복 카드 입력 검증
-- scripts/equity_worker.py · scripts/grind.py가 공유하는 DB 크기 임계치 판정 함수
+- ai/equity.py equity_detail의 중복 카드 입력 검증
+- scripts/grind.py가 쓰는 DB 크기 임계치 판정 함수
 
 실행: python3 tests/test_guards.py
 """
@@ -24,7 +24,7 @@ os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=Fals
 
 import run_all
 from core.card import Card, Suit, Rank
-from ai.equity import canonical_key
+from ai.equity import equity_detail
 from db.connection import check_db_size_guard, db_size_gb
 
 PASS = 0
@@ -82,7 +82,7 @@ def test_run_all_db_snapshot_guard():
 
 
 def test_db_size_guard():
-    print("\n[GD-2] equity_worker/grind 공용 DB 크기 임계치 가드")
+    print("\n[GD-2] grind DB 크기 임계치 가드")
 
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.write(b"x" * (2 * 1024 * 1024))  # 2MB
@@ -110,36 +110,36 @@ def test_db_size_guard():
         os.remove(path)
 
 
-def test_canonical_key_duplicate_cards():
-    print("\n[GD-3] canonical_key — 카드 중복 입력 검증")
+def test_equity_duplicate_cards():
+    print("\n[GD-3] equity_detail — 카드 중복 입력 검증")
     Ah = Card(Rank.ACE, Suit.HEARTS)
     Kd = Card(Rank.KING, Suit.DIAMONDS)
     Qs = Card(Rank.QUEEN, Suit.SPADES)
 
     # 정상 입력은 예외 없음
     try:
-        canonical_key([Ah, Kd], [Qs])
+        equity_detail([Ah, Kd], [Qs, Card(Rank.TWO, Suit.CLUBS), Card(Rank.SEVEN, Suit.HEARTS)], 1, 40)
         check("정상 입력은 통과", True)
     except ValueError as e:
         check("정상 입력은 통과", False, f"예상치 못한 ValueError: {e}")
 
     # 홀카드끼리 중복
     try:
-        canonical_key([Ah, Ah], [])
+        equity_detail([Ah, Ah], [])
         check("홀카드 중복 → ValueError", False)
     except ValueError:
         check("홀카드 중복 → ValueError", True)
 
     # 홀카드-보드 중복
     try:
-        canonical_key([Ah, Kd], [Ah, Qs, Kd])
+        equity_detail([Ah, Kd], [Ah, Qs, Kd])
         check("홀-보드 중복 → ValueError", False)
     except ValueError:
         check("홀-보드 중복 → ValueError", True)
 
     # 보드끼리 중복
     try:
-        canonical_key([Ah, Kd], [Qs, Qs])
+        equity_detail([Ah, Kd], [Qs, Qs])
         check("보드 내부 중복 → ValueError", False)
     except ValueError:
         check("보드 내부 중복 → ValueError", True)
@@ -152,7 +152,7 @@ if __name__ == "__main__":
 
     test_run_all_db_snapshot_guard()
     test_db_size_guard()
-    test_canonical_key_duplicate_cards()
+    test_equity_duplicate_cards()
 
     print(f"\n{'='*50}")
     print(f"  결과: {PASS} 통과 / {FAIL} 실패")

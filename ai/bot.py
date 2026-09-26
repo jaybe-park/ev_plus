@@ -20,24 +20,25 @@ GTO_COMPLIANCE = {
 }
 
 # 난이도별 포스트플랍 프로파일
-# sims: MC 샘플 수 = 판단 해상도. easy는 ±8% 오차로 자연스럽게 실수한다.
+# sims: equity MC 샘플 수 = 판단 해상도(vs 랜덤·레인지 반영 공통). None이면 적응형 MC
+#   (표준오차 ≤ 1%p, ADR 0045). easy만 40으로 고정해 ±8% 오차로 자연스럽게 실수한다(ADR 0014).
+#   리버 1:1 전수조사·프리플랍 상수 테이블은 난이도와 무관하게 smart_equity가 쓴다.
 # call_margin: equity가 (팟오즈 + margin)을 넘어야 콜. 음수면 콜링스테이션 성향.
-# exact_river: 리버 1:1에서 전수조사(정확값) 사용 여부
 POSTFLOP_PROFILES = {
     "easy": {
-        "sims": 40,   "use_cache": False, "exact_river": False, "use_ranges": False,
+        "sims": 40,   "use_ranges": False,
         "call_margin": -0.06, "raise_eq": 0.72, "value_bet_eq": 0.62,
         "semibluff_freq": 0.10, "bluff_freq": 0.04, "trap_freq": 0.05,
         "aggression_margin": 0.0,
     },
     "medium": {
-        "sims": 300,  "use_cache": True,  "exact_river": False, "use_ranges": False,
+        "sims": None, "use_ranges": False,
         "call_margin": 0.0,   "raise_eq": 0.65, "value_bet_eq": 0.55,
         "semibluff_freq": 0.40, "bluff_freq": 0.13, "trap_freq": 0.10,
         "aggression_margin": 0.06,
     },
     "hard": {
-        "sims": 1200, "use_cache": True,  "exact_river": True, "use_ranges": True,
+        "sims": None, "use_ranges": True,
         "call_margin": 0.02,  "raise_eq": 0.62, "value_bet_eq": 0.52,
         "semibluff_freq": 0.55, "bluff_freq": 0.22, "trap_freq": 0.14,
         "aggression_margin": 0.08,
@@ -357,16 +358,12 @@ class PokerBot:
         if prof["use_ranges"]:
             samplers = self._opponent_ranges(state, opponents)
             if samplers and not any(samplers):
-                samplers = None  # 정보 없음 → 캐시 활용 가능한 랜덤 equity
+                samplers = None  # 정보 없음 → 랜덤 핸드 equity
 
         if samplers:
             equity = ranged_equity(hole, community, samplers, prof["sims"])
         else:
-            equity = smart_equity(
-                hole, community, n_opps, prof["sims"],
-                use_cache=prof["use_cache"], contribute=True,
-                exact_river=prof["exact_river"],
-            )
+            equity = smart_equity(hole, community, n_opps, prof["sims"])
         self.last_equity = round(equity, 4)
         made = made_hand_rank(hole, community)
         # 드로우: 지금은 하이카드지만 equity가 살아있는 핸드 (리버 제외)

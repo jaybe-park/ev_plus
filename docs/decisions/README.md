@@ -17,7 +17,7 @@
 | [0011](0011-data-driven-tree-collection.md) | 데이터 기반 트리 수집(가정 금지, ε 분기, 도달확률 best-first) | 유효 | gto-preflop |
 | [0012](0012-collector-operational-safety.md) | 수집 운영 안전장치 — 한도·환경오류·자격증명·지연 | 유효 | gto-preflop |
 | [0013](0013-no-arena-gate-collection-as-routine.md) | 아레나 검증 게이트 폐기, 수집은 운영 루틴 | 유효 | gto-preflop |
-| [0014](0014-difficulty-is-mc-resolution.md) | 봇 난이도 = MC 샘플 수(판단 해상도), 일부러 약하게 코딩하지 않는다 | 유효 | bot |
+| [0014](0014-difficulty-is-mc-resolution.md) | 봇 난이도 = MC 샘플 수(판단 해상도), 일부러 약하게 코딩하지 않는다 | 일부 대체됨 → [0045](0045-equity-precision-1pp-adaptive-mc.md) (샘플 수치·"hard만 리버 전수". "난이도 = 해상도, 일부러 약하게 코딩하지 않는다" 원칙은 유효) | bot |
 | [0015](0015-aggression-margin.md) | 어그레션 마진 — 벳을 받으면 콜 기준을 벳 크기에 비례해 올린다 | 유효 | bot |
 | [0016](0016-bot-validation-arena-legacy.md) | 봇 검증 = 아레나 bb/100 + legacy 베이스라인, 튜닝 결과는 사람이 반영 | 유효 | bot |
 | [0017](0017-equity-canonical-key-exact-protection.md) | equity_cache 키 = 수트 정규화, exact 값은 보호, 레인지 조건부 equity는 저장하지 않는다 | 대체됨 → 0034 | equity |
@@ -34,7 +34,7 @@
 | [0031](0031-bot-hand-archive-human-hand-retain.md) | 봇 전용 핸드는 아카이브 후 삭제, 사람 참여 핸드는 영구 보존 | 유효 | db |
 | [0032](0032-partial-index-only-for-pending-queues.md) | 대기 큐 인덱스는 부분 인덱스로만, 인덱스 삭제 전 EXPLAIN QUERY PLAN 확인 | 대체됨 → 0034 | db |
 | [0033](0033-no-direct-writes-to-shared-db.md) | 공유 운영 DB에 직접 쓰지 않는다 — 스크립트 경유 | 유효 | db |
-| [0034](0034-abolish-equity-cache.md) | 에퀴티 캐시 폐기 — 프리플랍 상수 테이블 + 실시간 계산, 정밀도 목표 ±0.5%p | 유효 | equity |
+| [0034](0034-abolish-equity-cache.md) | 에퀴티 캐시 폐기 — 프리플랍 상수 테이블 + 실시간 계산, 정밀도 목표 ±0.5%p | 일부 대체됨 → [0045](0045-equity-precision-1pp-adaptive-mc.md) (정밀도 목표 ±0.5%p·샘플 수. 캐시 폐기·계산 경로는 유효) | equity |
 | [0035](0035-gto-lookup-sequence-first.md) | GTO 조회는 액션 순서 키 먼저, 간단 라벨은 "근사" 예비 | 유효 | gto-preflop |
 | [0036](0036-moving-button.md) | 파산으로 좌석이 빠질 때는 무빙 버튼 | 유효 | game |
 | [0037](0037-allin-only-snaps-to-allin-sibling.md) | 라이브 올인은 올인 형제에만 스냅한다(레이즈 형제와 구분) | 유효 | gto-preflop |
@@ -45,3 +45,4 @@
 | [0042](0042-drop-grader-stage2.md) | Play Grader 2단계(GTO Wizard EV값 수집) 폐기 | 유효 | bot |
 | [0043](0043-restore-session-on-reload.md) | 새로고침하면 진행 중인 게임을 이어간다(서버 재시작은 복구하지 않음) | 유효 | game |
 | [0044](0044-node-row-key-is-action-seq.md) | 노드 행의 유일 키는 action_seq 하나, 3종 키는 action_seq에서 유도 | 유효 | gto-preflop |
+| [0045](0045-equity-precision-1pp-adaptive-mc.md) | 에퀴티 정밀도 목표 ±1%p(1σ) — vs 랜덤·레인지 반영 모두 적응형 MC(500~2,500샘플), easy만 고정 40 | 유효 | equity |
