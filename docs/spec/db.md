@@ -64,7 +64,7 @@
 
 ## 알려진 한계
 
-- `equity_cache`가 행 수 기준 전체의 대다수를 차지하며 파일 전체가 이미 수 GB대다. 정리·분리 우선순위는 실측 후 결정 예정(TODO E-1), 성장 상한 여부는 미결(DECISIONS D-12).
+- `equity_cache`가 파일 15GB 중 12.7GB(테이블 8.5GB + UNIQUE 인덱스 4.2GB), freelist 0이라 행을 지워도 `VACUUM INTO` 없이는 줄지 않는다 — D-23, D-15, T-036
 - 봇 핸드 아카이브(내보내기 후 삭제)는 설계만 있고 미구현.
 - 공유 운영 DB에 대한 수동 CLI 쓰기를 막는 장치가 없다(사람이 직접 `sqlite3 poker.db`로 `DELETE`/`UPDATE`/`DROP` 등을 실행한 이력 있음, 모두 의도된 작업이었음) — TODO 후보.
 - 인덱스 삭제가 숨은 풀스캔을 유발한 사고가 2회 있었고, 이를 막는 자동 검증(`EXPLAIN QUERY PLAN` 회귀 테스트)은 아직 없다.
