@@ -46,3 +46,4 @@
 | [0043](0043-restore-session-on-reload.md) | 새로고침하면 진행 중인 게임을 이어간다(서버 재시작은 복구하지 않음) | 유효 | game |
 | [0044](0044-node-row-key-is-action-seq.md) | 노드 행의 유일 키는 action_seq 하나, 3종 키는 action_seq에서 유도 | 유효 | gto-preflop |
 | [0045](0045-equity-precision-1pp-adaptive-mc.md) | 에퀴티 정밀도 목표 ±1%p(1σ) — vs 랜덤·레인지 반영 모두 적응형 MC(500~2,500샘플), easy만 고정 40 | 유효 | equity |
+| [0046](0046-limp-nodes-are-vs-limp-not-open.md) | 림프 노드는 range_type='vs_limp'로 저장한다(open/RFI 아님) | 유효 | gto-preflop |

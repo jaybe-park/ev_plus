@@ -84,7 +84,10 @@ def derive_node_meta(node_key: str) -> Optional[dict]:
 
     베팅 순서로 히어로(다음 행동 좌석)와 레이저 포지션들을 유도한다.
     결정 노드가 아니면(베팅 종료) None. 라벨 규칙:
-      open      → "{H} RFI"                       (vs_position=None)
+      open      → "{H} RFI"                       (vs_position=None, 레이즈 0회 + 콜 없음)
+      vs_limp   → "{H} vs {limper(s)} limp"        (vs_position="limper" 또는 "limper1/limper2",
+                                                     레이즈 0회 + 콜(림프) 1회 이상 — T-016,
+                                                     레이즈 전 콜은 항상 림프다)
       vs_open   → "{H} vs {opener} open"          (vs_position="opener")
       vs_3bet   → "{H} vs {3bettor} 3bet"         (vs_position="opener/3bettor")
       vs_Nbet   → "{H} vs {last} Nbet"            (vs_position="opener/…/last")
@@ -103,6 +106,17 @@ def derive_node_meta(node_key: str) -> Optional[dict]:
     n = len(raisers)
 
     if n == 0:
+        # 레이즈 전 콜은 항상 림프(블라인드에 그냥 맞추는 콜) — 레이저가 없으므로
+        # 여기 등장하는 모든 "C" 토큰은 림프다.
+        limpers = [
+            POSITIONS[actor_per_token[i]]
+            for i, t in enumerate(tokens)
+            if t == "C" and actor_per_token[i] is not None
+        ]
+        if limpers:
+            vs = "/".join(limpers)
+            return {"hero_position": hero, "vs_position": vs, "range_type": "vs_limp",
+                    "situation_label": f"{hero} vs {vs} limp"}
         return {"hero_position": hero, "vs_position": None, "range_type": "open",
                 "situation_label": f"{hero} RFI"}
     if n == 1:

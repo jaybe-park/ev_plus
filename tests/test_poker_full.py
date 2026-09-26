@@ -1826,6 +1826,44 @@ def test_7_14_migration_v13_preserves_data():
         assert "action_seq" in str(e), e
 
 
+def test_7_15_migration_v14_relabels_limp_nodes():
+    """T-016: 옛 derive_node_meta가 림프 노드를 'open'/"{H} RFI"로 잘못 저장한 기존
+    행(예: 운영 DB id 17, action_seq="F-F-F-F-C")을 v14 마이그레이션이 'vs_limp'/
+    "BB vs SB limp"로 재라벨링한다. range_type='open'인데 실제로 콜(림프) 없는
+    진짜 RFI 행은 손대지 않는다. 핸드 데이터는 그대로 보존된다."""
+    from db.connection import get_connection
+    from db.schema import SCHEMA_VERSION
+    rows = [
+        # 운영 DB id 17과 같은 모양의 버그 행: SB 림프 후 BB인데 'open'/"BB RFI"로 저장됨.
+        (17, "BB", None, "open", None, "BB RFI", "F-F-F-F-C", "BB", 2),
+        # 진짜 RFI(콜 없음) — 재라벨 대상 아님.
+        (1, "UTG", None, "open", 2.5, "UTG RFI", "", "UTG", 6),
+    ]
+    hands = [(1, 17, "AA", 0, 1.0, 0, 0), (2, 1, "AA", 0, 0, 1.0, 0)]
+    path = _make_v12_db(rows, hands)
+    conn = get_connection(path)
+    try:
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+        limp = conn.execute(
+            "SELECT vs_position, range_type, situation_label FROM gto_preflop_situations WHERE id=17"
+        ).fetchone()
+        assert (limp["vs_position"], limp["range_type"], limp["situation_label"]) == (
+            "SB", "vs_limp", "BB vs SB limp"
+        ), dict(limp)
+        rfi = conn.execute(
+            "SELECT vs_position, range_type, situation_label FROM gto_preflop_situations WHERE id=1"
+        ).fetchone()
+        assert (rfi["vs_position"], rfi["range_type"], rfi["situation_label"]) == (
+            None, "open", "UTG RFI"
+        ), dict(rfi)
+        # 핸드 데이터 보존
+        got_hands = [tuple(r) for r in conn.execute(
+            "SELECT * FROM gto_preflop_hands ORDER BY id")]
+        assert got_hands == [tuple(h) for h in hands], got_hands
+    finally:
+        conn.close()
+
+
 # ═════════════════════════════════════════════════════════════
 # 영역 8 — 세션 경로 룰 (WebGameSession 실제 실행 경로)
 #   core 헬퍼(_betting_order, apply_action)만 부르는 테스트는 웹 경로의 버그를
@@ -2758,6 +2796,7 @@ ALL_TESTS = [
     ("7-12 헤즈업 팟에 콜러 노드 안 줌(T-001)",    test_7_12_headsup_pot_not_given_caller_node),
     ("7-13 헤즈업은 UTG 트리로 스냅 안 됨(T-001)", test_7_13_headsup_not_snapped_to_utg_tree),
     ("7-14 v13 마이그레이션 데이터 보존(T-001)",   test_7_14_migration_v13_preserves_data),
+    ("7-15 v14 마이그레이션 림프 노드 재라벨(T-016)", test_7_15_migration_v14_relabels_limp_nodes),
     # 영역 8 — 세션 경로 룰
     ("8-1  next_hand 연타 → 한 핸드만, 칩 보존",  test_8_1_next_hand_double_call_keeps_chips),
     ("8-2  핸드 중 next_hand 무시",              test_8_2_next_hand_during_hand_ignored),

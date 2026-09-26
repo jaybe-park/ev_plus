@@ -96,7 +96,7 @@ def test_replay_terminal_nodes():
 
 
 # [T-4] G10 — derive_node_meta: 노드 키 → 라벨/3종 키 결정론적 유도
-# (RFI, vs_open, squeeze/vs_3bet, vs_4bet. 림프 케이스는 결정 보류로 스킵)
+# (RFI, vs_limp, vs_open, squeeze/vs_3bet, vs_4bet)
 def test_derive_node_meta_labels():
     for key, expected, label in [
         ("", {"hero_position": "UTG", "vs_position": None, "range_type": "open",
@@ -109,6 +109,16 @@ def test_derive_node_meta_labels():
         ("R2.5-R8-R20", {"hero_position": "BTN", "vs_position": "UTG/HJ/CO",
                          "range_type": "vs_4bet", "situation_label": "BTN vs CO 4bet"},
          "vs_4bet(R2.5-R8-R20) → BTN vs CO 4bet"),
+        # T-016: 레이즈 0회 + 콜(림프) 있음 → vs_limp("open"/"BB RFI"로 저장하지 않는다)
+        ("F-F-F-F-C", {"hero_position": "BB", "vs_position": "SB", "range_type": "vs_limp",
+                       "situation_label": "BB vs SB limp"},
+         "림프(F-F-F-F-C, SB 림프 후 BB) → BB vs SB limp(BB RFI 아님)"),
+        ("C-C-F-F-F", {"hero_position": "BB", "vs_position": "UTG/HJ", "range_type": "vs_limp",
+                       "situation_label": "BB vs UTG/HJ limp"},
+         "멀티 림프(C-C-F-F-F, UTG·HJ 림프 후 BB) → BB vs UTG/HJ limp"),
+        ("C", {"hero_position": "HJ", "vs_position": "UTG", "range_type": "vs_limp",
+              "situation_label": "HJ vs UTG limp"},
+         "림프 후 BB 아닌 다음 좌석도 vs_limp(C, UTG 림프 후 HJ) → HJ vs UTG limp"),
     ]:
         actual = ct.derive_node_meta(key)
         check(label, actual == expected, f"={actual}")
