@@ -2,8 +2,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import threading
+import time
 import uuid
-from typing import Dict
+from typing import Dict, List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +28,60 @@ app.add_middleware(
 
 sessions: Dict[str, WebGameSession] = {}
 
+# 세션 정리(T-028): 세션은 메모리에만 있으므로 오래 안 쓴 세션·개수 초과분을 지운다.
+# 지워진 세션에 대한 요청은 404 → 프론트가 "세션 만료 — 새 게임" 안내를 띄운다.
+SESSION_TTL_SEC = 24 * 3600      # 마지막 요청 후 24시간 지나면 만료
+MAX_SESSIONS = 20                # 넘으면 가장 오래 안 쓴 세션부터 정리
+_sessions_lock = threading.Lock()
+_last_seen: Dict[str, float] = {}
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _prune_sessions(now: Optional[float] = None, keep: Optional[str] = None) -> List[str]:
+    """만료(TTL)·개수 초과 세션을 지우고 지운 ID 목록을 돌려준다. keep은 지우지 않는다.
+    _last_seen에 없는 세션(직접 등록된 것)은 지금 본 것으로 친다."""
+    now = _now() if now is None else now
+    with _sessions_lock:
+        for sid in sessions:
+            _last_seen.setdefault(sid, now)
+        for sid in [s for s in _last_seen if s not in sessions]:
+            _last_seen.pop(sid, None)
+        doomed = [sid for sid, t in _last_seen.items()
+                  if sid != keep and now - t > SESSION_TTL_SEC]
+        alive = sorted((t, sid) for sid, t in _last_seen.items()
+                       if sid not in doomed and sid != keep)
+        overflow = len(alive) + (1 if keep in sessions else 0) - MAX_SESSIONS
+        if overflow > 0:
+            doomed += [sid for _, sid in alive[:overflow]]
+        for sid in doomed:
+            sessions.pop(sid, None)
+            _last_seen.pop(sid, None)
+    return doomed
+
+
+def _register_session(session_id: str, session: WebGameSession) -> None:
+    with _sessions_lock:
+        sessions[session_id] = session
+        _last_seen[session_id] = _now()
+    _prune_sessions(keep=session_id)
+
+
+def _get_session(session_id: str) -> WebGameSession:
+    _prune_sessions()
+    with _sessions_lock:
+        session = sessions.get(session_id)
+        if session:
+            _last_seen[session_id] = _now()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    return session
+
+
+# 게임 엔드포인트는 동기 def라 FastAPI 스레드풀에서 동시에 돈다. 같은 세션에 대한 요청은
+# session.lock으로 직렬화하고, 이벤트는 그 요청이 만든 것만 응답에 싣는다(T-026).
 
 @app.post("/game/start", response_model=GameStateResponse)
 def start_game(req: StartGameRequest):
@@ -36,50 +92,48 @@ def start_game(req: StartGameRequest):
         chips=req.chips,
         num_bots=req.num_bots,
         difficulty=req.difficulty,
-        small_blind=req.big_blind // 2,  # BB 입력 → SB = BB / 2
+        small_blind=req.big_blind // 2,  # BB 입력(짝수 검증됨) → SB = BB / 2
     )
-    sessions[session_id] = session
-    return session.get_state()
+    # 첫 상태 계산까지 성공한 세션만 등록한다 — 도중에 실패하면 목록에 남지 않는다(T-027)
+    state = session.get_state(session.start_events)
+    _register_session(session_id, session)
+    return state
 
 
 @app.get("/game/{session_id}/state", response_model=GameStateResponse)
 def get_state(session_id: str):
-    session = sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-    return session.get_state()
+    """현재 상태 조회. 봇 차례에 멈춘 세션(요청 중간 오류의 흔적)이면 사람 차례까지
+    진행해 복구하고 그 이벤트를 싣는다. 정상 세션이면 상태를 바꾸지 않는다(events=[])."""
+    session = _get_session(session_id)
+    with session.lock:
+        return session.get_state(session.recover())
 
 
 @app.post("/game/{session_id}/action", response_model=GameStateResponse)
 def submit_action(session_id: str, req: ActionRequest):
-    session = sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-    try:
-        session.submit_action(req.action, req.amount)
-    except IllegalActionError as e:
-        # 불법 액션은 상태를 바꾸지 않고 거절한다(기록·방송·평가 없음)
-        raise HTTPException(status_code=400, detail=str(e))
-    return session.get_state()
+    session = _get_session(session_id)
+    with session.lock:
+        try:
+            events = session.submit_action(req.action, req.amount)
+        except IllegalActionError as e:
+            # 불법 액션은 상태를 바꾸지 않고 거절한다(기록·방송·평가 없음)
+            raise HTTPException(status_code=400, detail=str(e))
+        return session.get_state(events)
 
 
 @app.post("/game/{session_id}/next-hand", response_model=GameStateResponse)
 def next_hand(session_id: str):
-    session = sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-    session.next_hand()
-    return session.get_state()
+    session = _get_session(session_id)
+    with session.lock:
+        return session.get_state(session.next_hand())
 
 
 @app.get("/session/{session_id}/review", response_model=SessionReviewResponse)
 def get_session_review(session_id: str):
     """세션 전체 누적 플레이 평가 요약."""
-    session = sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-
-    reviews = session.session_reviews
+    session = _get_session(session_id)
+    with session.lock:
+        reviews = list(session.session_reviews)
     total_actions = len(reviews)
 
     grade_counts: Dict[str, int] = {}
@@ -313,4 +367,7 @@ if os.path.isdir(web_dist):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server.main:app", host="0.0.0.0", port=8765, reload=True)
+    # 서버 코드 디렉터리만 감시 — tests/·scripts/·docs 수정으로 재시작돼 게임이 사라지지 않게(T-028, dev.sh와 동일)
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    uvicorn.run("server.main:app", host="0.0.0.0", port=8765, reload=True,
+                reload_dirs=[os.path.join(_root, d) for d in ("server", "core", "ai", "gto", "db")])

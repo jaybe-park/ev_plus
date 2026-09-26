@@ -1,18 +1,84 @@
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
+from typing import Optional, List, Dict, Any, Literal
+
+# 게임 설정 한계 (T-027). 위반 시 422 — detail[].msg는 설정 화면에 그대로 보이는 한국어 안내.
+MIN_BIG_BLIND = 2            # SB = BB/2 가 1 이상이어야 한다
+MIN_STACK_IN_BB = 10         # 시작 칩 ≥ BB × 10 (블라인드 몇 번에 파산하는 게임 방지)
+MAX_CHIPS = 10_000_000
+MAX_BOTS = 5                 # 봇 이름·페르소나가 5개
+MAX_NAME_LEN = 20
+BOT_NAME_PREFIX = "🤖"       # 봇 이름 접두사 — 사람 이름과 겹치면 이름 기준 좌석·버튼이 깨진다
+
+
+def _invalid(code: str, msg: str) -> PydanticCustomError:
+    # PydanticCustomError는 msg를 접두사("Value error, ") 없이 그대로 내보낸다
+    return PydanticCustomError(code, msg)
 
 
 class StartGameRequest(BaseModel):
-    player_name: str = "Player"
-    chips: int = 1000
-    num_bots: int = 5
-    difficulty: str = "medium"  # easy / medium / hard
-    big_blind: int = 10
+    player_name: str = Field("Player", description=f"1~{MAX_NAME_LEN}자, '{BOT_NAME_PREFIX}'로 시작 불가")
+    chips: int = Field(1000, description=f"시작 칩, BB×{MIN_STACK_IN_BB} 이상 {MAX_CHIPS:,} 이하")
+    num_bots: int = Field(5, description=f"봇 수 1~{MAX_BOTS}")
+    difficulty: str = Field("medium", description="easy / medium / hard")
+    big_blind: int = Field(10, description=f"{MIN_BIG_BLIND} 이상 짝수(SB = BB/2)")
+
+    @field_validator("player_name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise _invalid("name_empty", "플레이어 이름을 입력하세요.")
+        if len(v) > MAX_NAME_LEN:
+            raise _invalid("name_long", f"플레이어 이름은 {MAX_NAME_LEN}자 이하여야 합니다.")
+        if v.startswith(BOT_NAME_PREFIX):
+            raise _invalid("name_bot", f"플레이어 이름은 '{BOT_NAME_PREFIX}'로 시작할 수 없습니다(봇 이름과 겹침).")
+        return v
+
+    @field_validator("num_bots")
+    @classmethod
+    def _check_bots(cls, v: int) -> int:
+        if not 1 <= v <= MAX_BOTS:
+            raise _invalid("num_bots", f"AI 봇 수는 1~{MAX_BOTS}명이어야 합니다.")
+        return v
+
+    @field_validator("difficulty")
+    @classmethod
+    def _check_difficulty(cls, v: str) -> str:
+        if v not in ("easy", "medium", "hard"):
+            raise _invalid("difficulty", "난이도는 easy / medium / hard 중 하나여야 합니다.")
+        return v
+
+    @field_validator("big_blind")
+    @classmethod
+    def _check_bb(cls, v: int) -> int:
+        if v < MIN_BIG_BLIND:
+            raise _invalid("bb_small", f"빅 블라인드는 {MIN_BIG_BLIND} 이상이어야 합니다(스몰 블라인드 = BB/2).")
+        if v % 2:
+            raise _invalid("bb_odd", "빅 블라인드는 짝수여야 합니다(스몰 블라인드 = BB/2).")
+        return v
+
+    @field_validator("chips")
+    @classmethod
+    def _check_chips(cls, v: int) -> int:
+        if v <= 0:
+            raise _invalid("chips_nonpositive", "시작 칩은 1 이상이어야 합니다.")
+        if v > MAX_CHIPS:
+            raise _invalid("chips_large", f"시작 칩은 {MAX_CHIPS:,} 이하여야 합니다.")
+        return v
+
+    @model_validator(mode="after")
+    def _check_stack_depth(self):
+        if self.chips < self.big_blind * MIN_STACK_IN_BB:
+            raise _invalid(
+                "chips_shallow",
+                f"시작 칩은 빅 블라인드의 {MIN_STACK_IN_BB}배({self.big_blind * MIN_STACK_IN_BB}) 이상이어야 합니다.")
+        return self
 
 
 class ActionRequest(BaseModel):
-    action: str   # fold / check / call / raise / allin
-    amount: int = 0
+    action: Literal["fold", "check", "call", "raise", "allin"]
+    amount: int = Field(0, ge=0)
 
 
 class PlayerState(BaseModel):

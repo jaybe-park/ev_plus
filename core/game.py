@@ -56,6 +56,8 @@ class TexasHoldem:
         if len(players) < 2:
             raise ValueError("최소 2명의 플레이어가 필요합니다.")
         self.players = players
+        # 고정 좌석 순서(이름). 파산으로 players에서 빠져도 이 순서는 유지된다 — 무빙 버튼 기준
+        self.seat_names: List[str] = [p.name for p in players]
         self.small_blind = small_blind
         self.big_blind = big_blind
 
@@ -159,7 +161,8 @@ class TexasHoldem:
         for w in winners:
             w.chips += share
         if remainder and winners:
-            winners[0].chips += remainder  # 나머지는 딜러 왼쪽 플레이어에게
+            # 나머지는 버튼 왼쪽부터 돌아 처음 만나는 승자에게
+            self.order_from_button_left(winners)[0].chips += remainder
 
         showdown_info = {p.name: str(evaluations[p.name]) for p in contenders}
         self._emit("showdown", {
@@ -421,6 +424,34 @@ class TexasHoldem:
 
     def _advance_dealer(self):
         self.dealer_index = (self.dealer_index + 1) % len(self.players)
+
+    def seat_for_next_hand(self, prev_button: Optional[str]) -> None:
+        """다음 핸드 좌석 정리: 칩 0 이하 플레이어 제거 + 무빙 버튼(ADR 0036).
+
+        버튼 = 고정 좌석 순서(seat_names)에서 직전 버튼 보유자(prev_button, 이름) 다음의
+        살아 있는 사람. SB·BB는 그 뒤 두 명(헤즈업은 버튼 = SB). prev_button이 None이면
+        (첫 핸드) dealer_index를 그대로 쓴다. 인덱스가 아니라 이름으로 찾으므로 버튼 앞
+        좌석이 빠져도 버튼이 한 칸 더 건너뛰지 않는다. 생존자가 2명 미만이면 버튼은 그대로."""
+        self.players = [p for p in self.players if p.chips > 0]
+        if len(self.players) < 2:
+            return
+        if prev_button is None or prev_button not in self.seat_names:
+            self.dealer_index %= len(self.players)
+            return
+        index_of = {p.name: i for i, p in enumerate(self.players)}
+        start = self.seat_names.index(prev_button)
+        n = len(self.seat_names)
+        for k in range(1, n + 1):
+            name = self.seat_names[(start + k) % n]
+            if name in index_of:
+                self.dealer_index = index_of[name]
+                return
+
+    def order_from_button_left(self, players: List[Player]) -> List[Player]:
+        """players를 버튼 왼쪽(SB 자리)부터 시계 방향 순서로 정렬(홀수 칩 수령 순서)."""
+        n = len(self.players)
+        idx = {p.name: i for i, p in enumerate(self.players)}
+        return sorted(players, key=lambda p: (idx[p.name] - self.dealer_index - 1) % n)
 
     def _emit(self, event_type: str, data: dict):
         event = GameEvent(event_type, data)

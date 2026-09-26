@@ -9,6 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import logging
+import threading
 from typing import List, Optional, Dict
 
 from core.game import TexasHoldem, Action, Street, IllegalActionError
@@ -83,6 +84,9 @@ class WebGameSession:
         self.street_index: int = 0
 
         # 핸드/게임 상태
+        # 버튼 보유자는 인덱스가 아니라 이름으로 기억한다(파산으로 좌석이 빠져도 안전).
+        # None이면 다음 핸드는 game.dealer_index를 그대로 버튼으로 쓴다(첫 핸드).
+        self._button_name: Optional[str] = None
         self.hand_number: int = 0
         self.hand_over: bool = False
         self.game_over: bool = False
@@ -90,18 +94,28 @@ class WebGameSession:
         self.showdown_hands: Dict[str, str] = {}
         self.action_log: List[str] = []
 
-        # 애니메이션 이벤트 큐
+        # 애니메이션 이벤트 버퍼 — 공개 변경 메서드 한 번(요청 하나) 동안만 쓰고, 그 메서드의
+        # 반환값으로 넘긴 뒤 비운다. get_state()는 이 버퍼를 읽지도 비우지도 않는다(T-026).
         self._events: List[dict] = []
 
+        # 같은 세션에 대한 동시 요청 직렬화용(엔드포인트가 with session.lock: 으로 감싼다).
+        # FastAPI 동기 def 엔드포인트는 스레드풀에서 동시에 돈다(T-026).
+        self.lock = threading.RLock()
+
         self._start_new_hand()
+        # 생성자가 진행한 첫 핸드의 이벤트(POST /game/start 응답용)
+        self.start_events: List[dict] = self._take_events()
 
     # ──────────────────────────────────────────
     # 공개 API
+    #   상태를 바꾸는 메서드는 그 호출에서 새로 생긴 이벤트 목록을 반환한다.
+    #   get_state(events)는 순수 조회 — 이벤트는 호출자가 넘긴 것을 그대로 싣는다.
     # ──────────────────────────────────────────
 
-    def submit_action(self, action_str: str, amount: int) -> None:
+    def submit_action(self, action_str: str, amount: int) -> List[dict]:
+        """사람 액션 적용 → 봇 자동 진행. 새로 생긴 이벤트를 반환(무시된 요청은 [])."""
         if self.hand_over or self.game_over:
-            return
+            return []
 
         action_map = {
             "fold": Action.FOLD,
@@ -112,28 +126,53 @@ class WebGameSession:
         }
         action = action_map.get(action_str)
         if action is None:
-            return
+            return []
 
         player = self._next_to_act()
         if player is None or not player.is_human:
-            return
+            return []
 
         # 사람의 불법 액션은 상태를 바꾸기 전에 거절한다(API는 400으로 응답).
         self.game.normalize_action(player, action, amount, self._can_raise(player))
 
-        self._events = []  # 새 액션마다 이벤트 초기화
+        self._events = []  # 이전 요청이 중간에 실패했어도 그 이벤트를 다시 내보내지 않는다
         self._apply(player, action, amount)
         self._run_until_human()
+        return self._take_events()
 
-    def next_hand(self) -> None:
+    def next_hand(self) -> List[dict]:
+        """hand_over일 때만 새 핸드 시작. 새로 생긴 이벤트를 반환(무시된 요청은 [])."""
         # 핸드 진행 중(hand_over=False) 호출은 무시한다. 가드가 없으면 팟에 들어간 칩이
         # _reset_hand()로 사라진다("다음 핸드" 연타·중복 요청 — T-025).
         if self.game_over or not self.hand_over:
-            return
+            return []
         self._events = []
         self._start_new_hand()
+        return self._take_events()
 
-    def get_state(self) -> dict:
+    def needs_recovery(self) -> bool:
+        """핸드 진행 중인데 사람 차례가 아닌 채로 멈춰 있는가(요청 중간 예외의 흔적)."""
+        if self.hand_over or self.game_over:
+            return False
+        p = self._next_to_act()
+        return p is None or not p.is_human
+
+    def recover(self) -> List[dict]:
+        """봇 차례(또는 스트리트 전환 직전)에 멈춘 세션을 사람 차례·핸드 종료까지 진행한다.
+        정상 상태(사람 차례·핸드 종료)면 아무것도 하지 않고 []. GET state가 호출한다."""
+        if not self.needs_recovery():
+            return []
+        logger.warning("세션 %s: 봇 차례에 멈춘 상태를 복구합니다", self.session_id)
+        self._events = []
+        self._run_until_human()
+        return self._take_events()
+
+    def _take_events(self) -> List[dict]:
+        events, self._events = self._events, []
+        return events
+
+    def get_state(self, events: Optional[List[dict]] = None) -> dict:
+        """현재 상태 조회(이벤트 큐를 건드리지 않는다). events: 이 응답에 실을 이벤트."""
         positions = self.game.get_positions()
         next_player = self._next_to_act() if not self.hand_over else None
         waiting = next_player is not None and next_player.is_human
@@ -167,10 +206,6 @@ class WebGameSession:
                 "hole_cards": [str(c) for c in p.hole_cards] if reveal else None,
             })
 
-        # 이벤트를 반환하고 초기화 (한 번만 소비)
-        events = list(self._events)
-        self._events = []
-
         return {
             "session_id": self.session_id,
             "hand_number": self.hand_number,
@@ -192,7 +227,7 @@ class WebGameSession:
             "call_amount": call_amount,
             "min_raise_to": min_raise_to,
             "can_raise": can_raise,
-            "events": events,
+            "events": list(events or []),
             "equity": self._get_equity_info() if (waiting and self.equity_enabled) else None,
             "hand_review": self.hand_reviews if self.hand_over else None,
         }
@@ -220,12 +255,12 @@ class WebGameSession:
         self._equity_history_streets = set()
         self.hand_reviews = []
 
-        # 파산 플레이어 제거
-        self.game.players = [p for p in self.game.players if p.chips > 0]
+        # 파산 플레이어 제거 + 무빙 버튼(직전 버튼 다음 생존자, ADR 0036)
+        self.game.seat_for_next_hand(self._button_name)
         if len(self.game.players) < 2 or self.human not in self.game.players:
             self.game_over = True
             return
-        self.game.dealer_index = self.game.dealer_index % len(self.game.players)
+        self._button_name = self.game.players[self.game.dealer_index].name
 
         self.hand_number += 1
         self._hand_start_chips = {p.name: p.chips for p in self.game.players}
@@ -414,14 +449,27 @@ class WebGameSession:
                 return
             if player.is_human:
                 return
-            bot = self.bots.get(player.name)
-            if bot:
-                gs = self.game._get_game_state()
-                gs["action_log"] = self.action_log  # 봇이 레이즈 횟수 파악에 사용
-                action, amount = bot.decide_action(gs)
-                self._apply(player, action, amount)
-            else:
-                self._apply(player, Action.CHECK, 0)
+            action, amount = self._bot_decision(player)
+            self._apply(player, action, amount)
+
+    def _bot_decision(self, player: Player):
+        """봇 결정. 판단 중 예외가 나면 로그를 남기고 core의 안전 폴백(콜할 금액이 없으면
+        체크, 있으면 폴드)으로 대신해 게임을 계속 진행한다(T-026)."""
+        bot = self.bots.get(player.name)
+        if bot is None:
+            return self.game.fallback_action(player, Action.CHECK), 0
+        try:
+            gs = self.game._get_game_state()
+            gs["action_log"] = self.action_log  # 봇이 레이즈 횟수 파악에 사용
+            action, amount = bot.decide_action(gs)
+            if not isinstance(action, Action):
+                raise TypeError(f"봇이 Action이 아닌 값을 반환: {action!r}")
+            return action, int(amount or 0)
+        except Exception:
+            safe = self.game.fallback_action(player, Action.CHECK)
+            logger.exception("봇 판단 오류: %s → 안전 폴백 %s (세션 %s)",
+                             player.name, safe.value, self.session_id)
+            return safe, 0
 
     def _advance_street(self) -> None:
         if self.game._count_active() <= 1 or self.street_index >= 3:
@@ -519,7 +567,6 @@ class WebGameSession:
             contenders = [p for p in contenders if len(p.hole_cards) >= 2]
             if not contenders:
                 self.game.pot = 0
-                self.game._advance_dealer()
                 self.hand_over = True
                 return
 
@@ -551,7 +598,8 @@ class WebGameSession:
                     if len(eligible) > 1:
                         all_winners.add(w.name)
                 if remainder:
-                    pot_winners[0].chips += remainder
+                    # 홀수 칩은 버튼 왼쪽부터 돌아 처음 만나는 승자에게
+                    self.game.order_from_button_left(pot_winners)[0].chips += remainder
 
             self.winners = list(all_winners)
             self.showdown_hands = {p.name: str(evals[p.name]) for p in contenders}
@@ -586,8 +634,9 @@ class WebGameSession:
         # 세션 전체 누적 (요약 API용) — 이번 핸드 평가를 합산
         self.session_reviews.extend(self.hand_reviews)
 
+        # 딜러 이동은 다음 핸드 시작 시점(_start_new_hand)에 한다 — 핸드 종료 응답의
+        # 포지션 라벨이 방금 친 핸드 기준으로 남는다(ADR 0036).
         self.game.pot = 0
-        self.game._advance_dealer()
         self.hand_over = True
 
         if self.human.chips <= 0 or sum(1 for p in self.game.players if p.chips > 0) < 2:

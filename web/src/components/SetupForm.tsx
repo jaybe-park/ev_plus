@@ -3,9 +3,14 @@ import type { SetupConfig } from "../types";
 
 interface Props {
   onStart: (config: SetupConfig) => void;
+  // 서버가 설정을 거절한 이유(422 detail을 formatApiError로 평탄화한 문장) — T-027
+  error?: string | null;
+  loading?: boolean;
+  // 새로고침했는데 이전 세션이 서버에서 사라진 경우의 안내(T-028, ADR 0043)
+  notice?: string | null;
 }
 
-export default function SetupForm({ onStart }: Props) {
+export default function SetupForm({ onStart, error = null, loading = false, notice = null }: Props) {
   const [form, setForm] = useState<SetupConfig>({
     player_name: "Player",
     chips: 1000,
@@ -24,6 +29,15 @@ export default function SetupForm({ onStart }: Props) {
           ♠ Texas Hold'em
         </h1>
         <p className="text-gray-400 text-center mb-8 text-sm">게임 설정</p>
+
+        {notice && (
+          <div
+            role="status"
+            className="mb-6 rounded-lg border border-amber-700 bg-amber-900/50 px-3 py-2 text-sm text-amber-200"
+          >
+            {notice}
+          </div>
+        )}
 
         <div className="space-y-5">
           <Field label="플레이어 이름">
@@ -79,16 +93,26 @@ export default function SetupForm({ onStart }: Props) {
               type="number"
               className="input"
               value={form.big_blind}
-              min={1}
-              step={5}
+              min={2}
+              step={2}
               onChange={(e) => set("big_blind", Number(e.target.value))}
             />
           </Field>
         </div>
 
+        {error && (
+          <div
+            role="alert"
+            className="mt-6 rounded-lg border border-red-700 bg-red-900/60 px-3 py-2 text-sm text-red-200"
+          >
+            게임을 만들 수 없습니다 — {error}
+          </div>
+        )}
+
         <button
           onClick={() => onStart(form)}
-          className="w-full mt-8 py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl text-lg transition-colors shadow-lg"
+          disabled={loading}
+          className="w-full mt-8 py-3 bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl text-lg transition-colors shadow-lg"
         >
           게임 시작
         </button>
