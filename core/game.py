@@ -340,9 +340,13 @@ class TexasHoldem:
         return player.name not in acted
 
     def _is_round_over(self, acted: set) -> bool:
-        """모든 액티브 플레이어가 액션했고 베팅액이 균등하면 True"""
+        """모든 액티브 플레이어가 액션했고 베팅액이 균등하면 True.
+        행동 가능한(폴드·올인 아닌) 플레이어가 1명뿐이고 그가 콜할 금액이 없으면 더 물을
+        상대가 없으므로 True(런아웃). 웹 세션도 이 함수를 쓴다."""
         active = [p for p in self.players if not p.is_folded and not p.is_all_in]
         if not active:
+            return True
+        if len(active) == 1 and active[0].current_bet >= self.current_bet:
             return True
         return all(p.name in acted and p.current_bet == self.current_bet for p in active)
 

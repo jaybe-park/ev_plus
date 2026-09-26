@@ -298,13 +298,8 @@ class WebGameSession:
         return self.game.raise_allowed(player, self._acted)
 
     def _is_round_over(self) -> bool:
-        active = [p for p in self.game.players if not p.is_folded and not p.is_all_in]
-        if not active:
-            return True
-        return all(
-            p.name in self._acted and p.current_bet == self.game.current_bet
-            for p in active
-        )
+        # core 규칙 그대로(행동 가능 1명 + 콜할 금액 없음 → 라운드 종료, 런아웃 포함)
+        return self.game._is_round_over(self._acted)
 
     def _next_to_act(self) -> Optional[Player]:
         n = len(self._order)
@@ -420,13 +415,6 @@ class WebGameSession:
                 self._advance_street()
                 return
             if player.is_human:
-                # 모든 상대가 올인 + 베팅 없음 → 자동 체크 (런아웃)
-                opponents = [p for p in self.game.players if not p.is_human and not p.is_folded]
-                all_opponents_allin = bool(opponents) and all(p.is_all_in for p in opponents)
-                no_bet_to_call = self.game.current_bet <= self.human.current_bet
-                if all_opponents_allin and no_bet_to_call:
-                    self._apply(player, Action.CHECK, 0)
-                    continue
                 return
             bot = self.bots.get(player.name)
             if bot:

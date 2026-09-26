@@ -1728,6 +1728,39 @@ def test_8_9_raise_over_stack_becomes_allin():
         assert call["chips_after"] == 700, f"{name}은 300까지만 콜해야 함: {call}"
 
 
+def test_8_13_runout_when_one_player_can_act():
+    """T-023: 행동 가능한 사람이 1명이고 콜할 금액이 없으면 남은 카드가 바로 깔린다
+    (남은 봇·사람에게 스트리트마다 액션을 묻지 않음)."""
+    # ① 사람(BTN/SB, 500) 프리플랍 올인 → 봇(1000) 콜 → 봇만 칩이 남아도 액션 없이 쇼다운
+    sess, _ = _scripted_session(1, dealer_index=0, chips=[500, 1000])
+    sess.submit_action("allin", 0)
+    st = sess.get_state()
+    post = [a for a in _action_events(st["events"]) if a["street"] != "프리플랍"]
+    assert not post, f"상대가 전부 올인인데 포스트플랍 액션을 물음: {[(a['player'], a['action']) for a in post]}"
+    assert st["hand_over"] and len(st["community_cards"]) == 5
+    assert [e["street"] for e in st["events"] if e["type"] == "street_start"] == ["플랍", "턴", "리버"]
+
+    # ② 봇 올인 → 사람 콜 → 사람에게 자동 체크 이벤트 없이 런아웃
+    sess, _ = _scripted_session(1, dealer_index=0, chips=[1000, 400],
+                                scripts={"🤖 Alpha": [(Action.ALL_IN, 0)]})
+    sess.submit_action("raise", 60)   # BTN/SB 오픈 → BB 봇 올인 400
+    st = sess.get_state()
+    assert st["waiting_for_action"] and st["call_amount"] == 340, st["call_amount"]
+    sess.submit_action("call", 0)
+    st = sess.get_state()
+    post = [a for a in _action_events(st["events"]) if a["street"] != "프리플랍"]
+    assert not post, f"사람에게 무의미한 체크가 생김: {[(a['player'], a['action']) for a in post]}"
+    assert st["hand_over"] and len(st["community_cards"]) == 5
+
+    # ③ 콜할 금액이 있으면 묻는다: 플랍에서 봇이 올인하면 사람은 결정해야 한다
+    sess, _ = _scripted_session(1, dealer_index=0, chips=[1000, 300],
+                                scripts={"🤖 Alpha": [(Action.CHECK, 0), (Action.ALL_IN, 0)]})
+    sess.submit_action("call", 0)     # 림프 → BB 체크 → 플랍, BB(봇) 선행동 올인
+    st = sess.get_state()
+    assert st["street"] == "플랍" and st["waiting_for_action"] and st["call_amount"] == 280, \
+        f"콜할 금액이 있으면 사람에게 물어야 함: street={st['street']} call={st['call_amount']}"
+
+
 def test_8_10_illegal_check_rejected_not_recorded():
     """T-021: 벳을 마주한 체크 요청은 거절되고(API 400) 로그·이벤트·RL 기록에 남지 않는다."""
     from core.game import IllegalActionError
@@ -1996,6 +2029,7 @@ ALL_TESTS = [
     ("8-10 불법 체크 거절(400)·기록 없음",        test_8_10_illegal_check_rejected_not_recorded),
     ("8-11 봇 불법 액션 → 로그+안전 폴백",        test_8_11_bot_illegal_action_falls_back),
     ("8-12 세션 퍼저: 이벤트 금액=칩 이동·보존",  test_8_12_session_fuzz_event_amounts_and_conservation),
+    ("8-13 행동 가능 1명 + 콜 없음 → 런아웃",     test_8_13_runout_when_one_player_can_act),
 ]
 
 

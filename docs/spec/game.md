@@ -74,9 +74,12 @@
 ### 웹 게임 흐름
 - `POST /game/{id}/action`은 사람 액션을 적용한 뒤 `_run_until_human()`으로 봇을 자동
   처리한다: 각 봇은 `PokerBot.decide_action(game_state)`로 결정하고, 라운드가 끝나면
-  스트리트를 전환하며, 상대 전원이 올인이고 콜할 베팅이 없으면 사람 차례도 자동으로
-  체크 처리한다(런아웃) — 강제 장치: 장치 없음(런아웃 자동 체크 자체를 겨냥한 테스트 없음.
-  관련: `tests/test_poker_full.py::test_5_1_fold_then_bots_complete`)
+  스트리트를 전환한다.
+- 런아웃: 행동 가능한(폴드·올인 아닌) 플레이어가 1명뿐이고 그가 콜할 금액이 없으면 라운드가
+  끝난 것으로 본다(core `_is_round_over`, 사람·봇 공통). 남은 스트리트는 액션 이벤트 없이
+  `street_start`·`community_card`만 나오고 쇼다운으로 간다 — 무의미한 체크·"올인!" 이벤트,
+  RL 기록, 봇 MC 계산이 생기지 않는다. 콜할 금액이 있으면(예: 상대가 더 큰 올인) 그 사람에게는
+  묻는다 — 강제 장치: `tests/test_poker_full.py::test_8_13_runout_when_one_player_can_act`
 - 한 응답 안의 `events[]`는 그 요청에서 새로 발생한 것만 담고(`get_state()` 호출 시
   큐가 비워짐), 순서는 실제 발생 순서와 같다. 이벤트 종류: `deal_card`(카드 딜, 라운드 1·2) →
   `blind`(SB/BB 포스팅) → `action`(폴드/체크/콜/레이즈/올인) → `street_start`(스트리트 전환) →
