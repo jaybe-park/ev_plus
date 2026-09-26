@@ -1864,6 +1864,47 @@ def test_7_15_migration_v14_relabels_limp_nodes():
         conn.close()
 
 
+def test_7_16_save_marks_missing_queue_collected():
+    """T-015/ADR 0011: /gto/preflop/save가 성공하면 같은 action_seq를 가리키던
+    미수집 큐(range_type='seq', 노드 키는 vs_position 칸) 행이 collected=1로
+    갱신된다(collected_at도 채워짐). 다른 노드를 가리키는 큐 행은 그대로 collected=0."""
+    from db.connection import get_connection
+    with _fresh_gto_db():
+        client = _save_client()
+        conn = get_connection()
+        conn.execute(
+            "INSERT INTO gto_missing_spots_preflop "
+            "(street, position, vs_position, range_type, situation_label) "
+            "VALUES ('preflop','BB','F-F-F-R2.5-C','seq','seq F-F-F-R2.5-C')"
+        )
+        conn.execute(
+            "INSERT INTO gto_missing_spots_preflop "
+            "(street, position, vs_position, range_type, situation_label) "
+            "VALUES ('preflop','BB','F-F-F-R2.5-F','seq','seq F-F-F-R2.5-F')"
+        )
+        conn.commit()
+        conn.close()
+
+        r = client.post("/gto/preflop/save", json={
+            "action_seq": "F-F-F-R2.5-C", "hands": {"AKs": {"call": 1.0}}, "raise_size": 11.0,
+        })
+        assert r.status_code == 200, r.text
+
+        conn = get_connection()
+        rows = {
+            row["vs_position"]: (row["collected"], row["collected_at"])
+            for row in conn.execute(
+                "SELECT vs_position, collected, collected_at FROM gto_missing_spots_preflop "
+                "WHERE range_type='seq'"
+            )
+        }
+        conn.close()
+        assert rows["F-F-F-R2.5-C"][0] == 1, rows
+        assert rows["F-F-F-R2.5-C"][1] is not None, "collected_at도 채워져야 함"
+        assert rows["F-F-F-R2.5-F"] == (0, None), \
+            f"다른 노드를 가리키는 큐 행은 그대로여야 함: {rows}"
+
+
 # ═════════════════════════════════════════════════════════════
 # 영역 8 — 세션 경로 룰 (WebGameSession 실제 실행 경로)
 #   core 헬퍼(_betting_order, apply_action)만 부르는 테스트는 웹 경로의 버그를
@@ -2797,6 +2838,7 @@ ALL_TESTS = [
     ("7-13 헤즈업은 UTG 트리로 스냅 안 됨(T-001)", test_7_13_headsup_not_snapped_to_utg_tree),
     ("7-14 v13 마이그레이션 데이터 보존(T-001)",   test_7_14_migration_v13_preserves_data),
     ("7-15 v14 마이그레이션 림프 노드 재라벨(T-016)", test_7_15_migration_v14_relabels_limp_nodes),
+    ("7-16 save가 미수집 큐 collected=1 갱신(T-015)", test_7_16_save_marks_missing_queue_collected),
     # 영역 8 — 세션 경로 룰
     ("8-1  next_hand 연타 → 한 핸드만, 칩 보존",  test_8_1_next_hand_double_call_keeps_chips),
     ("8-2  핸드 중 next_hand 무시",              test_8_2_next_hand_during_hand_ignored),

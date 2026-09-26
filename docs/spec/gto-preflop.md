@@ -48,6 +48,7 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 ### 수집 (`scripts/collect_gto_tree.py` + `scripts/gto_tree_worker.py`)
 - 트리는 가정으로 열거하지 않는다. 노드에서 **콤보 가중 합산 빈도 > ε(0.0005)** 인 액션만 자식으로 뻗는다(버튼 존재는 기준이 아니다). 베팅이 끝나는 자식(결정 노드 아님)은 순수 포커 규칙 시뮬레이터 `_replay`로 거른다 — 근거: [0011](../decisions/0011-data-driven-tree-collection.md) · 강제 장치: `tests/test_gto_tree.py::test_branch_actions_epsilon`, `tests/test_gto_tree.py::test_replay_terminal_nodes`
 - 방문 순서는 도달확률(경로 빈도 누적) 내림차순 best-first — 근거: [0011](../decisions/0011-data-driven-tree-collection.md) · 강제 장치: 장치 없음
+- 미수집 큐(`gto_missing_spots_preflop`, `range_type='seq'`, 노드 키는 `vs_position` 칸)는 매 실행 `load_missing_queue_from_db`로 읽어 `queue_frontier_additions`가 **보조 2순위**로 프론티어에 얹는다(ADR 0011 "트리 밖 스팟 큐 = 2순위") — 정상 트리 프론티어(reach ≥ ε)보다 항상 낮은 고정 우선순위(`QUEUE_FRONTIER_REACH`=1e-9)라 best-first가 먼저 소진된 뒤에 처리된다. 결정 노드가 아니거나(`derive_node_meta` None) 이미 수집된 키는 스킵. 조상이 미수집이면 **가장 얕은 미수집 조상**(자기 자신 포함, 루트부터 훑어 처음 만나는 미수집 프리픽스)만 추가한다 — 조상이 먼저 수집돼야 그 자식들이 정상 확장(`compute_children`)으로 이어지고, 다음 실행에서 이 함수가 다시 불릴 때 한 단계 더 깊은 조상 또는 이 키 자신으로 넘어간다(조상·자손 순차 수집). 저장 성공 시 큐 행 `collected` 갱신은 `POST /gto/preflop/save`가 맡는다(위 "화면·경로·데이터" 절) — 근거: [0011](../decisions/0011-data-driven-tree-collection.md) · 강제 장치: `tests/test_gto_tree.py::test_queue_frontier_additions_ancestor_first`, `::test_load_missing_queue_from_db_filters_collected`
 - 셀 파싱은 레이어 방식: 겹친 `linear-gradient` 레이어를 앞→뒤로 색상 매칭(allin/raise/call/fold), `background-size` 누적 폭 차분이 빈도. `background:none` 셀은 저장하지 않는다 — 근거: [0003](../decisions/0003-layered-css-parser.md) · 강제 장치: 장치 없음
 - 한 핸드라도 합이 [0.9, 1.1] 밖(badSum)이거나 파싱 핸드 0개면 저장하지 않고 `failed`로 남긴다(자동 재시도 안 함, 사람 확인). 서버 저장 API도 같은 기준으로 거부한다(이중 방어) — 강제 장치: 워커 쪽은 장치 없음, 서버 쪽 `tests/test_poker_full.py::test_7_9_save_rejects_corrupt_frequencies`
 - 실측 사이즈는 히어로 Actions 패널(`[data-tst="study_action_btns"] [data-tst^="action_"]`)에서만 읽는다(`action_R<size>_n`=레이즈, `action_RAI_n`=올인·텍스트에서 사이즈, 못 읽으면 100). 레이즈 사이즈는 첫 번째 것 하나만 쓴다(노드당 1개 전제). 사이즈를 못 읽은 레이즈·올인 가지는 만들지 않는다 — 강제 장치: `tests/test_gto_tree.py::test_compute_children_uses_measured_size`(가지 생성만. DOM 읽기는 장치 없음)
@@ -66,8 +67,8 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 |---|---|---|
 | `gto_preflop_situations` | 노드 1행: `action_seq`(유일 키, NOT NULL), `position`,`vs_position`,`range_type`(open/vs_limp/vs_open/vs_3bet/vs_4bet/vs_5bet — `action_seq`에서 유도), `raise_size`, `situation_label`, `hero_position`, `num_active`(=6−F 토큰 수) | 스키마 v14: `idx_gto_pre_seq UNIQUE(action_seq)`, `idx_gto_pre_sit`(3종 키, 비유일). 상세: `db/schema.py`, 운영: [db.md](db.md) |
 | `gto_preflop_hands` | 노드×핸드 `freq_fold/call/raise/allin` | FK CASCADE |
-| `gto_missing_spots_preflop` | 미수집 노드 큐(`range_type='seq'` 행. 옛 enum 행이 남아 있을 수 있음) | `collected`를 1로 바꾸는 코드는 없다 |
-| `POST /gto/preflop/save` | 노드 저장. 본문 `action_seq`(필수)·`hands`·`raise_size`, 선택 `position`/`vs_position`/`range_type`(대조용)·`situation_label`. 행은 **`action_seq`로 찾는다**. 핸드 전부 삭제 후 재삽입, 캐시 무효화. 거부 422: `action_seq` 없음·결정 노드 아님·3종 키 불일치·빈도합 불량·핸드 0개 | 호출자: 수집 워커, 브라우저 수동 저장 |
+| `gto_missing_spots_preflop` | 미수집 노드 큐(`range_type='seq'` 행. 옛 enum 행이 남아 있을 수 있음) | `/gto/preflop/save`가 같은 `action_seq`(=`vs_position` 칸) 큐 행을 `collected=1`로 갱신(T-015) |
+| `POST /gto/preflop/save` | 노드 저장. 본문 `action_seq`(필수)·`hands`·`raise_size`, 선택 `position`/`vs_position`/`range_type`(대조용)·`situation_label`. 행은 **`action_seq`로 찾는다**. 핸드 전부 삭제 후 재삽입, 저장 성공 시 같은 `action_seq`를 가리키던 미수집 큐(`gto_missing_spots_preflop`, `range_type='seq'`) 행을 `collected=1`/`collected_at`으로 갱신, 캐시 무효화. 거부 422: `action_seq` 없음·결정 노드 아님·3종 키 불일치·빈도합 불량·핸드 0개 | 호출자: 수집 워커, 브라우저 수동 저장 · 강제 장치: `tests/test_poker_full.py::test_7_16_save_marks_missing_queue_collected` |
 | `GET /gto/preflop/range` | 3종 키(라벨)로 레인지 + 콤보가중 요약 — 콜러 없는 노드만 | `action_seq`로는 조회 불가(T-013) |
 | `GET /gto/preflop/situations` | 저장 노드 목록 | |
 | 게임 상태 `gto_hint` | advisor 추천 문자열("📊 GTO [AKs] BTN RFI: 레이즈 100%", 라벨 예비면 "… (근사): …") | `server/session.py::_get_gto_hint` |
@@ -99,7 +100,6 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 - 옛 저장 API(3종 키로 행을 찾던 시절)가 덮어쓴 노드는 DB에 없다. 2026-09-26 운영 DB는 vs_open 13행이 전부 콜러 있는 노드라, 그 라벨들(예 "BB vs BTN open")의 간단 라벨 조회는 콜러 없는 노드가 다시 수집될 때까지 `None`이다(힌트·봇 GTO 공백). 사라진 노드는 백필(v12)로 생긴 키라 체크포인트 `visited`에 없었다 — 그중 `F-F-F-R2.5-F`, `R2.5-F`, `F-R2.5-F`는 이미 frontier에 있고, 나머지(예 `R2.5-F-F-F-F`)는 그 조상이 수집되면 트리 확장으로 다시 발견된다.
 - v13 마이그레이션은 앱이 운영 `poker.db`에 처음 연결할 때 자동으로 돈다(테이블 재생성, 58행·7,126핸드 규모). `action_seq`가 NULL인 행이 있으면 앱 시작이 실패한다(운영 DB는 0행). v14는 같은 연결 시점에 림프 오분류 행만 재라벨링한다(위 "노드 키" 절 참고).
 - GTO 패널(`gto_key`)은 advisor와 별개로 한글 로그를 판정하고 라벨 키만 조회한다 — 시퀀스로만 있는 노드(4벳+ 등, 콜러 있는 노드)는 패널에 안 나오고, 힌트와 패널이 다른 노드를 가리킬 수 있다. advisor 결과에는 이제 `node_key`가 실린다 — T-013
-- 미수집 큐는 쌓이기만 한다 — 워커가 읽지 않고 `collected`도 갱신되지 않는다 — T-015
 - `num_active`(= 6 − 폴드 토큰 수)는 아직 소비자가 없다. 멀티웨이 조회에 쓰기 시작할 때 정의가 충분한지 다시 본다.
 - 수집은 무료 한도(100/일)에 묶여 트리 전체에 여러 날이 걸린다. 전체 규모는 미리 알 수 없다(현황 문서는 %를 쓰지 않는다).
 - 3~5인 테이블을 트리에서 제외하는 것은 시퀀스 경로뿐이다. 라벨 경로는 여전히 6-max 라벨 데이터(예 3인 BTN → "BTN RFI")를 근사로 내준다.

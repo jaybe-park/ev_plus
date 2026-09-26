@@ -416,6 +416,58 @@ def test_audit_key_and_lost_checks():
         os.unlink(ckpt_path)
 
 
+# [T-11] T-015/ADR 0011 — queue_frontier_additions: 미수집 큐 → 프론티어(조상부터, 2순위)
+def test_queue_frontier_additions_ancestor_first():
+    collected = {"": None, "R2.5": None}  # 루트·R2.5는 이미 수집됨(값은 안 씀)
+
+    # 조상까지 다 수집됨 → 이 노드 자신을 낮은 우선순위로 추가
+    out = ct.queue_frontier_additions(["R2.5-F"], collected)
+    check("조상 다 수집됨 → 노드 자신 추가", out == [(["R2.5", "F"], ct.QUEUE_FRONTIER_REACH)],
+          str(out))
+
+    # 중간 조상(R2.5-C)이 미수집 → 그 조상만 추가(자기 자신 R2.5-C-R8은 아직 아님)
+    out = ct.queue_frontier_additions(["R2.5-C-R8"], collected)
+    check("미수집 조상부터(자기 자신 아님)", out == [(["R2.5", "C"], ct.QUEUE_FRONTIER_REACH)],
+          str(out))
+
+    # 이미 수집된 키는 스킵
+    out = ct.queue_frontier_additions(["R2.5"], collected)
+    check("이미 수집된 키는 스킵", out == [], str(out))
+
+    # 결정 노드가 아닌 키(모두 폴드)는 스킵
+    out = ct.queue_frontier_additions(["R2.5-F-F-F-F-F"], collected)
+    check("결정 노드 아닌 키는 스킵", out == [], str(out))
+
+    # 같은 미수집 조상을 가리키는 큐 키 여럿 → 한 번만 추가(중복 제거)
+    out = ct.queue_frontier_additions(["R2.5-C-R8", "R2.5-C-F"], collected)
+    check("같은 조상 중복 제거", out == [(["R2.5", "C"], ct.QUEUE_FRONTIER_REACH)], str(out))
+
+    # 빈 collected(루트조차 미수집) → 루트가 대상
+    out = ct.queue_frontier_additions(["F-F"], {})
+    check("루트조차 미수집이면 루트가 대상", out == [([], ct.QUEUE_FRONTIER_REACH)], str(out))
+
+
+def test_load_missing_queue_from_db_filters_collected():
+    """load_missing_queue_from_db는 collected=0인 range_type='seq' 행의 노드 키(vs_position
+    칸)만 반환한다."""
+    from db.connection import get_connection
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO gto_missing_spots_preflop "
+        "(street, position, vs_position, range_type, situation_label, collected) "
+        "VALUES ('preflop','BB','F-F-F-F-C','seq','seq F-F-F-F-C',0)"
+    )
+    conn.execute(
+        "INSERT INTO gto_missing_spots_preflop "
+        "(street, position, vs_position, range_type, situation_label, collected) "
+        "VALUES ('preflop','BB','R2.5-C','seq','seq R2.5-C',1)"
+    )
+    conn.commit()
+    conn.close()
+    keys = ct.load_missing_queue_from_db()
+    check("collected=0인 큐 키만 반환", "F-F-F-F-C" in keys and "R2.5-C" not in keys, str(keys))
+
+
 ALL_TESTS = [
     ("T-1 compute_children 실측 사이즈 verbatim + action_to_token ValueError",
      test_compute_children_uses_measured_size),
@@ -430,6 +482,10 @@ ALL_TESTS = [
      test_run_aborts_on_persistent_save_failure),
     ("T-9 사라진 노드 frontier 복구(드라이런 기본, T-001)", test_requeue_lost_nodes),
     ("T-10 audit 3종 키·visited 누락 검사(T-001)", test_audit_key_and_lost_checks),
+    ("T-11 queue_frontier_additions 조상부터·2순위(T-015)",
+     test_queue_frontier_additions_ancestor_first),
+    ("T-12 load_missing_queue_from_db는 collected=0만(T-015)",
+     test_load_missing_queue_from_db_filters_collected),
 ]
 
 if __name__ == "__main__":
