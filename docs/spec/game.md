@@ -188,6 +188,11 @@
   `tests/test_poker_full.py::test_8_21_start_game_rejects_invalid_settings`,
   `::test_8_22_session_registered_only_after_successful_start`, 설정 화면 문구는
   `web/src/__tests__/api.test.ts`(422 평탄화)까지만(렌더링 테스트 없음)
+- 레이즈할 수 없는 사람(`GameState.can_raise=false` — 불완전 올인으로 액션이 닫힘, 또는 스택이
+  콜 이하)에게 `ActionBar`는 레이즈·올인 버튼을 보이지 않는다(눌러도 400이라). 스택이 콜 이하면
+  콜 버튼이 "콜 N (올인)"으로 남은 칩 전부를 낸다 — 강제 장치: 서버 `can_raise`는
+  `tests/test_poker_full.py::test_8_7_incomplete_raise_allin_call_or_fold_only`, 버튼 판단은
+  `web/src/components/__tests__/actionBarLogic.test.ts`(렌더링 테스트 없음)
 - API 오류: FastAPI 422의 `detail`은 배열이라 그대로 `Error`에 넘기면 배너에
   "[object Object]"가 뜬다 — `web/src/api.ts::formatApiError`가 `loc`/`msg`를 사람이 읽는
   한 줄 문장으로 평탄화한다 — 강제 장치: `web/src/__tests__/api.test.ts`
@@ -231,9 +236,6 @@ GTO 관리 API(`/gto/preflop/*`)는 이 문서 담당이 아니다 — 규칙은
   `HandResult` UI에는 아직 팟별 분해가 노출되지 않는다(팟은 합산 지급되어 결과는 맞지만
   화면에 계층이 안 보임).
 - 런잇트와이스는 미구현.
-- 불완전 올인으로 액션이 닫힌 사람에게도 프론트 `ActionBar`의 "올인" 버튼은 보인다
-  (레이즈 UI는 `min_raise_to=0`으로 꺼짐). 누르면 서버가 400으로 거절하고 오류 배너가 뜬다 —
-  버튼을 `can_raise`로 숨기는 것은 UI 변경이라 별도 확인 필요.
 - 이벤트 금액·칩 보존·버튼 이동은 세션 퍼저(`test_8_12`)가 검사하지만, 이벤트 종류 순서·카드
   공개 규칙 전체에 대한 전수 불변식 테스트는 없다(T-024 퍼저 확장 대상).
 - `get_state()`는 게임 상태·이벤트를 바꾸지 않지만, 에퀴티 패널 계산 결과를 결정 지점 단위

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { GameState } from "../types";
+import { actionButtons } from "./actionBarLogic";
 
 interface Props {
   state: GameState;
@@ -30,7 +31,8 @@ export default function ActionBar({ state, onAction, loading, disabled }: Props)
   const maxRaise = human.chips + human.current_bet;
   const isDisabled = disabled || loading;
   const canCheck = call_amount === 0;
-  const canRaise = human.chips > call_amount && min_raise_to > 0 && maxRaise >= min_raise_to;
+  const buttons = actionButtons(state);
+  const canRaise = buttons.showRaise && human.chips > call_amount && min_raise_to > 0 && maxRaise >= min_raise_to;
 
   const clampRaise = (v: number) => Math.max(min_raise_to, Math.min(v, maxRaise));
 
@@ -190,10 +192,11 @@ export default function ActionBar({ state, onAction, loading, disabled }: Props)
           onClick={() => onAction(canCheck ? "check" : "call")}
           className="flex-1 py-3 bg-blue-700 hover:bg-blue-600 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-colors"
         >
-          {canCheck ? "체크" : `콜 ${call_amount}`}
+          {buttons.callLabel}
         </button>
 
-        {/* 레이즈 */}
+        {/* 레이즈 — 액션이 닫혔으면(can_raise=false) 숨김 */}
+        {buttons.showRaise && (
         <button
           disabled={isDisabled || !canRaise}
           onClick={() => onAction("raise", clampRaise(raiseAmount))}
@@ -201,8 +204,10 @@ export default function ActionBar({ state, onAction, loading, disabled }: Props)
         >
           {!isDisabled && canRaise ? `레이즈 → ${raiseAmount}` : "레이즈"}
         </button>
+        )}
 
-        {/* 올인 */}
+        {/* 올인 — 액션이 닫혔으면 숨김(콜 금액 이하 올인은 콜 버튼) */}
+        {buttons.showAllin && (
         <button
           disabled={isDisabled}
           onClick={() => onAction("allin")}
@@ -211,6 +216,7 @@ export default function ActionBar({ state, onAction, loading, disabled }: Props)
           올인
           <div className="text-xs text-purple-300">{human.chips}</div>
         </button>
+        )}
       </div>
     </div>
   );

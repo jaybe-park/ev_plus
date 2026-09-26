@@ -27,6 +27,7 @@ export interface GameState {
   action_log: string[];
   call_amount: number;
   min_raise_to: number;
+  can_raise: boolean;       // 사람이 지금 레이즈/올인-레이즈를 할 수 있나(false면 버튼 숨김, T-039)
   events: GameEvent[];
   gto: GtoNode | null;
   equity: EquityInfo | null;
