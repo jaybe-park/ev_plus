@@ -4,18 +4,54 @@ DB 연결 및 마이그레이션 관리
 
 import sqlite3
 import os
+from typing import Optional
 from .schema import ALL_STATEMENTS, SCHEMA_VERSION, MIGRATIONS
 
 _DEFAULT_DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "poker.db"
 )
 
+# 워커/그라인드 시작 전 DB 파일 크기 가드 기본값(GB) — scripts/equity_worker.py,
+# scripts/grind.py의 --max-db-gb 기본값으로도 쓰인다.
+DEFAULT_MAX_DB_GB = 20.0
+
+
+def resolve_db_path(db_path: str = None) -> str:
+    """db_path 미지정 시 환경변수 EV_PLUS_DB(테스트 격리용) → 기본 poker.db 순.
+    get_connection과 동일한 규칙을 공유해, 크기 가드 등 연결을 열지 않는
+    코드도 같은 경로 결정 로직을 쓰도록 한다."""
+    if db_path is None:
+        return os.environ.get("EV_PLUS_DB", _DEFAULT_DB_PATH)
+    return db_path
+
+
+def db_size_gb(db_path: str = None) -> float:
+    """DB 파일 크기(GB). 파일이 없으면 0.0."""
+    path = resolve_db_path(db_path)
+    try:
+        return os.path.getsize(path) / (1024 ** 3)
+    except OSError:
+        return 0.0
+
+
+def check_db_size_guard(
+    db_path: str = None, max_gb: float = DEFAULT_MAX_DB_GB
+) -> Optional[str]:
+    """DB 파일 크기가 max_gb(GB)를 넘으면 사람이 읽을 이유 문자열을 반환,
+    넘지 않으면 None. 워커/그라인드가 시작 전에 호출해 초과 시 실행하지 않는다."""
+    size_gb = db_size_gb(db_path)
+    if size_gb > max_gb:
+        return (
+            f"DB 크기 {size_gb:.2f}GB가 임계치 {max_gb:.2f}GB를 초과했습니다 "
+            f"— 시작하지 않습니다. ({resolve_db_path(db_path)})"
+        )
+    return None
+
 
 def get_connection(db_path: str = None) -> sqlite3.Connection:
     """DB 연결 반환. 없으면 자동 생성 및 마이그레이션.
     db_path 미지정 시 환경변수 EV_PLUS_DB (테스트 격리용) → 기본 poker.db 순."""
-    if db_path is None:
-        db_path = os.environ.get("EV_PLUS_DB", _DEFAULT_DB_PATH)
+    db_path = resolve_db_path(db_path)
     conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     for pragma in (

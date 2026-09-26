@@ -25,6 +25,9 @@
   되므로 금지 — 강제 장치: `tests/test_equity.py`(EV_PLUS_DB 격리 하에서 실 DB 미접촉)
 - `canonical_key`는 홀-보드 또는 보드 내부에 중복 카드가 있으면 `ValueError` — 강제 장치:
   `tests/test_guards.py::test_canonical_key_duplicate_cards`
+- `scripts/equity_worker.py`·`scripts/grind.py`는 시작 시(단, `--status`는 조회만이라 예외)
+  `db.connection.check_db_size_guard`로 DB 파일 크기가 임계치(기본 20GB, `--max-db-gb`로
+  조정)를 넘으면 실행하지 않고 이유를 출력한다 — 강제 장치: `tests/test_guards.py::test_db_size_guard`
 
 ### 워커
 - 우선순위: 리버 → 턴 → 플랍 전수조사(게임에서 만난 스팟) → 프리플랍/멀티웨이 샘플 누적(상대 수 적은 것부터) → 체계적 플랍 스윕(큐가 빌 때만, 커서는 `worker_meta`) — 근거: [0019](../decisions/0019-equity-worker-priority.md) · 강제 장치: 장치 없음

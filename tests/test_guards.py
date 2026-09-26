@@ -4,6 +4,7 @@
 
 - run_all.py의 poker.db 무결성 검사(스냅샷 비교) 로직
 - ai/equity.py canonical_key의 중복 카드 입력 검증
+- scripts/equity_worker.py · scripts/grind.py가 공유하는 DB 크기 임계치 판정 함수
 
 실행: python3 tests/test_guards.py
 """
@@ -24,6 +25,7 @@ os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=Fals
 import run_all
 from core.card import Card, Suit, Rank
 from ai.equity import canonical_key
+from db.connection import check_db_size_guard, db_size_gb
 
 PASS = 0
 FAIL = 0
@@ -79,6 +81,35 @@ def test_run_all_db_snapshot_guard():
           "test_guards.py" in run_all.FULL_FILES, f"={run_all.FULL_FILES}")
 
 
+def test_db_size_guard():
+    print("\n[GD-2] equity_worker/grind 공용 DB 크기 임계치 가드")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.write(b"x" * (2 * 1024 * 1024))  # 2MB
+    tmp.close()
+    path = tmp.name
+    try:
+        size_gb = db_size_gb(path)
+        check("db_size_gb가 파일 크기를 GB로 반환", 0.0018 < size_gb < 0.0021,
+              f"={size_gb}")
+
+        reason = check_db_size_guard(path, max_gb=1.0)
+        check("임계치 이내면 None(통과)", reason is None, f"={reason}")
+
+        reason = check_db_size_guard(path, max_gb=0.001)
+        check("임계치 초과면 이유 문자열 반환", reason is not None and "임계치" in reason,
+              f"={reason}")
+
+        # 기본 임계치(20GB) 확인 — 2MB짜리는 당연히 통과
+        reason_default = check_db_size_guard(path)
+        check("기본 임계치(20GB) 통과", reason_default is None, f"={reason_default}")
+
+        # 파일이 없는 경로는 크기 0 → 항상 통과
+        check("미존재 경로는 크기 0", db_size_gb("/no/such/path.db") == 0.0)
+    finally:
+        os.remove(path)
+
+
 def test_canonical_key_duplicate_cards():
     print("\n[GD-3] canonical_key — 카드 중복 입력 검증")
     Ah = Card(Rank.ACE, Suit.HEARTS)
@@ -120,6 +151,7 @@ if __name__ == "__main__":
     print("=" * 50)
 
     test_run_all_db_snapshot_guard()
+    test_db_size_guard()
     test_canonical_key_duplicate_cards()
 
     print(f"\n{'='*50}")
