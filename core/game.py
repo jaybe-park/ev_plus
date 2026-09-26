@@ -1,5 +1,5 @@
-from typing import List, Optional, Dict, Callable
-from dataclasses import dataclass
+from typing import List, Optional, Dict, Callable, Tuple
+from dataclasses import dataclass, field
 from enum import Enum
 from .deck import Deck
 from .player import Player
@@ -12,6 +12,9 @@ class Street(Enum):
     TURN    = "턴"
     RIVER   = "리버"
     SHOWDOWN = "쇼다운"
+
+
+STREETS = [Street.PREFLOP, Street.FLOP, Street.TURN, Street.RIVER]
 
 
 class Action(Enum):
@@ -41,6 +44,31 @@ class ActionResult:
     reopens: bool
 
 
+@dataclass
+class PotShare:
+    """팟 한 계층(메인/사이드)의 분배 결과. eligible이 1명이면 초과 베팅 반환."""
+    amount: int
+    eligible: List[Player]
+    winners: List[Player]
+
+
+@dataclass
+class ShowdownResult:
+    """showdown()의 결과.
+
+    pot        : 분배한 총액
+    winners    : 승자(초과 베팅 반환만 받은 사람은 제외, 버튼 왼쪽 순서 아님 — 팟 순서)
+    pots       : 계층별 분배(메인 → 사이드 순)
+    evaluations: 쇼다운에 참여한 사람의 핸드 평가(전원 폴드로 끝나면 빈 dict)
+    contested  : 2명 이상이 카드를 겨뤘는가(봇 카드 공개 조건)
+    """
+    pot: int
+    winners: List[Player]
+    pots: List[PotShare] = field(default_factory=list)
+    evaluations: Dict[str, object] = field(default_factory=dict)
+    contested: bool = False
+
+
 class GameEvent:
     """웹앱 전환 시 이벤트 기반 통신에 활용"""
     def __init__(self, event_type: str, data: dict):
@@ -52,6 +80,14 @@ class GameEvent:
 
 
 class TexasHoldem:
+    """텍사스 홀덤 룰 엔진 — 웹 세션(server/session.py)·CLI(cli/main.py)·테스트가 같은 경로를 쓴다.
+
+    한 핸드의 흐름(모두 이 클래스의 공개 메서드):
+      seat_for_next_hand() → start_hand() → [next_to_act() → validate() → act()]* →
+      advance_street() → ... → showdown()
+    콜백 방식(CLI·아레나 드라이버)은 play_round()가 위 루프를 대신 돈다.
+    """
+
     def __init__(self, players: List[Player], small_blind: int = 10, big_blind: int = 20):
         if len(players) < 2:
             raise ValueError("최소 2명의 플레이어가 필요합니다.")
@@ -64,119 +100,285 @@ class TexasHoldem:
         self.deck = Deck()
         self.community_cards: List = []
         self.pot: int = 0
-        self.side_pots: List[Dict] = []
         self.current_street: Street = Street.PREFLOP
         self.dealer_index: int = 0
+        # 이번 핸드 버튼 보유자(이름). 다음 핸드의 무빙 버튼 기준(ADR 0036). None = 첫 핸드
+        self.button_name: Optional[str] = None
         self.current_bet: int = 0          # 현재 라운드 최고 베팅액
         self.min_raise: int = big_blind
         self.event_log: List[GameEvent] = []
         self.blind_posts: List[tuple] = []  # [(SB 플레이어, 낸 칩), (BB 플레이어, 낸 칩)]
 
-        # 액션 콜백 (웹앱 전환 시 override)
+        # 베팅 라운드 상태 (begin_round가 초기화)
+        #   order   : 이번 스트리트 행동 순서
+        #   acted   : 마지막 풀 레이즈 이후 행동한 플레이어(라운드 종료 판정용)
+        #   bet_seen: 각자 마지막 행동 직후의 current_bet(레이즈 권한 판정용, TDA Rule 47)
+        #   turn_i  : order에서 다음에 볼 위치
+        self.order: List[Player] = []
+        self.acted: set = set()
+        self.bet_seen: Dict[str, int] = {}
+        self.turn_i: int = 0
+
+        # 액션 콜백 (play_round/run_hand용 — CLI·아레나 드라이버)
         self._action_callback: Optional[Callable] = None
 
     # ──────────────────────────────────────────
-    # 공개 API
+    # 핸드 진행
     # ──────────────────────────────────────────
 
+    def seat_for_next_hand(self) -> None:
+        """다음 핸드 좌석 정리: 칩 0 이하 플레이어 제거 + 무빙 버튼(ADR 0036).
+
+        버튼 = 고정 좌석 순서(seat_names)에서 직전 버튼 보유자(button_name) 다음의 살아 있는
+        사람. SB·BB는 그 뒤 두 명(헤즈업은 버튼 = SB). button_name이 None이면(첫 핸드)
+        dealer_index를 그대로 쓴다. 인덱스가 아니라 이름으로 찾으므로 버튼 앞 좌석이 빠져도
+        버튼이 한 칸 더 건너뛰지 않는다. 생존자가 2명 미만이면 버튼은 그대로."""
+        self.players = [p for p in self.players if p.chips > 0]
+        if len(self.players) < 2:
+            return
+        prev = self.button_name
+        if prev is None or prev not in self.seat_names:
+            self.dealer_index %= len(self.players)
+            return
+        index_of = {p.name: i for i, p in enumerate(self.players)}
+        start = self.seat_names.index(prev)
+        n = len(self.seat_names)
+        for k in range(1, n + 1):
+            name = self.seat_names[(start + k) % n]
+            if name in index_of:
+                self.dealer_index = index_of[name]
+                return
+
     def start_hand(self):
-        """한 핸드(게임) 시작"""
+        """한 핸드 시작: 리셋 → 블라인드 → 홀카드 → 프리플랍 베팅 라운드 준비.
+        버튼은 dealer_index 그대로(이동은 seat_for_next_hand가 한다)."""
         self._reset_hand()
+        self.button_name = self.players[self.dealer_index].name
         self._post_blinds()
         self._deal_hole_cards()
         self._emit("hand_started", {
             "players": [p.name for p in self.players],
-            "dealer": self.players[self.dealer_index].name,
+            "dealer": self.button_name,
         })
+        self.begin_round(Street.PREFLOP)
 
-    def run_street(self, street: Street):
-        """특정 스트리트 진행"""
+    def begin_round(self, street: Street) -> None:
+        """베팅 라운드 준비. 프리플랍은 블라인드 포스팅을 유지하고, 그 뒤 스트리트는
+        current_bet·플레이어별 베팅을 0으로. 블라인드 포스팅은 행동이 아니다(acted 비어 있음)."""
         self.current_street = street
         self.min_raise = self.big_blind
-
-        if street == Street.PREFLOP:
-            # 블라인드가 이미 포스팅된 상태 유지 — current_bet, player.current_bet 리셋 안 함
-            pass
-        else:
+        if street != Street.PREFLOP:
             self.current_bet = 0
             for p in self.players:
                 p.reset_for_street()
-
-        # 커뮤니티 카드 딜은 외부(CLI/웹)에서 deal_community()를 직접 호출하거나
-        # run_hand()를 통해 진행. run_street()는 딜하지 않음.
+        self.order = self._betting_order(street)
+        self.acted = set()
+        self.bet_seen = {}
+        self.turn_i = 0
         self._emit("street_started", {
             "street": street.value,
             "community_cards": [str(c) for c in self.community_cards],
         })
-        self._betting_round(street)
+
+    def advance_street(self) -> Optional[Street]:
+        """베팅이 끝난 뒤 다음 스트리트로: 커뮤니티 카드를 깔고 라운드를 준비해 그 스트리트를
+        돌려준다. 1명만 남았거나 리버가 끝났으면 None(다음은 showdown())."""
+        if self._count_active() <= 1 or self.current_street not in STREETS[:-1]:
+            return None
+        street = STREETS[STREETS.index(self.current_street) + 1]
+        self.deal_community(street)
+        self.begin_round(street)
+        return street
 
     def deal_community(self, street: Street):
-        """스트리트에 맞게 커뮤니티 카드 딜 (외부에서 직접 호출)"""
+        """스트리트에 맞게 커뮤니티 카드 딜 (advance_street가 호출)"""
         if street == Street.FLOP:
             self.community_cards += self.deck.deal(3)
         elif street in (Street.TURN, Street.RIVER):
             self.community_cards += self.deck.deal(1)
 
-    def run_hand(self) -> Optional[List[Player]]:
-        """프리플랍부터 쇼다운까지 한 핸드 완전 진행. 승자 리스트 반환."""
+    def next_to_act(self) -> Optional[Player]:
+        """이번 라운드에서 다음에 행동할 플레이어. 라운드가 끝났으면 None."""
+        n = len(self.order)
+        if not n:
+            return None
+        for _ in range(n * 3):
+            if self._count_active() <= 1 or self.round_over():
+                return None
+            p = self.order[self.turn_i % n]
+            if p.is_folded or p.is_all_in or (
+                    p.name in self.acted and p.current_bet == self.current_bet):
+                self.turn_i += 1
+                continue
+            return p
+        return None
+
+    def round_over(self) -> bool:
+        """모든 액티브 플레이어가 액션했고 베팅액이 균등하면 True.
+        행동 가능한(폴드·올인 아닌) 플레이어가 1명뿐이고 그가 콜할 금액이 없으면 더 물을
+        상대가 없으므로 True(런아웃)."""
+        active = [p for p in self.players if not p.is_folded and not p.is_all_in]
+        if not active:
+            return True
+        if len(active) == 1 and active[0].current_bet >= self.current_bet:
+            return True
+        return all(p.name in self.acted and p.current_bet == self.current_bet for p in active)
+
+    def can_raise(self, player: Player) -> bool:
+        """이번 라운드에서 player의 레이즈 권한(TDA Rule 47, raise_allowed 참고)."""
+        return self.raise_allowed(player, self.bet_seen)
+
+    def validate(self, player: Player, action: Action, amount: int = 0) -> Tuple[Action, int]:
+        """(실제로 적용될 액션, 도달 베팅). 상태는 바꾸지 않는다. 불법이면 IllegalActionError."""
+        action = self.normalize_action(player, action, amount, self.can_raise(player))
+        return action, self.bet_target(player, action, amount)
+
+    def validate_or_fallback(self, player: Player, action: Action, amount: int = 0
+                             ) -> Tuple[Action, int, Optional[IllegalActionError]]:
+        """validate()와 같되 불법이면 fallback_action으로 대체한다(봇·CLI 콜백용).
+        반환: (액션, 도달 베팅, 대체했다면 원래 오류 아니면 None)."""
+        try:
+            act, amt = self.validate(player, action, amount)
+            return act, amt, None
+        except IllegalActionError as e:
+            act, amt = self.validate(player, self.fallback_action(player, action), 0)
+            return act, amt, e
+
+    def act(self, player: Player, action: Action, amount: int = 0) -> ActionResult:
+        """player의 액션을 적용하고 라운드 상태(acted/bet_seen/차례)를 갱신한다.
+        불법이면 아무것도 바꾸지 않고 IllegalActionError."""
+        result = self.execute_action(player, action, amount, self.can_raise(player))
+        self.acted.add(player.name)
+        self.bet_seen[player.name] = self.current_bet
+        if result.reopens:
+            # 풀 레이즈만 액션을 다시 연다: 본인만 acted에 남기고 다음 사람부터 다시 돈다.
+            # 불완전 올인은 acted를 비우지 않는다 — 레이즈 권한은 bet_seen 누적으로 판정.
+            self.acted = {player.name}
+            self.turn_i = (self.order.index(player) + 1) % len(self.order)
+        else:
+            self.turn_i += 1
+        return result
+
+    def play_round(self) -> None:
+        """콜백(_action_callback)으로 이번 베팅 라운드를 끝까지 진행한다(CLI·run_hand).
+        불법 액션은 fallback_action으로 대체된다."""
+        while True:
+            player = self.next_to_act()
+            if player is None:
+                return
+            action, amount = self._get_player_action(player)
+            action, amount, _ = self.validate_or_fallback(player, action, amount)
+            self.act(player, action, amount)
+
+    def run_hand(self) -> ShowdownResult:
+        """콜백으로 프리플랍부터 쇼다운까지 한 핸드를 진행한다(좌석 정리 포함)."""
+        self.seat_for_next_hand()
         self.start_hand()
-
-        streets = [Street.PREFLOP, Street.FLOP, Street.TURN, Street.RIVER]
-        for street in streets:
-            if self._count_active() <= 1:
-                break
-            self.deal_community(street)
-            self.run_street(street)
-
+        self.play_round()
+        while self.advance_street() is not None:
+            self.play_round()
         return self.showdown()
 
-    def showdown(self) -> List[Player]:
-        """쇼다운 처리 및 팟 분배. 승자 리스트 반환."""
+    # ──────────────────────────────────────────
+    # 팟 분배
+    # ──────────────────────────────────────────
+
+    def calculate_side_pots(self) -> List[Tuple[int, List[Player]]]:
+        """[(금액, eligible 플레이어들)] — total_bet_this_round 오름차순 계층.
+        각 계층은 그 금액을 낸(폴드하지 않은) 플레이어끼리만 나눈다. 폴드한 사람의 기여도
+        계층별로 들어간다. eligible이 1명인 계층 = 초과 베팅 반환."""
+        all_players = self.players
+        contenders = [p for p in all_players if not p.is_folded and len(p.hole_cards) >= 2]
+        if not contenders:
+            return []
+
+        sorted_contenders = sorted(contenders, key=lambda p: p.total_bet_this_round)
+        pots = []
+        processed = {p.name: 0 for p in all_players}
+        prev_level = 0
+
+        for i, c in enumerate(sorted_contenders):
+            level = c.total_bet_this_round
+            if level <= prev_level:
+                continue
+            delta = level - prev_level
+
+            pot_amount = 0
+            for p in all_players:
+                take = min(p.total_bet_this_round - processed[p.name], delta)
+                pot_amount += take
+                processed[p.name] += take
+
+            eligible = sorted_contenders[i:]
+            if pot_amount > 0:
+                pots.append((pot_amount, eligible))
+            prev_level = level
+
+        remainder = sum(p.total_bet_this_round - processed[p.name] for p in all_players)
+        if remainder > 0 and pots:
+            pots[-1] = (pots[-1][0] + remainder, pots[-1][1])
+
+        return pots
+
+    def showdown(self) -> ShowdownResult:
+        """쇼다운·팟 분배(사이드팟 포함). 버튼은 옮기지 않는다(다음 핸드 seat_for_next_hand).
+
+        - 1명만 남으면 팟 전액.
+        - 아니면 calculate_side_pots() 계층마다 eligible 중 최강 핸드가 나눠 갖고, 홀수 칩은
+          버튼 왼쪽부터 돌아 처음 만나는 승자에게. eligible 1명 계층(초과 베팅 반환)의
+          수령자는 승자에서 뺀다.
+        """
+        total = self.pot
         contenders = [p for p in self.players if not p.is_folded]
 
         if len(contenders) == 1:
             winner = contenders[0]
-            winner.chips += self.pot
-            self._emit("winner", {
-                "winners": [winner.name],
-                "pot": self.pot,
-                "reason": "상대방 폴드",
-            })
+            winner.chips += total
             self.pot = 0
-            self._advance_dealer()
-            return [winner]
+            self._emit("winner", {"winners": [winner.name], "pot": total, "reason": "상대방 폴드"})
+            return ShowdownResult(pot=total, winners=[winner],
+                                  pots=[PotShare(total, [winner], [winner])])
 
-        # 핸드 평가
-        evaluations = {}
-        for p in contenders:
-            all_cards = p.hole_cards + self.community_cards
-            evaluations[p.name] = HandEvaluator.evaluate(all_cards)
+        contenders = [p for p in contenders if len(p.hole_cards) >= 2]
+        if not contenders:
+            self.pot = 0
+            return ShowdownResult(pot=total, winners=[])
 
-        best_result = max(evaluations.values())
-        winners = [p for p in contenders if evaluations[p.name] == best_result]
+        evaluations = {
+            p.name: HandEvaluator.evaluate(p.hole_cards + self.community_cards)
+            for p in contenders
+        }
+        pots: List[PotShare] = []
+        winners: List[Player] = []
+        for amount, eligible in self.calculate_side_pots():
+            best = max(evaluations[p.name] for p in eligible)
+            pot_winners = [p for p in eligible if evaluations[p.name] == best]
+            share, remainder = divmod(amount, len(pot_winners))
+            for w in pot_winners:
+                w.chips += share
+            if remainder:
+                self.order_from_button_left(pot_winners)[0].chips += remainder
+            pots.append(PotShare(amount, eligible, pot_winners))
+            if len(eligible) > 1:
+                winners.extend(w for w in pot_winners if w not in winners)
 
-        # 팟 분배 (동률 시 균등 분배)
-        share = self.pot // len(winners)
-        remainder = self.pot % len(winners)
-        for w in winners:
-            w.chips += share
-        if remainder and winners:
-            # 나머지는 버튼 왼쪽부터 돌아 처음 만나는 승자에게
-            self.order_from_button_left(winners)[0].chips += remainder
-
-        showdown_info = {p.name: str(evaluations[p.name]) for p in contenders}
-        self._emit("showdown", {
-            "hands": showdown_info,
-            "winners": [w.name for w in winners],
-            "pot": self.pot,
-        })
         self.pot = 0
-        self._advance_dealer()
-        return winners
+        self._emit("showdown", {
+            "hands": {name: str(ev) for name, ev in evaluations.items()},
+            "winners": [w.name for w in winners],
+            "pot": total,
+        })
+        return ShowdownResult(pot=total, winners=winners, pots=pots,
+                              evaluations=evaluations, contested=True)
+
+    # ──────────────────────────────────────────
+    # 액션 판정 (ADR 0038, 0046)
+    # ──────────────────────────────────────────
 
     def apply_action(self, player: Player, action: Action, amount: int = 0,
                      raise_allowed: bool = True) -> bool:
-        """execute_action()의 bool 래퍼(CLI·기존 호출용). 불법 액션이면 아무것도 바꾸지 않고 False."""
+        """execute_action()의 bool 래퍼(기존 호출용). 불법 액션이면 아무것도 바꾸지 않고 False.
+        라운드 상태(acted/bet_seen/차례)는 갱신하지 않는다 — 라운드 진행은 act()."""
         try:
             self.execute_action(player, action, amount, raise_allowed)
         except IllegalActionError:
@@ -192,7 +394,7 @@ class TexasHoldem:
         - 콜할 금액이 없는 CALL은 CHECK로 적용된다.
         - RAISE 금액이 최소 레이즈-투(current_bet + min_raise) 미만이면 그 값으로 올리고,
           그 결과가 스택(chips + current_bet) 이상이면 ALL_IN으로 적용된다.
-        - raise_allowed=False(불완전 올인만 마주해 액션이 닫힌 플레이어)면 current_bet을
+        - raise_allowed=False(레이즈 권한 없음, raise_allowed() 참고)면 current_bet을
           넘기는 RAISE/ALL_IN은 불법이다. 스택이 콜 이하인 올인(=콜)은 허용.
         불법이면 IllegalActionError.
         """
@@ -228,15 +430,36 @@ class TexasHoldem:
             return Action.CALL if to_call > 0 else Action.CHECK
         return Action.CHECK if to_call <= 0 else Action.FOLD
 
+    def raise_allowed(self, player: Player, bet_seen: Dict[str, int]) -> bool:
+        """레이즈 권한(TDA Rule 47). bet_seen = 이번 라운드에서 각 플레이어가 마지막으로
+        행동한 직후의 current_bet. 아직 행동하지 않았거나, 그 뒤로 오른 금액의 합계
+        (current_bet − 그 값)가 풀 레이즈(min_raise) 이상이면 레이즈할 수 있다 — 불완전
+        올인 여러 개의 합이 풀 레이즈가 되면 재오픈된다."""
+        seen = bet_seen.get(player.name)
+        return seen is None or self.current_bet - seen >= self.min_raise
+
+    def bet_target(self, player: Player, action: Action, amount: int = 0) -> int:
+        """정규화된 액션이 실제로 도달할 이번 스트리트 베팅(to_amount). 상태는 바꾸지 않는다.
+        RAISE = max(요청, 최소 레이즈-투), ALL_IN = 스택 전부, CALL = 콜(스택 한도), 그 외 현재 베팅."""
+        max_to = player.chips + player.current_bet
+        if action == Action.RAISE:
+            return min(max(amount, self.current_bet + self.min_raise), max_to)
+        if action == Action.ALL_IN:
+            return max_to
+        if action == Action.CALL:
+            return min(self.current_bet, max_to)
+        return player.current_bet
+
     def execute_action(self, player: Player, action: Action, amount: int = 0,
                        raise_allowed: bool = True) -> ActionResult:
         """플레이어 액션을 검증·적용하고 실제 결과를 돌려준다. 불법이면 IllegalActionError.
+        라운드 상태(acted/bet_seen/차례)는 act()가 갱신한다.
 
-        레이즈·올인 규칙(표준 불완전 레이즈 규칙):
+        레이즈·올인 규칙:
         - 레이즈 증가분(새 current_bet − 이전 current_bet)이 min_raise 이상이면 풀 레이즈:
           min_raise를 그 증가분으로 갱신하고 액션을 다시 연다(reopens=True).
-        - 증가분이 0보다 크지만 min_raise 미만인 올인은 current_bet만 올린다. 이미 행동한
-          플레이어는 콜/폴드만 할 수 있다(reopens=False, min_raise 유지).
+        - 증가분이 0보다 크지만 min_raise 미만인 올인은 current_bet만 올린다(reopens=False,
+          min_raise 유지). 이미 행동한 사람의 레이즈 권한은 raise_allowed()가 누적으로 판정.
         - 콜도 못 채우는 올인은 current_bet을 바꾸지 않는다.
 
         각 "action" 이벤트에는 position/street/to_amount(해당 라운드에서
@@ -320,7 +543,7 @@ class TexasHoldem:
         bb_actual = bb_player.place_bet(self.big_blind)
         self.pot += bb_actual
         self.current_bet = self.big_blind
-        # 포스팅 순서(SB → BB)와 실제로 낸 칩. 웹 세션이 blind 이벤트를 이 순서로 발행한다.
+        # 포스팅 순서(SB → BB)와 실제로 낸 칩. 웹 세션·CLI가 블라인드 로그를 이 순서로 남긴다.
         self.blind_posts = [(sb_player, sb_actual), (bb_player, bb_actual)]
 
         self._emit("blinds", {
@@ -336,83 +559,10 @@ class TexasHoldem:
             p.name: [str(c) for c in p.hole_cards] for p in self.players
         })
 
-    def raise_allowed(self, player: Player, bet_seen: Dict[str, int]) -> bool:
-        """레이즈 권한(TDA Rule 47). bet_seen = 이번 라운드에서 각 플레이어가 마지막으로
-        행동한 직후의 current_bet. 아직 행동하지 않았거나, 그 뒤로 오른 금액의 합계
-        (current_bet − 그 값)가 풀 레이즈(min_raise) 이상이면 레이즈할 수 있다 — 불완전
-        올인 여러 개의 합이 풀 레이즈가 되면 재오픈된다."""
-        seen = bet_seen.get(player.name)
-        return seen is None or self.current_bet - seen >= self.min_raise
-
-    def bet_target(self, player: Player, action: Action, amount: int = 0) -> int:
-        """정규화된 액션이 실제로 도달할 이번 스트리트 베팅(to_amount). 상태는 바꾸지 않는다.
-        RAISE = max(요청, 최소 레이즈-투), ALL_IN = 스택 전부, CALL = 콜(스택 한도), 그 외 현재 베팅."""
-        max_to = player.chips + player.current_bet
-        if action == Action.RAISE:
-            return min(max(amount, self.current_bet + self.min_raise), max_to)
-        if action == Action.ALL_IN:
-            return max_to
-        if action == Action.CALL:
-            return min(self.current_bet, max_to)
-        return player.current_bet
-
-    def _is_round_over(self, acted: set) -> bool:
-        """모든 액티브 플레이어가 액션했고 베팅액이 균등하면 True.
-        행동 가능한(폴드·올인 아닌) 플레이어가 1명뿐이고 그가 콜할 금액이 없으면 더 물을
-        상대가 없으므로 True(런아웃). 웹 세션도 이 함수를 쓴다."""
-        active = [p for p in self.players if not p.is_folded and not p.is_all_in]
-        if not active:
-            return True
-        if len(active) == 1 and active[0].current_bet >= self.current_bet:
-            return True
-        return all(p.name in acted and p.current_bet == self.current_bet for p in active)
-
-    def _betting_round(self, street: Street):
-        """베팅 라운드 진행"""
-        order = self._betting_order(street)
-        n = len(order)
-        # acted = 마지막 풀 레이즈 이후 행동한 플레이어(라운드 종료 판정용).
-        # bet_seen = 각자 마지막 행동 직후의 current_bet(레이즈 권한 판정용, TDA Rule 47).
-        # 블라인드 포스팅은 행동이 아니다(SB도 자기 차례에 레이즈 가능, BB는 옵션 보유).
-        acted: set = set()
-        bet_seen: Dict[str, int] = {}
-
-        i = 0
-        while True:
-            if self._count_active() <= 1:
-                break
-            if self._is_round_over(acted):
-                break
-
-            player = order[i % n]
-            i += 1
-
-            if player.is_folded or player.is_all_in:
-                continue
-            if player.name in acted and player.current_bet == self.current_bet:
-                continue
-
-            action, amount = self._get_player_action(player)
-            can_raise = self.raise_allowed(player, bet_seen)
-            try:
-                result = self.execute_action(player, action, amount, raise_allowed=can_raise)
-            except IllegalActionError:
-                result = self.execute_action(player, self.fallback_action(player, action), 0,
-                                             raise_allowed=can_raise)
-            acted.add(player.name)
-            bet_seen[player.name] = self.current_bet
-
-            # 풀 레이즈(재오픈) 시: 본인만 acted에 남기고 다음 플레이어부터 다시 순회.
-            # 불완전 올인은 acted를 비우지 않는다 — 레이즈 권한은 bet_seen 누적으로 판정.
-            if result.reopens:
-                acted = {player.name}
-                i = (order.index(player) + 1) % n
-
     def _get_player_action(self, player: Player):
         """액션 콜백 또는 기본 요청"""
         if self._action_callback:
             return self._action_callback(player, self._get_game_state())
-        # 콜백 없으면 외부(CLI/웹)에서 override
         raise NotImplementedError("_action_callback이 설정되지 않았습니다.")
 
     def _active_players_from_dealer(self) -> List[Player]:
@@ -429,37 +579,12 @@ class TexasHoldem:
                 # UTG부터 (딜러+3)
                 start = (self.dealer_index + 3) % n
         else:
-            # SB부터 (딜러+1)
+            # SB부터 (딜러+1) — 헤즈업은 딜러+1 = BB
             start = (self.dealer_index + 1) % n
         return [self.players[(start + i) % n] for i in range(n)]
 
     def _count_active(self) -> int:
         return sum(1 for p in self.players if not p.is_folded)
-
-    def _advance_dealer(self):
-        self.dealer_index = (self.dealer_index + 1) % len(self.players)
-
-    def seat_for_next_hand(self, prev_button: Optional[str]) -> None:
-        """다음 핸드 좌석 정리: 칩 0 이하 플레이어 제거 + 무빙 버튼(ADR 0036).
-
-        버튼 = 고정 좌석 순서(seat_names)에서 직전 버튼 보유자(prev_button, 이름) 다음의
-        살아 있는 사람. SB·BB는 그 뒤 두 명(헤즈업은 버튼 = SB). prev_button이 None이면
-        (첫 핸드) dealer_index를 그대로 쓴다. 인덱스가 아니라 이름으로 찾으므로 버튼 앞
-        좌석이 빠져도 버튼이 한 칸 더 건너뛰지 않는다. 생존자가 2명 미만이면 버튼은 그대로."""
-        self.players = [p for p in self.players if p.chips > 0]
-        if len(self.players) < 2:
-            return
-        if prev_button is None or prev_button not in self.seat_names:
-            self.dealer_index %= len(self.players)
-            return
-        index_of = {p.name: i for i, p in enumerate(self.players)}
-        start = self.seat_names.index(prev_button)
-        n = len(self.seat_names)
-        for k in range(1, n + 1):
-            name = self.seat_names[(start + k) % n]
-            if name in index_of:
-                self.dealer_index = index_of[name]
-                return
 
     def order_from_button_left(self, players: List[Player]) -> List[Player]:
         """players를 버튼 왼쪽(SB 자리)부터 시계 방향 순서로 정렬(홀수 칩 수령 순서)."""

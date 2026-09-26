@@ -47,3 +47,4 @@
 | [0044](0044-node-row-key-is-action-seq.md) | 노드 행의 유일 키는 action_seq 하나, 3종 키는 action_seq에서 유도 | 유효 | gto-preflop |
 | [0045](0045-equity-precision-1pp-adaptive-mc.md) | 에퀴티 정밀도 목표 ±1%p(1σ) — vs 랜덤·레인지 반영 모두 적응형 MC(500~2,500샘플), easy만 고정 40 | 유효 | equity |
 | [0046](0046-cumulative-short-allins-reopen.md) | 불완전 올인 여러 개의 합이 풀 레이즈면 재오픈한다(TDA Rule 47) | 유효 | game |
+| [0047](0047-rules-live-in-core.md) | 포커 룰은 core 한 곳에 — 웹 세션·CLI는 호출만, 세션 경로는 참조 모델 퍼저로 지킨다 | 유효 | game |

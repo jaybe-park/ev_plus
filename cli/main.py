@@ -206,6 +206,8 @@ class GameController:
         street = self._get_street_enum(game_state["street"])
         min_raise_to = game_state["current_bet"] + game_state["min_raise"]  # 최소 레이즈 총액
         big_blind = self.game.big_blind
+        # 레이즈 권한은 core 판정(불완전 올인 뒤 닫힌 액션이면 콜/폴드만, TDA Rule 47)
+        can_raise = self.game.can_raise(player) and player.chips > call_amount
 
         options = []
         if call_amount == 0:
@@ -213,9 +215,10 @@ class GameController:
         else:
             options.append(("f", "폴드", Action.FOLD, 0))
             options.append(("c", f"콜", Action.CALL, call_amount))
-        if player.chips > call_amount:
+        if can_raise:
             options.append(("r", f"레이즈", Action.RAISE, min_raise_to))
-        options.append(("a", f"올인", Action.ALL_IN, 0))
+        if can_raise or player.chips <= call_amount:
+            options.append(("a", f"올인", Action.ALL_IN, 0))
         options.append(("s", "상태 보기", None, 0))
 
         print(f"\n  ── {pos_str} {player.name}의 차례 ──")
@@ -234,10 +237,13 @@ class GameController:
             print(f"  [c] 콜          {call_amount} 베팅 (내 칩: {player.chips} → {player.chips - call_amount})")
         else:
             print(f"  [c] 체크")
-        if player.chips > call_amount:
+        if can_raise:
             raise_cost = min_raise_to - player.current_bet  # 내가 실제 내야 할 금액
             print(f"  [r] 레이즈       총액 {min_raise_to} 이상 지정 (추가 {raise_cost} 이상, 내 칩: {player.chips} → {player.chips - raise_cost})")
-        print(f"  [a] 올인         {player.chips} 전부 베팅")
+        if can_raise or player.chips <= call_amount:
+            print(f"  [a] 올인         {player.chips} 전부 베팅")
+        else:
+            print(f"  (불완전 올인 뒤라 레이즈할 수 없습니다 — 콜 또는 폴드)")
         print(f"  [s] 상태 보기")
         opt_str = ""  # 재출력용 (s 커맨드 후)
 
@@ -272,45 +278,40 @@ class GameController:
             print("  잘못된 입력입니다. (f/c/r/a/s)")
 
     def play_hand(self):
-        """한 핸드 진행"""
+        """한 핸드 진행 — 룰(좌석·버튼·베팅·팟 분배)은 웹 세션과 같은 core 경로를 쓴다."""
         g = self.game
         self.action_log = []
         self.human_folded = False
 
-        # 파산 플레이어 제거 후 dealer_index 범위 보정
-        g.players = [p for p in g.players if p.chips > 0]
-        if len(g.players) < 2:
+        # 파산 플레이어 제거 + 무빙 버튼(ADR 0036)
+        g.seat_for_next_hand()
+        if len(g.players) < 2 or self.human_player not in g.players:
             return False
-        g.dealer_index = g.dealer_index % len(g.players)
 
-        g.start_hand()
+        g.start_hand()  # 블라인드·홀카드·프리플랍 라운드 준비
 
-        # 블라인드 로그 기록
+        # 블라인드 로그 기록(core가 포스팅한 순서·실제로 낸 칩)
         positions = g.get_positions()
-        for name, pos in positions.items():
-            if pos in ("SB", "BTN/SB"):
-                self.action_log.append(f"[{pos}] {name}: 스몰 블라인드 ({g.small_blind})")
-            elif pos == "BB":
-                self.action_log.append(f"[{pos}] {name}: 빅 블라인드 ({g.big_blind})")
+        for (p, posted), kind in zip(g.blind_posts, ("스몰", "빅")):
+            if posted > 0:
+                self.action_log.append(f"[{positions.get(p.name, '')}] {p.name}: {kind} 블라인드 ({posted})")
 
-        streets = [Street.PREFLOP, Street.FLOP, Street.TURN, Street.RIVER]
-        for street in streets:
-            if g._count_active() <= 1:
+        print_street_header(g, Street.PREFLOP)
+        g.play_round()
+        while True:
+            street = g.advance_street()  # 커뮤니티 카드 딜 + 라운드 준비(끝났으면 None)
+            if street is None:
                 break
-            if street != Street.PREFLOP:
-                self.action_log.append(f"── {street.value} ──")
-            # 커뮤니티 카드를 먼저 딜한 뒤 헤더 출력
-            g.deal_community(street)
+            self.action_log.append(f"── {street.value} ──")
             print_street_header(g, street)
-            g.run_street(street)
+            g.play_round()
 
-        # 쇼다운
-        winners = g.showdown()
-        self._show_result(winners)
+        # 쇼다운(사이드팟 포함)
+        self._show_result(g.showdown())
         return True
 
-    def _show_result(self, winners):
-        """결과 출력"""
+    def _show_result(self, result):
+        """결과 출력 (result: core ShowdownResult)"""
         print()
         print_separator("═")
         print("  🃏 쇼다운 결과")
@@ -319,18 +320,22 @@ class GameController:
         print()
 
         # 쇼다운 핸드 공개
-        contenders = [p for p in self.game.players if not p.is_folded]
-        if len(contenders) > 1:
+        if result.contested:
             print("  ── 핸드 공개 ──")
-            from core.evaluator import HandEvaluator
-            for p in contenders:
-                all_cards = p.hole_cards + self.game.community_cards
-                result = HandEvaluator.evaluate(all_cards)
-                cards_str = " ".join(str(c) for c in p.hole_cards)
-                print(f"  {p.name}: {cards_str}  →  {result}")
+            by_name = {p.name: p for p in self.game.players}
+            for name, hand in result.evaluations.items():
+                cards_str = " ".join(str(c) for c in by_name[name].hole_cards)
+                print(f"  {name}: {cards_str}  →  {hand}")
             print()
+            if len(result.pots) > 1:
+                for i, pot in enumerate(result.pots):
+                    label = "메인 팟" if i == 0 else f"사이드 팟 {i}"
+                    names = ", ".join(w.name for w in pot.winners)
+                    note = " (초과 베팅 반환)" if len(pot.eligible) == 1 else ""
+                    print(f"  {label} {pot.amount}: {names}{note}")
+                print()
 
-        print("  🏆 승자: " + ", ".join(w.name for w in winners))
+        print("  🏆 승자: " + ", ".join(w.name for w in result.winners))
         print()
         positions = self.game.get_positions()
         print_players(self.game.players, show_all=True, positions=positions)
