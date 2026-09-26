@@ -34,3 +34,4 @@
 | [0031](0031-bot-hand-archive-human-hand-retain.md) | 봇 전용 핸드는 아카이브 후 삭제, 사람 참여 핸드는 영구 보존 | 유효 | db |
 | [0032](0032-partial-index-only-for-pending-queues.md) | 대기 큐 인덱스는 부분 인덱스로만, 인덱스 삭제 전 EXPLAIN QUERY PLAN 확인 | 유효 | db |
 | [0033](0033-no-direct-writes-to-shared-db.md) | 공유 운영 DB에 직접 쓰지 않는다 — 스크립트 경유 | 유효 | db |
+| [0034](0034-allin-only-snaps-to-allin-sibling.md) | 라이브 올인은 올인 형제에만 스냅한다(레이즈 형제와 구분, 0010 확장) | 유효 | gto-preflop |

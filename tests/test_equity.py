@@ -12,6 +12,10 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# GTO 프리플랍 로더/어드바이저가 db.connection.get_connection()으로 실 DB를
+# 읽으므로(인자 없이 호출 시 기본 poker.db) 그라인드/운영 데이터와 격리한다.
+os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+
 from core.card import Card, Suit, Rank
 from core.game import Action
 from core.player import Player
@@ -435,6 +439,69 @@ def test_board_rank_table():
           f"불일치={mismatch}")
 
 
+def test_gto_allin_action_and_hint():
+    """[E-13] T-014: GTO 샘플 액션이 allin이면 봇이 Action.ALL_IN을 실행하고,
+    사람 힌트 문자열에 '올인 N%'가 번역돼 보인다(ADR 0002 "화면 그대로만" —
+    allin을 레이즈로 뭉개거나 휴리스틱으로 떨어뜨리지 않음)."""
+    print("\n[E-13] GTO 올인 처리 (T-014)")
+    from db.connection import get_connection
+    import gto.loader as gto_loader
+    from gto.advisor import GTOAdvisor
+
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR IGNORE INTO gto_preflop_situations "
+        "(position, vs_position, range_type, raise_size, situation_label, action_seq) "
+        "VALUES ('UTG', NULL, 'open', 2.5, 'UTG RFI(올인 테스트)', '')"
+    )
+    conn.commit()
+    sid = conn.execute(
+        "SELECT id FROM gto_preflop_situations "
+        "WHERE position='UTG' AND range_type='open' AND vs_position IS NULL"
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT OR IGNORE INTO gto_preflop_hands "
+        "(situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin) "
+        "VALUES (?, 'AA', 0.0, 0.0, 0.0, 1.0)", (sid,)
+    )
+    conn.commit()
+    conn.close()
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+
+    # 힌트 문자열: "올인 100%" 번역 확인 (gto/advisor.py format_hint)
+    advisor = GTOAdvisor()
+    gs = {"street": "프리플랍", "current_bet": 20, "preflop_seq": []}
+    rec = advisor.get_recommendation(cards("Ac", "Ad"), "UTG", {"Bot": "UTG"}, gs, big_blind=20)
+    check("올인 100% 레인지 조회됨", rec is not None and rec["frequencies"].get("allin") == 1.0,
+          f"rec={rec}")
+    hint = advisor.format_hint(rec)
+    check("힌트에 '올인 100%' 번역 포함", hint is not None and "올인 100%" in hint, f"hint={hint}")
+
+    # 봇: sample_action이 "allin"으로 고정된 스팟에서, hard 봇이 준수율(0.95)만큼
+    # Action.ALL_IN을 실행한다(레이즈로 뭉개지거나 휴리스틱 폴백으로 새지 않음).
+    random.seed(42)
+    N = 60
+    allins = 0
+    for _ in range(N):
+        p = Player("Bot", chips=1000, is_human=False)
+        p.hole_cards = cards("Ac", "Ad")
+        bot = PokerBot(p, BotDifficulty.HARD)
+        st = {
+            "street": "프리플랍", "pot": 30, "current_bet": 20, "min_raise": 20, "big_blind": 20,
+            "positions": {"Bot": "UTG"}, "preflop_seq": [],
+            "players": [
+                {"name": "Bot", "chips": 1000, "current_bet": 0,
+                 "is_folded": False, "is_all_in": False, "is_human": False},
+            ],
+        }
+        action, _ = bot.decide_action(st)
+        if action == Action.ALL_IN:
+            allins += 1
+    check("hard 봇이 GTO allin(freq=1.0)을 준수율만큼 Action.ALL_IN으로 실행",
+          allins >= int(N * 0.8), f"allins={allins}/{N} (기대: 준수율 0.95 근방)")
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("  에퀴티 엔진 + 봇 테스트")
@@ -452,6 +519,7 @@ if __name__ == "__main__":
     test_made_hand_rank()
     test_grader()
     test_board_rank_table()
+    test_gto_allin_action_and_hint()
 
     print(f"\n{'='*50}")
     print(f"  결과: {PASS} 통과 / {FAIL} 실패")

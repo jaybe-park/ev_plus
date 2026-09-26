@@ -140,6 +140,12 @@ def canonical_node_key(preflop_seq: list) -> Optional[str]:
       3) 해당 프리픽스/브랜치에 **수집된 레이즈-형제가 없으면**(미수집 브랜치) 숫자로
          억지 매칭하지 않고 **None 반환** → 상위(_recommend_by_seq)가 큐 등록 + equity
          휴리스틱 폴백을 타게 한다(추측 금지 대원칙).
+      4) 라이브 액션이 **올인**이면(2)의 대상을 "올인 형제"로 좁힌다: 이 프리픽스
+         노드 자신에 저장된 raise_size(수집 당시 "레이즈" 액션의 실측 사이즈)와
+         정확히 일치하는 형제는 "레이즈" 토큰임이 확정되므로 후보에서 제외하고,
+         남은 형제(있다면)만 대상으로 (2)의 스냅을 적용한다. 남는 형제가 없으면
+         (올인 데이터가 수집되지 않음) None(억지 매칭 금지 — 숏스택 올인이 일반
+         레이즈 노드로 새지 않게 함, T-014).
     fold/check/call은 사이즈가 없으므로 그대로 이어붙인다. 블라인드는 preflop_seq에
     자발 액션으로 들어오지 않으므로 자동 제외(GTO Wizard 포맷과 동일).
 
@@ -164,6 +170,25 @@ def canonical_node_key(preflop_seq: list) -> Optional[str]:
             raise_children = [(c, s) for c, s in raise_children if s is not None]
             if not raise_children:
                 return None  # 미수집 브랜치 — 억지 매칭 금지, 상위가 큐/폴백 처리
+
+            if act == "allin":
+                # T-014 (ADR 0010 확장): 라이브 올인을 "레이즈" 형제와 뭉뚱그려
+                # bb 최소거리로 스냅하지 않는다 — 숏스택 올인이 우연히 일반 레이즈
+                # 사이즈에 가까우면 비올인 노드로 잘못 스냅될 수 있다(원래 버그).
+                # 이 프리픽스 노드 자신에 저장된 raise_size(수집 당시 "레이즈" 액션에
+                # 쓰인 실측 사이즈)를 알면, 그 값과 정확히 일치하는 형제는 "레이즈"
+                # 토큰임이 데이터로 확정되므로 후보에서 제외한다(추측이 아니라
+                # 저장된 값과의 일치 확인). 남는 형제만 "올인 형제" 후보로 본다.
+                parent = get_range_by_seq(prefix)
+                known_raise_bb = parent.get("raise_size") if parent else None
+                if known_raise_bb is not None:
+                    raise_children = [
+                        (c, s) for c, s in raise_children
+                        if abs(s - known_raise_bb) > 1e-9
+                    ]
+                if not raise_children:
+                    return None  # 올인 형제 데이터 없음 — 억지 매칭 금지, 큐/폴백
+
             live = a.get("amount_bb")
             if live is None:
                 # 사이즈 미상 라이브 레이즈: 형제 유일이면 그걸로, 다의면 매칭 불가
@@ -390,7 +415,7 @@ class GTOAdvisor:
         hand = recommendation["hand"]
         situation = recommendation["situation"]
 
-        action_map = {"fold": "폴드", "call": "콜", "raise": "레이즈"}
+        action_map = {"fold": "폴드", "call": "콜", "raise": "레이즈", "allin": "올인"}
         parts = []
         for action, freq in freqs.items():
             if freq > 0.01:
