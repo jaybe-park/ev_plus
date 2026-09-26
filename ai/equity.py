@@ -473,7 +473,7 @@ def smart_equity(
     캐시 → 전수조사 → MC 순으로 최선의 equity 반환.
 
     - use_cache: 정확값/고정밀 누적값이 있으면 그대로 사용 (hard 봇용).
-      상대 1명일 때만 적용 — 멀티웨이 캐시 행은 읽지 않는다(T-032, D-23 대기)
+      상대 1명일 때만 적용 — 멀티웨이 캐시 행은 읽지 않는다(T-032, 캐시 폐기는 T-036/ADR 0034)
     - contribute: MC 결과를 캐시에 누적 → 봇이 칠수록 DB가 똑똑해짐.
       처음 만난 스팟은 자동으로 워커 큐에 등록되는 효과.
     - exact_river: 리버 1:1이면 전수조사(990조합, <1초)로 정확값 계산
@@ -489,7 +489,7 @@ def smart_equity(
         row = cache_lookup(key, num_opponents)
 
     # 멀티웨이(num_opponents>1) 캐시 행은 과거 동률을 1/2로 센 값이 섞여 있어(T-032)
-    # 읽지 않는다. 처분(무효화/캐시 폐기)은 D-23 결정 대기.
+    # 읽지 않는다. 캐시 자체는 T-036(ADR 0034)에서 폐기된다.
     read_cache = use_cache and num_opponents == 1
 
     if read_cache and row:
