@@ -360,6 +360,19 @@ def equity_detail(
     return EquityResult(_ratio(w, t, n), f"mc:{n}", n)
 
 
+def standard_error(result: EquityResult) -> float:
+    """에퀴티 추정의 표준오차(1σ, 0~1 단위) — Play Grader 경계 판정용(ADR 0039).
+
+    - 전수(`exact`)·프리플랍 상수 테이블(`preflop-table`)·`none`: 0 (정확값으로 취급)
+    - MC(`mc:N`): sqrt(p(1−p)/N). 한 샘플의 지분(0·1/k·1) 분산은 p(1−p) 이하라 이 값은
+      실제 표준오차의 상한이다(동률이 있으면 약간 크게 잡힌다 — 경계를 넓히는 쪽).
+    """
+    if not result.source.startswith("mc:") or result.samples <= 0:
+        return 0.0
+    p = result.equity
+    return math.sqrt(max(0.0, p * (1.0 - p)) / result.samples)
+
+
 def smart_equity(
     hole_cards: List[Card],
     board: List[Card],

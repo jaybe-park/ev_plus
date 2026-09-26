@@ -1,6 +1,6 @@
 # AI 봇 — 현재 사양
 
-> 최종 갱신: 2026-09-26 · 관련 결정: [0014](../decisions/0014-difficulty-is-mc-resolution.md), [0034](../decisions/0034-abolish-equity-cache.md), [0045](../decisions/0045-equity-precision-1pp-adaptive-mc.md), [0015](../decisions/0015-aggression-margin.md), [0016](../decisions/0016-bot-validation-arena-legacy.md), [0023](../decisions/0023-postflop-range-narrowing.md), [0004](../decisions/0004-raise-size-measured.md), [0005](../decisions/0005-100bb-and-headsup-sb.md), [0007](../decisions/0007-structured-preflop-seq.md)
+> 최종 갱신: 2026-09-26 · 관련 결정: [0039](../decisions/0039-grader-uncertainty-band.md), [0014](../decisions/0014-difficulty-is-mc-resolution.md), [0034](../decisions/0034-abolish-equity-cache.md), [0045](../decisions/0045-equity-precision-1pp-adaptive-mc.md), [0015](../decisions/0015-aggression-margin.md), [0016](../decisions/0016-bot-validation-arena-legacy.md), [0023](../decisions/0023-postflop-range-narrowing.md), [0004](../decisions/0004-raise-size-measured.md), [0005](../decisions/0005-100bb-and-headsup-sb.md), [0007](../decisions/0007-structured-preflop-seq.md)
 > 에퀴티 계산: [equity.md](equity.md) · 프리플랍 GTO 조회 규칙: [gto-preflop.md](gto-preflop.md)
 
 ## 무엇을 하는가
@@ -38,9 +38,9 @@
 ### 플레이 평가 (Play Grader, `gto/grader.py` + `server/session.py`)
 - 사람 액션만, 액션 적용 **전**의 팟·베팅으로 평가한다. 아레나처럼 `equity_enabled=False`인 세션은 평가·패널 계산을 건너뛴다 — 강제 장치: `tests/test_grader.py::test_session_equity_and_review`
 - 프리플랍: GTO 최빈 액션 = ✅, 선택 빈도 > 25% 🟡, 5~25% 🟠, < 5% 🔴, 데이터 없음 ⬜ — 강제 장치: `tests/test_grader.py::test_preflop_grading`, `tests/test_equity.py::test_grader`
-- 포스트플랍(vs_random equity 기준): 콜은 `EV = equity×(팟+콜) − 콜`이 음수면 🔴 + 손실 bb, 폴드는 equity > 팟오즈 + 0.05면 🔴 "놓친 EV", 벳/레이즈/체크는 폴드 에퀴티를 모르므로 제한 판정(equity > 0.7 체크 ⚠️, < 0.3 레이즈 🟡 블러프, 그 외 ⬜) — 강제 장치: `tests/test_grader.py::test_postflop_call_grading`, `::test_postflop_fold_grading`, `::test_postflop_bet_grading`
+- 포스트플랍(vs_random equity 기준): 콜은 `EV = equity×(팟+콜) − 콜`이 음수면 🔴 + 손실 bb, 폴드는 equity > 팟오즈 + 0.05면 🔴 "놓친 EV"(둘 다 아래 경계 구간 먼저), 벳/레이즈/체크는 폴드 에퀴티를 모르므로 제한 판정(equity > 0.7 체크 ⚠️, < 0.3 레이즈 🟡 블러프, 그 외 ⬜) — 강제 장치: `tests/test_grader.py::test_postflop_call_grading`, `::test_postflop_fold_grading`, `::test_postflop_bet_grading`
 - 콜·폴드 판정의 팟·콜은 유효값이다: 세션이 `stack=(내 남은 칩, 내 핸드 기여, 다른 모두의 핸드 기여)`를 넘기고 grader가 `core/pot_odds.effective_call_pot`으로 캡한다. 예: 팟 100, 상대 1,000 올인, 내 스택 100, 에퀴티 40% → 콜 EV +20 ✅ — 강제 장치: `tests/test_grader.py::test_short_stack_effective_call`(순수 함수 + 세션 `_get_equity_info`/`_grade_human_action` 경로)
-- 콜 판정 경계(콜 마진 0 vs 폴드 마진 0.05, MC 오차)는 D-29 대기
+- **경계 구간**: 콜·폴드 모두 |에퀴티 − 유효 팟오즈| < 2×표준오차면 ✅/🔴 대신 ⬜ "경계 — 거의 본전"이다. 표준오차는 세션이 패널 vs_random 계산 결과(`equity_detail`의 경로·샘플 수)로 `ai.equity.standard_error`를 구해 넘긴다: MC는 sqrt(p(1−p)/N)(약 1%p → 경계 ±2%p), 전수(리버 1:1)·프리플랍 테이블은 0이라 경계 없이 딱 잘라 판정한다. 경계 밖은 기존 판정(콜 EV 음수 🔴, 폴드는 에퀴티 > 팟오즈 + 0.05면 🔴)이다. 콜·폴드 사유에는 항상 "에퀴티 x% · 팟오즈 y% · 오차 ±z%p"(전수는 "오차 0(전수)")가 붙는다. 2σ 구간이라 정확히 손익분기인 스팟도 약 5%는 경계 밖(✅/🔴)으로 나온다 — 근거: [0039](../decisions/0039-grader-uncertainty-band.md) · 강제 장치: `tests/test_grader.py::test_borderline_band`(순수 함수 경계 안/밖·전수 무경계, 턴 1:1 손익분기 콜·폴드 40회 반복 ⬜ ≥ 36, 8%p 나쁜 콜 10회 전부 🔴, 세션 `_grade_human_action` 경로 사유 문구)
 
 ### 검증·튜닝
 - 봇 로직을 바꾸면 `scripts/ai_regression.py`로 legacy(개선 전 휴리스틱 봇) 대비 후퇴가 없는지 확인한다. ±10~20 bb/100은 노이즈 — 근거: [0016](../decisions/0016-bot-validation-arena-legacy.md) · 강제 장치: `scripts/ai_regression.py`(수동, exit 1) — `tests/run_all.py`에 없음

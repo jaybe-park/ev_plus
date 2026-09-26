@@ -168,6 +168,100 @@ def test_short_stack_effective_call():
             os.remove(tmp)
 
 
+def test_borderline_band():
+    print("\n[G-7] 콜·폴드 경계 구간 — |에퀴티−팟오즈| < 2×표준오차 = ⬜ (ADR 0039, T-033)")
+    from ai.equity import equity_detail, exact_counts_turn, standard_error, EquityResult
+
+    # 표준오차: 전수·상수 테이블은 0, MC는 sqrt(p(1-p)/n)
+    check("exact SE = 0", standard_error(EquityResult(0.4, "exact", 990)) == 0.0)
+    check("preflop-table SE = 0", standard_error(EquityResult(0.6, "preflop-table", 10**6)) == 0.0)
+    check("mc:2500 p=0.5 SE = 1%p", abs(standard_error(EquityResult(0.5, "mc:2500", 2500)) - 0.01) < 1e-12)
+
+    # 순수 함수: 팟 200·콜 100 → 팟오즈 33.3%. SE 1%p → 경계 ±2%p
+    r = grade_postflop_call(0.32, 200, 100, 20, se=0.01)
+    check("오차 안 −EV 콜 = ⬜ 경계", r.grade == "⬜" and "경계" in r.reason, f"={r.grade} {r.reason}")
+    check("경계 사유에 에퀴티·팟오즈·오차", all(k in r.reason for k in ("에퀴티 32.0%", "팟오즈 33.3%", "오차 ±2.0%p")),
+          f"={r.reason}")
+    r = grade_postflop_fold(0.35, 200, 100, 20, se=0.01)
+    check("오차 안 폴드 = ⬜ 경계", r.grade == "⬜", f"={r.grade} {r.reason}")
+    r = grade_postflop_call(0.25, 200, 100, 20, se=0.01)
+    check("오차 밖 −EV 콜 = 🔴", r.grade == "🔴" and "오차 ±2.0%p" in r.reason, f"={r.grade} {r.reason}")
+    r = grade_postflop_fold(0.45, 200, 100, 20, se=0.01)
+    check("오차 밖 높은 에퀴티 폴드 = 🔴", r.grade == "🔴", f"={r.grade}")
+    r = grade_postflop_call(0.33, 200, 100, 20, se=0.0)
+    check("전수(se=0)는 경계 없음: 0.3%p 부족 콜도 🔴", r.grade == "🔴" and "오차 0(전수)" in r.reason,
+          f"={r.grade} {r.reason}")
+    r = grade_postflop_call(0.34, 200, 100, 20)
+    check("전수 0.7%p 이득 콜 = ✅", r.grade == "✅" and "에퀴티 34.0%" in r.reason, f"={r.reason}")
+
+    # 실제 MC 경로 반복: 턴 1:1(적응형 MC) 손익분기 스팟. 고치기 전엔 🔴/✅가 반반.
+    hole, board = cards("Ah", "Td"), cards("Ks", "9d", "5c", "3h")
+    w, t, n = exact_counts_turn(hole, board)
+    exact_eq = (w + 0.5 * t) / n
+    call = 1000
+    pot = round(call * (1 - exact_eq) / exact_eq)  # 팟오즈 ≈ 정답 에퀴티
+    random.seed(33)
+    grades = []
+    for _ in range(40):
+        d = equity_detail(hole, board, 1)
+        grades.append(grade_postflop_call(d.equity, pot, call, 20, se=standard_error(d)).grade)
+    n_border = grades.count("⬜")
+    check(f"손익분기 콜 40회 중 ⬜ ≥ 36 (2σ ≈ 95%) — 실제 {n_border}", n_border >= 36, f"={grades}")
+    grades_f = []
+    for _ in range(40):
+        d = equity_detail(hole, board, 1)
+        grades_f.append(grade_postflop_fold(d.equity, pot, call, 20, se=standard_error(d)).grade)
+    check(f"손익분기 폴드 40회 중 ⬜ ≥ 36 — 실제 {grades_f.count('⬜')}", grades_f.count("⬜") >= 36,
+          f"={grades_f}")
+    far_pot = round(call * (1 - (exact_eq + 0.08)) / (exact_eq + 0.08))  # 팟오즈 = 정답+8%p
+    bad = [grade_postflop_call(d.equity, far_pot, call, 20, se=standard_error(d)).grade
+           for d in (equity_detail(hole, board, 1) for _ in range(10))]
+    check("팟오즈가 8%p 높은 콜은 반복해도 항상 🔴", bad == ["🔴"] * 10, f"={bad}")
+
+    # 세션 경로: 플랍 2인(적응형 MC) 콜 → 복기 사유에 오차, 에퀴티·팟오즈 근처면 ⬜
+    import tempfile
+    from server.session import WebGameSession
+    from core.game import Street, Action
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    prev_env = os.environ.get("EV_PLUS_DB")
+    os.environ["EV_PLUS_DB"] = tmp
+    try:
+        random.seed(9)
+        s = WebGameSession(session_id="t033b", human_name="Hero", chips=5000,
+                           num_bots=1, difficulty="easy", small_blind=10)
+        villain = [p for p in s.game.players if p is not s.human][0]
+        s.human.hole_cards = hole
+        s.game.community_cards = board
+        s.game.current_street = Street.TURN
+        # 턴: 이전 스트리트까지 둘 다 mine씩, 상대가 이번 스트리트 call 벳 → 팟 = 2·mine + call.
+        # 팟오즈 = call/(팟+call)이 정답 에퀴티(≈44.5%)가 되도록 mine을 맞춘다(1칩 반올림 오차).
+        mine = (pot - call) // 2
+        s.human.chips, s.human.total_bet_this_round, s.human.current_bet = 4000, mine, 0
+        s.human.is_folded = s.human.is_all_in = False
+        villain.chips = 3000
+        villain.total_bet_this_round, villain.current_bet = mine + call, call
+        villain.is_folded, villain.is_all_in = False, False
+        s.game.current_bet = call
+        s.game.pot = 2 * mine + call
+        s._equity_cache = {}
+        s.hand_reviews = []
+        info = s._get_equity_info()
+        check("세션 에퀴티 경로 = MC(오차 있음)", info["source"].startswith("mc:") and info["vs_random_se"] > 0,
+              f"={info['source']} {info.get('vs_random_se')}")
+        s._grade_human_action(s.human, Action.CALL, 0, Street.TURN, call)
+        rv = s.hand_reviews[-1] if s.hand_reviews else {}
+        check("세션 복기: 손익분기 콜 = ⬜ 경계", rv.get("grade") == "⬜", f"={rv}")
+        check("세션 복기 사유에 에퀴티·팟오즈·오차", all(k in rv.get("reason", "") for k in ("에퀴티", "팟오즈", "오차 ±")),
+              f"={rv.get('reason')}")
+    finally:
+        if prev_env is None:
+            os.environ.pop("EV_PLUS_DB", None)
+        else:
+            os.environ["EV_PLUS_DB"] = prev_env
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def test_postflop_fold_grading():
     print("\n[G-3] 포스트플랍 폴드 판정")
     # equity 15%, 팟오즈 33% → 정상 폴드
@@ -277,6 +371,7 @@ if __name__ == "__main__":
     test_postflop_fold_grading()
     test_postflop_bet_grading()
     test_short_stack_effective_call()
+    test_borderline_band()
     test_session_equity_and_review()
 
     print(f"\n{'='*50}")

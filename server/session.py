@@ -16,7 +16,7 @@ from core.game import TexasHoldem, Action, Street, IllegalActionError
 from core.player import Player
 from core.pot_odds import effective_call_pot, pot_odds as calc_pot_odds, call_ev as calc_call_ev
 from ai.bot import PokerBot, BotDifficulty, opponent_range_info
-from ai.equity import smart_equity, equity_detail, ranged_equity
+from ai.equity import smart_equity, equity_detail, ranged_equity, standard_error
 from gto.advisor import GTOAdvisor
 from gto.grader import (
     grade_preflop_action, grade_postflop_call, grade_postflop_fold,
@@ -804,6 +804,8 @@ class WebGameSession:
             "call_ev_bb": round(call_ev_bb, 2) if call_ev_bb is not None else None,
             "source": source,
             "samples": detail.samples,
+            # Play Grader 경계 판정용(ADR 0039) — 응답 스키마 밖(패널 비표시)
+            "vs_random_se": standard_error(detail),
             "num_opponents": n_opps,
             "opponents": opponents_out,
             "history": list(self.equity_history),
@@ -828,6 +830,7 @@ class WebGameSession:
         try:
             equity_info = self._get_equity_info(call_amt)
             vs_random = equity_info["vs_random"] if equity_info else None
+            se = equity_info.get("vs_random_se", 0.0) if equity_info else 0.0
             gto_freqs = None
             grade = None
 
@@ -846,9 +849,11 @@ class WebGameSession:
                 big_blind = self.game.big_blind
                 stack = self._human_stack()  # 숏스택 캡 (T-033)
                 if action == Action.CALL:
-                    grade = grade_postflop_call(vs_random, pot, call_amt, big_blind, stack=stack)
+                    grade = grade_postflop_call(vs_random, pot, call_amt, big_blind,
+                                                stack=stack, se=se)
                 elif action == Action.FOLD:
-                    grade = grade_postflop_fold(vs_random, pot, call_amt, big_blind, stack=stack)
+                    grade = grade_postflop_fold(vs_random, pot, call_amt, big_blind,
+                                                stack=stack, se=se)
                 else:
                     grade = grade_postflop_bet_or_raise(vs_random, action.value)
 

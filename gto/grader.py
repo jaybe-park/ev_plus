@@ -9,6 +9,7 @@
   · 콜: EV(콜) = equity×(팟+콜) − 콜 → 음수면 감점 + bb 손실 추정
     (팟·콜은 숏스택이면 유효값 — core/pot_odds.effective_call_pot)
   · 폴드: equity > 팟오즈+마진이었으면 "놓친 EV" 감점
+  · 콜·폴드 공통: |equity − 팟오즈| < 2×표준오차(MC 추정 오차)면 ⬜ "경계"(ADR 0039)
   · 벳/레이즈/체크: 폴드 에퀴티를 몰라 정확 평가 불가 → v1은 제한 판정만
 """
 
@@ -84,41 +85,70 @@ def _effective(pot: int, call_amount: int, stack: Optional[Tuple[int, int, Itera
     return effective_call_pot(pot, call_amount, my_chips, my_bet, other_bets)
 
 
+def _odds_text(equity: float, pot_odds: float, se: float) -> str:
+    """복기 사유에 붙는 판정 근거: 에퀴티·팟오즈·오차 범위(±2σ, 전수·테이블은 0)."""
+    err = f"오차 ±{2 * se * 100:.1f}%p" if se > 0 else "오차 0(전수)"
+    return f"에퀴티 {equity*100:.1f}% · 팟오즈 {pot_odds*100:.1f}% · {err}"
+
+
+def _borderline(equity: float, pot_odds: float, se: float) -> bool:
+    """|에퀴티 − 팟오즈| < 2×표준오차 → 추정 오차 안이라 판정 불가(ADR 0039). se=0이면 항상 False."""
+    return abs(equity - pot_odds) < 2 * se
+
+
+def _borderline_result(action: str, equity: float, pot_odds: float, se: float) -> GradeResult:
+    return GradeResult(
+        street="", action=action, grade="⬜",
+        reason=f"경계 — 거의 본전 ({_odds_text(equity, pot_odds, se)})", ev_loss_bb=None,
+    )
+
+
 def grade_postflop_call(
     equity: float, pot: int, call_amount: int, big_blind: int,
     stack: Optional[Tuple[int, int, Iterable[int]]] = None,
+    se: float = 0.0,
 ) -> GradeResult:
     """
     콜 액션 평가. EV = equity*(유효 팟+유효 콜) - 유효 콜.
     stack=(내 남은 칩, 내 기여, 상대 기여들)을 주면 숏스택 캡을 적용한다(core/pot_odds).
+    se = 에퀴티 추정의 표준오차(`ai.equity.standard_error`). |에퀴티−팟오즈| < 2·se면 ⬜ 경계
+    (ADR 0039). 전수 계산(se=0)은 경계 없이 EV 부호로 딱 잘라 판정한다.
     """
     call_amount, pot = _effective(pot, call_amount, stack)
+    odds = _pot_odds(call_amount, pot)
+    if _borderline(equity, odds, se):
+        return _borderline_result("call", equity, odds, se)
     ev = call_ev(equity, call_amount, pot)
+    basis = _odds_text(equity, odds, se)
     if ev < 0:
         ev_loss_bb = -ev / big_blind  # 손실 크기를 양수로 표현 (grade_postflop_fold와 부호 통일)
-        reason = f"콜 EV={ev:.1f} (음수) — equity {equity*100:.1f}%로는 손해 콜"
+        reason = f"콜 EV={ev:.1f} (음수) — 손해 콜 ({basis})"
         return GradeResult(street="", action="call", grade="🔴", reason=reason, ev_loss_bb=ev_loss_bb)
 
-    reason = f"콜 EV={ev:.1f} (양수) — equity {equity*100:.1f}%로 이득 콜"
+    reason = f"콜 EV={ev:.1f} (양수) — 이득 콜 ({basis})"
     return GradeResult(street="", action="call", grade="✅", reason=reason, ev_loss_bb=None)
 
 
 def grade_postflop_fold(
     equity: float, pot: int, call_amount: int, big_blind: int, margin: float = 0.05,
     stack: Optional[Tuple[int, int, Iterable[int]]] = None,
+    se: float = 0.0,
 ) -> GradeResult:
-    """폴드 액션 평가. 팟오즈보다 equity가 충분히 높은데 폴드했으면 놓친 EV.
-    stack은 grade_postflop_call과 같다(숏스택 캡)."""
+    """폴드 액션 평가. 팟오즈보다 equity가 충분히(margin) 높은데 폴드했으면 놓친 EV.
+    stack·se는 grade_postflop_call과 같다(숏스택 캡, 오차 안이면 ⬜ 경계 — ADR 0039)."""
     call_amount, pot = _effective(pot, call_amount, stack)
     pot_odds = _pot_odds(call_amount, pot)
+    if _borderline(equity, pot_odds, se):
+        return _borderline_result("fold", equity, pot_odds, se)
+    basis = _odds_text(equity, pot_odds, se)
 
     if equity > pot_odds + margin:
         ev = call_ev(equity, call_amount, pot)
         ev_loss_bb = ev / big_blind  # 콜했다면 얻었을 EV = 폴드로 놓친 EV (양수)
-        reason = f"equity {equity*100:.1f}%가 팟오즈 {pot_odds*100:.1f}%보다 충분히 높은데 폴드 — 놓친 EV"
+        reason = f"팟오즈보다 에퀴티가 충분히 높은데 폴드 — 놓친 EV ({basis})"
         return GradeResult(street="", action="fold", grade="🔴", reason=reason, ev_loss_bb=ev_loss_bb)
 
-    reason = f"equity {equity*100:.1f}%, 팟오즈 {pot_odds*100:.1f}% — 적절한 폴드"
+    reason = f"적절한 폴드 ({basis})"
     return GradeResult(street="", action="fold", grade="✅", reason=reason, ev_loss_bb=None)
 
 
