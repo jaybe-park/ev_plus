@@ -566,13 +566,24 @@ def ranged_equity(
     레인지 반영 equity (조건부 분포). num_simulations가 None이면 적응형 MC
     (SE ≤ TARGET_SE, ADR 0045), 정수면 그 수만큼 고정 MC.
     """
+    return ranged_equity_detail(hole_cards, board, samplers, num_simulations).equity
+
+
+def ranged_equity_detail(
+    hole_cards: List[Card],
+    board: List[Card],
+    samplers: List[Optional[RangeSampler]],
+    num_simulations: Optional[int] = None,
+) -> EquityResult:
+    """ranged_equity와 그 계산 경로: (equity, "mc:N", N). 레인지 반영은 항상 MC다
+    (전수·테이블 경로 없음). 에퀴티 패널이 출처·표본 수를 실제 계산 그대로 보여줄 때 쓴다."""
     if len(hole_cards) < 2 or not samplers:
-        return 0.5
+        return EquityResult(0.5, "none", 0)
     if num_simulations is None:
         w, t, n, _se = mc_adaptive_ranged(hole_cards, board, samplers)
     else:
         w, t, n = mc_counts_ranged(hole_cards, board, samplers, num_simulations)
-    return _ratio(w, t, n)
+    return EquityResult(_ratio(w, t, n), f"mc:{n}", n)
 
 
 def made_hand_rank(hole_cards: List[Card], community_cards: List[Card]) -> int:

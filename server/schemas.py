@@ -120,16 +120,17 @@ class EquityOpponent(BaseModel):
 
 class EquityHistoryEntry(BaseModel):
     street: str               # 프리플랍 / 플랍 / 턴 / 리버
-    vs_random: float
+    vs_range: float           # 그 스트리트 첫 결정의 vs_range (패널과 같은 기준, T-006)
 
 
 class EquityInfo(BaseModel):
-    vs_random: float                    # 랜덤 핸드 대비 승률 (캐시/MC)
-    vs_range: float                     # 상대 레인지 반영 종합 승률
-    pot_odds: float = 0.0                # call / (pot + call), 벳 없으면 0
-    call_ev_bb: Optional[float] = None  # 콜 EV (bb), 벳 직면 시만
-    source: str                         # exact | mc:N
-    samples: int                        # 계산에 쓰인 샘플 수
+    vs_random: float                    # 랜덤 핸드 대비 승률 — 화면 비표시(ADR 0022/0034), 평가·기록용
+    vs_range: float                     # 상대 레인지 반영 종합 승률 — 패널이 보여주는 값
+    range_applied: bool = False         # 레인지 정보가 있는 상대가 하나라도 있나(없으면 vs_range = vs_random)
+    pot_odds: float = 0.0                # 유효 콜 / (유효 팟 + 유효 콜), 벳 없으면 0
+    call_ev_bb: Optional[float] = None  # vs_range 기준 콜 EV (bb), 벳 직면 시만
+    source: str                         # vs_range를 만든 경로: preflop-table | exact | mc:N
+    samples: int                        # 그 계산의 샘플 수(테이블 1,000,000 / 전수 990 / MC N)
     num_opponents: int
     opponents: List[EquityOpponent] = []
     history: List[EquityHistoryEntry] = []

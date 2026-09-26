@@ -73,7 +73,7 @@ python3 scripts/tune_bot.py --profile hard --param semibluff_freq --evolve --sta
 ## 알려진 한계
 
 - 상대 레인지 추정(`opponent_range_info`)과 3벳+ 판정(`_count_raises`)은 아직 한글 `action_log`를 문자열·이름 부분매칭으로 파싱한다(ADR 0007 원칙 미적용). 3벳한 상대도 RFI 레인지로, 올인은 레이저로 취급하고, `_count_raises`는 올인을 세지 않는다 — TODO E-2(레인지 출발점)
-- medium 봇과 Play Grader 포스트플랍 EV는 vs_random 기준이다(3벳팟에서 과대) — T-005
+- medium 봇과 Play Grader 포스트플랍 EV는 vs_random 기준이다(3벳팟에서 과대). 에퀴티 패널(콜 EV 포함)은 vs_range 기준이라, 레인지가 좁은 팟에서는 패널 콜 EV와 복기 판정이 다른 가정에서 나온다 — T-005
 - 포스트플랍 베팅 기반 레인지 좁히기 없음 — E-2
 - medium·hard의 포스트플랍 판단 1회가 약 15~23ms(적응형 MC, 이전 캐시·MC 300~1,200 시절 2.5~9ms)라 아레나 처리량이 그만큼 줄었다 — 측정 `scripts/bench_equity.py`, 수치는 [equity.md](equity.md)
 - 벳/레이즈 평가는 제한 판정뿐(폴드 에퀴티 모름)

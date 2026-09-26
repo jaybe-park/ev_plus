@@ -16,7 +16,7 @@ from core.game import TexasHoldem, Action, Street, IllegalActionError
 from core.player import Player
 from core.pot_odds import effective_call_pot, pot_odds as calc_pot_odds, call_ev as calc_call_ev
 from ai.bot import PokerBot, BotDifficulty, opponent_range_info
-from ai.equity import smart_equity, equity_detail, ranged_equity, standard_error
+from ai.equity import smart_equity, equity_detail, ranged_equity, ranged_equity_detail, standard_error
 from gto.advisor import GTOAdvisor
 from gto.grader import (
     grade_preflop_action, grade_postflop_call, grade_postflop_fold,
@@ -715,13 +715,13 @@ class WebGameSession:
         others = [p.total_bet_this_round for p in self.game.players if p is not self.human]
         return self.human.chips, self.human.total_bet_this_round, others
 
-    def _record_equity_history(self, vs_random: float) -> None:
-        """스트리트당 한 번만 vs_random 히스토리에 기록"""
+    def _record_equity_history(self, vs_range: float) -> None:
+        """스트리트당 한 번(그 스트리트 첫 결정)만 vs_range를 히스토리에 기록 — 패널과 같은 기준(T-006)"""
         street_name = self.game.current_street.value
         if street_name in self._equity_history_streets:
             return
         self._equity_history_streets.add(street_name)
-        self.equity_history.append({"street": street_name, "vs_random": vs_random})
+        self.equity_history.append({"street": street_name, "vs_range": round(vs_range, 4)})
 
     def _get_equity_info(self, call_amount: Optional[int] = None) -> Optional[dict]:
         """
@@ -753,23 +753,23 @@ class WebGameSession:
         big_blind = self.game.big_blind
 
         # vs_random: 프리플랍 = 상수 테이블, 리버 1:1 = 전수, 그 밖 = 적응형 MC (ADR 0034).
-        # source/samples는 실제로 탄 경로("preflop-table"/"exact"/"mc:N")와 그 샘플 수.
+        # 화면에는 보이지 않는다(ADR 0022/0034) — Play Grader·기록·레인지 없을 때의 vs_range.
         detail = equity_detail(hole, community, n_opps)
         vs_random = detail.equity
-        source = detail.source
 
-        self._record_equity_history(vs_random)
-
-        # vs_range: 살아있는 모든 상대 레인지 반영 종합 승률 (opponent_range_info 재사용)
+        # vs_range(패널이 보여주는 값): 살아있는 모든 상대 레인지 반영 종합 승률.
+        # 레인지 정보가 하나도 없으면(프리플랍 레이저 없음 등) vs_random과 같은 계산이다.
+        # source/samples는 이 값을 실제로 만든 경로·샘플 수다(T-006).
         gs = self._build_gs_for_ranges()
         opp_dicts = [{"name": p.name, "is_folded": p.is_folded} for p in opponents]
         samplers_with_roles = opponent_range_info(gs, opp_dicts)
 
         samplers = [s for s, _ in samplers_with_roles]
-        if any(samplers):
-            vs_range = ranged_equity(hole, community, samplers)  # 적응형 MC (ADR 0045)
-        else:
-            vs_range = vs_random
+        range_applied = any(samplers)
+        shown = ranged_equity_detail(hole, community, samplers) if range_applied else detail
+        vs_range = shown.equity
+
+        self._record_equity_history(vs_range)
 
         # 상대별 1:1 추정 (곱해서 종합이 되지 않음 — 개별 지표로 유지)
         opponents_out = []
@@ -795,15 +795,16 @@ class WebGameSession:
         pot_odds = calc_pot_odds(eff_call, eff_pot)
         call_ev_bb = None
         if eff_call > 0 and big_blind:
-            call_ev_bb = calc_call_ev(vs_random, eff_call, eff_pot) / big_blind
+            call_ev_bb = calc_call_ev(vs_range, eff_call, eff_pot) / big_blind  # 패널과 같은 기준
 
         info = {
             "vs_random": round(vs_random, 4),
             "vs_range": round(vs_range, 4),
             "pot_odds": round(pot_odds, 4),
             "call_ev_bb": round(call_ev_bb, 2) if call_ev_bb is not None else None,
-            "source": source,
-            "samples": detail.samples,
+            "range_applied": range_applied,
+            "source": shown.source,
+            "samples": shown.samples,
             # Play Grader 경계 판정용(ADR 0039) — 응답 스키마 밖(패널 비표시)
             "vs_random_se": standard_error(detail),
             "num_opponents": n_opps,

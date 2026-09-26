@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { EquityInfo } from "../types";
+import { equityView, EQUITY_VS_GTO_TOOLTIP } from "./equityPanelLogic";
 
 interface Props {
   equity: EquityInfo | null;
@@ -42,9 +43,11 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
   }
 
   const stale = !isMyTurn || !equity;
-  const fillPct = Math.max(0, Math.min(100, display.vs_random * 100));
+  // 패널의 모든 숫자는 vs_range 한 기준(게이지·팟오즈 색·콜 EV·추이) — T-006
+  const view = equityView(display);
+  const fillPct = Math.max(0, Math.min(100, view.headline * 100));
   const oddsPct = Math.max(0, Math.min(100, display.pot_odds * 100));
-  const callGood = fillPct >= oddsPct;
+  const callGood = view.callGood;
 
   const sortedOpponents = [...display.opponents].sort((a, b) => {
     const ae = a.equity ?? 1;
@@ -57,8 +60,11 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
       {/* 게이지 */}
       <div>
         <div className="flex items-baseline justify-between mb-1">
-          <span className="text-xs text-gray-400">내 에퀴티 (vs 랜덤)</span>
-          <span className="text-2xl font-bold text-green-400">{pct(display.vs_random)}</span>
+          <span className="text-xs text-gray-400">
+            {view.label}
+            <span className="ml-1 cursor-help text-gray-500" title={EQUITY_VS_GTO_TOOLTIP}>ⓘ</span>
+          </span>
+          <span className="text-2xl font-bold text-green-400">{pct(view.headline)}</span>
         </div>
         <div className="relative w-full bg-gray-700 rounded-full h-3">
           <div
@@ -86,10 +92,7 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
 
       {/* 상대별 브레이크다운 */}
       <div className="space-y-1">
-        <div className="flex items-center justify-between bg-gray-800/70 rounded-lg px-2 py-1.5">
-          <span className="text-xs text-gray-300">종합 (전체 상대)</span>
-          <span className="text-sm font-bold text-white">{pct(display.vs_range)}</span>
-        </div>
+        <div className="text-[10px] text-gray-500 px-2">상대별 1:1</div>
         {sortedOpponents.map((op) => (
           <div key={op.name} className="flex items-center justify-between px-2 py-1 text-xs">
             <div className="flex items-center gap-1.5 min-w-0">
@@ -118,12 +121,12 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
       )}
 
       {/* 스트리트 히스토리 */}
-      {display.history.length > 0 && (
+      {view.history.length > 0 && (
         <div className="text-[10px] text-gray-500">
-          {display.history.map((h, i) => (
+          {view.history.map((h, i) => (
             <span key={h.street}>
               {i > 0 && " → "}
-              {h.street} {pct(h.vs_random)}
+              {h.street} {pct(h.value)}
             </span>
           ))}
         </div>
@@ -131,7 +134,7 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
 
       {/* 메타 */}
       <div className="text-[10px] text-gray-600">
-        {display.source} · 샘플 {display.samples.toLocaleString()} · 상대 {display.num_opponents}명
+        {view.meta}
       </div>
     </div>
   );

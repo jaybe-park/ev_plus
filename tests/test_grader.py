@@ -262,6 +262,94 @@ def test_borderline_band():
             os.remove(tmp)
 
 
+def test_panel_vs_range_basis():
+    print("\n[G-8] 에퀴티 패널 = vs_range 한 기준, 출처·표본 수 = 실제 계산 (T-006)")
+    import gto.loader as gto_loader
+    from db.connection import get_connection
+    from server.session import WebGameSession
+    from core.game import Street
+    from core.pot_odds import effective_call_pot, call_ev
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    prev_env = os.environ.get("EV_PLUS_DB")
+    os.environ["EV_PLUS_DB"] = tmp
+    try:
+        conn = get_connection()
+        sid = conn.execute(
+            "INSERT INTO gto_preflop_situations (position, vs_position, range_type, raise_size, "
+            "situation_label, action_seq) VALUES ('SB', NULL, 'open', 3.0, 'SB RFI', 'F-F-F-F')"
+        ).lastrowid
+        for hand in ("AA", "KK"):
+            conn.execute("INSERT INTO gto_preflop_hands (situation_id, hand, freq_fold, freq_call, "
+                         "freq_raise, freq_allin) VALUES (?,?,0,0,1,0)", (sid, hand))
+        conn.commit()
+        conn.close()
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+
+        random.seed(21)
+        s = WebGameSession(session_id="t006", human_name="Hero", chips=2000,
+                           num_bots=1, difficulty="easy", small_blind=10)
+        bot_p = next(p for p in s.game.players if p is not s.human)
+        s.game.dealer_index = s.game.players.index(bot_p)  # 봇 = BTN/SB 레이저
+        for p in s.game.players:
+            p.is_folded = p.is_all_in = False
+        # 플랍: 프리플랍 봇 오픈·나 콜(각 60), 플랍에서 봇 100 벳 → 내 차례
+        s.human.hole_cards = cards("Qh", "Qd")
+        s.game.community_cards = cards("7c", "4d", "2s")
+        s.game.current_street = Street.FLOP
+        s.action_log = [f"[BTN/SB] {bot_p.name}: 레이즈 → 60", "[BB] Hero: 콜 (40)", "── 플랍 ──"]
+        s.human.chips, s.human.total_bet_this_round, s.human.current_bet = 1940, 60, 0
+        bot_p.chips, bot_p.total_bet_this_round, bot_p.current_bet = 1840, 160, 100
+        s.game.current_bet, s.game.pot = 100, 220
+        s._equity_cache = {}
+        s.equity_history, s._equity_history_streets = [], set()
+
+        info = s._get_equity_info()
+        check("레인지 반영 표시", info["range_applied"] is True, f"={info}")
+        check("vs_range(QQ vs AA·KK) ≠ vs_random", info["vs_range"] < 0.35 < 0.65 < info["vs_random"],
+              f"range={info['vs_range']} random={info['vs_random']}")
+        check("출처 = vs_range의 적응형 MC(mc:N, N=샘플 수)",
+              info["source"] == f"mc:{info['samples']}" and 500 <= info["samples"] <= 2500,
+              f"={info['source']} {info['samples']}")
+        eff_call, eff_pot = effective_call_pot(220, 100, *s._human_stack())
+        want_ev = round(call_ev(info["vs_range"], eff_call, eff_pot) / 20, 2)
+        check("콜 EV = vs_range 기준", abs(info["call_ev_bb"] - want_ev) <= 0.011,
+              f"={info['call_ev_bb']} want {want_ev}")
+        check("스트리트 추이 = vs_range", info["history"] == [{"street": "플랍", "vs_range": info["vs_range"]}],
+              f"={info['history']}")
+
+        # 레인지 정보가 없으면(상대가 레이즈·콜 기록 없음) vs_random 계산 그대로 — 출처도 그것
+        s.action_log = ["── 플랍 ──"]
+        s._equity_cache = {}
+        info2 = s._get_equity_info()
+        check("레인지 없음 → range_applied=False, vs_range = vs_random",
+              info2["range_applied"] is False and info2["vs_range"] == info2["vs_random"], f"={info2}")
+        check("레인지 없음 출처 = vs_random 경로(mc:N)", info2["source"] == f"mc:{info2['samples']}",
+              f"={info2['source']}")
+
+        # 프리플랍: 사람 차례면 항상 에퀴티가 나온다(상수 테이블, 즉시) — 패널이 비는 이유 없음
+        random.seed(3)
+        s3 = WebGameSession(session_id="t006p", human_name="Hero", chips=2000,
+                            num_bots=5, difficulty="easy", small_blind=10)
+        st = s3.get_state()
+        check("프리플랍 사람 차례에 에퀴티 존재", st["street"] == "프리플랍" and st["waiting_for_action"]
+              and st["equity"] is not None, f"={st['street']} {st['waiting_for_action']} {st['equity']}")
+        if st["equity"] and not st["equity"]["range_applied"]:
+            check("프리플랍 레인지 없음 → 프리플랍 표 100만 샘플",
+                  st["equity"]["source"] == "preflop-table" and st["equity"]["samples"] == 1_000_000,
+                  f"={st['equity']['source']}")
+    finally:
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+        if prev_env is None:
+            os.environ.pop("EV_PLUS_DB", None)
+        else:
+            os.environ["EV_PLUS_DB"] = prev_env
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def test_postflop_fold_grading():
     print("\n[G-3] 포스트플랍 폴드 판정")
     # equity 15%, 팟오즈 33% → 정상 폴드
@@ -372,6 +460,7 @@ if __name__ == "__main__":
     test_postflop_bet_grading()
     test_short_stack_effective_call()
     test_borderline_band()
+    test_panel_vs_range_basis()
     test_session_equity_and_review()
 
     print(f"\n{'='*50}")

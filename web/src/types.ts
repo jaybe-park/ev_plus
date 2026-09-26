@@ -44,16 +44,17 @@ export interface EquityOpponent {
 
 export interface EquityHistoryEntry {
   street: string;
-  vs_random: number;
+  vs_range: number;   // 그 스트리트 첫 결정의 vs_range (패널과 같은 기준)
 }
 
 export interface EquityInfo {
-  vs_random: number;
-  vs_range: number;
+  vs_random: number;       // 화면 비표시(ADR 0022/0034) — 평가·기록용
+  vs_range: number;        // 패널이 보여주는 값(게이지·팟오즈 색·콜 EV·추이 모두 이 기준)
+  range_applied: boolean;  // 레인지 정보가 있는 상대가 있나(없으면 vs_range = 랜덤 핸드 기준)
   pot_odds: number;
   call_ev_bb: number | null;
-  source: string;
-  samples: number;
+  source: string;          // vs_range를 만든 경로: preflop-table | exact | mc:N
+  samples: number;         // 그 계산의 샘플 수
   num_opponents: number;
   opponents: EquityOpponent[];
   history: EquityHistoryEntry[];

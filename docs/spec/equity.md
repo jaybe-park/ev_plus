@@ -34,11 +34,13 @@
 
 ### 에퀴티 패널 (`server/session.py::_get_equity_info`)
 - 사람 차례(`waiting_for_action`)이고 `equity_enabled`일 때만 계산한다(아레나는 끔). 같은 결정 지점(스트리트 + 현재 벳)은 재계산하지 않는다 — 강제 장치: `tests/test_poker_full.py` 5-10, 5-12
-- `vs_random`: 살아 있는 상대 수만큼 랜덤 핸드 상대(`equity_detail`, 샘플 수 미지정 → 위 계산 경로). `source`/`samples`는 이 계산의 실제 경로와 샘플 수다 — 강제 장치: `tests/test_equity.py::test_multiway_tie_share`(리버 3인 → `mc:N`), `::test_no_db_writes`(프리플랍 → `preflop-table`)
-- `vs_range`: 상대별 추정 레인지 반영(`ranged_equity` 적응형, 레인지 정보가 없으면 vs_random과 같음). 상대별 1:1 브레이크다운은 레인지가 있으면 `ranged_equity`, 없으면 랜덤 1:1(`smart_equity`, 정보 없는 상대끼리 한 번만 계산해 공유) — 강제 장치: `tests/test_grader.py::test_session_equity_and_review`, `tests/test_equity.py::test_headsup_range_uses_sb`
+- **패널은 vs_range 한 기준이다**: 큰 숫자·게이지·팟오즈 글자 색·콜 EV·스트리트별 추이(history)가 모두 `vs_range`다. `vs_random`은 응답에는 있지만 화면에 보이지 않는다(Play Grader·기록·레인지 없을 때의 값) — 근거: [0022](../decisions/0022-equity-cache-rebuildable-vsrandom-ui.md)(UI 부분), [0034](../decisions/0034-abolish-equity-cache.md) · 강제 장치: `tests/test_grader.py::test_panel_vs_range_basis`(콜 EV·history = vs_range), `web/src/components/__tests__/equityPanelLogic.test.ts`(게이지·색·추이가 vs_range)
+- `vs_random`: 살아 있는 상대 수만큼 랜덤 핸드 상대(`equity_detail`, 샘플 수 미지정 → 위 계산 경로). 표준오차는 `vs_random_se`(Play Grader용, 스키마 밖) — 강제 장치: `tests/test_equity.py::test_multiway_tie_share`(리버 3인), `::test_no_db_writes`
+- `vs_range`: 상대별 추정 레인지 반영(`ranged_equity_detail` 적응형). 레인지 정보가 있는 상대가 하나도 없으면(`range_applied=false`) vs_random 계산 결과를 그대로 쓰고, 패널 라벨이 "상대 레인지 모름 → 랜덤 핸드"로 바뀐다. **`source`/`samples`는 vs_range를 실제로 만든 계산**이다: 레인지 반영이면 `mc:N`/N(500~2,500), 아니면 vs_random 경로(`preflop-table`/1,000,000 · `exact`/990 · `mc:N`/N). 화면 표기는 "프리플랍 표 · 샘플 1,000,000 · 상대 5명" 식. 상대별 1:1 브레이크다운은 레인지가 있으면 `ranged_equity`, 없으면 랜덤 1:1(`smart_equity`, 정보 없는 상대끼리 한 번만 계산해 공유) — 강제 장치: `tests/test_grader.py::test_panel_vs_range_basis`(레인지 반영 `mc:N`=샘플 수, 레인지 없음 = vs_random 경로), `::test_session_equity_and_review`, `tests/test_equity.py::test_headsup_range_uses_sb`
+- 스트리트별 추이는 그 스트리트 **첫 결정**의 vs_range를 한 번 기록한다(같은 스트리트의 두 번째 결정은 추이를 바꾸지 않는다) — 강제 장치: `tests/test_grader.py::test_panel_vs_range_basis`
+- 프리플랍에도 사람 차례마다 패널이 나온다(상수 테이블, 앞선 레이저가 있으면 레인지 반영 MC). 서버가 프리플랍에 에퀴티를 비우는 경로는 없다(폴드·홀카드 없음·사람 차례 아님만 `null`). 예전 "프리플랍에서 거의 안 보인다"는 현재 코드에서 재현되지 않는다 — 추정 원인은 ① 6인 테이블 vs 랜덤 5명 에퀴티가 대부분 12~25%라 게이지가 거의 비어 보였던 것 ② 사람이 폴드한 뒤엔 흐린 이전 값만 남는 것 ③ 새 핸드 딜링 재생 중엔 흐리게 표시되는 것 — 강제 장치: `tests/test_grader.py::test_panel_vs_range_basis`(6인 프리플랍 사람 차례에 에퀴티 존재)
+- **에퀴티와 GTO가 어긋나는 것은 정상일 수 있다**(패널 라벨의 ⓘ 툴팁 한 줄). 대표 사례: CO가 UTG 2.5bb 오픈을 받음(팟 4bb, 콜 2.5bb → 팟오즈 38.5%). K9s의 UTG 오픈 레인지(약 17%) 상대 에퀴티는 약 40.5%라 콜 EV가 +로 보이지만 GTO는 폴드한다. 에퀴티는 "지금 패로 쇼다운까지 그대로 간다"는 승률이라 ① 뒤에 남은 BTN·SB·BB의 3벳(스퀴즈) ② 도미네이트된 패가 포스트플랍에서 에퀴티를 다 실현하지 못하는 것 ③ 포지션을 반영하지 않는다. 반대로 A5s처럼 콜 EV가 비슷해도 GTO가 3벳하는 건 상대가 접는 몫(폴드 에퀴티)이 에퀴티에 없어서다. 수치는 `ranged_equity`로 손 계산한 값(2026-09-26) — 강제 장치: 툴팁 문구만 `web/src/components/__tests__/equityPanelLogic.test.ts`
 - 팟오즈·콜 EV는 **유효 콜·유효 팟** 기준이다(`core/pot_odds.effective_call_pot`, 봇·Play Grader와 같은 함수). 유효 콜 = min(콜, 내 남은 칩), 유효 팟 = 팟 − 각 상대 기여 중 (내 기여 + 유효 콜)을 넘는 부분(폴드한 사람 포함). 세션은 핸드 전체 기여(`total_bet_this_round`)로 계산한다. 예: 팟 100에 상대 1,000 올인, 내 스택 100 → 콜 100·팟 200, 팟오즈 33% — 강제 장치: `tests/test_grader.py::test_short_stack_effective_call`
-- 콜 EV는 vs_random 기준이다. 스트리트별 추이(history)도 vs_random만 기록한다 — 둘 다 vs_range로 바꾸기로 함(T-006)
-- vs_random은 UI에서 빼고 vs_range만 보이기로 결정됐다(계산은 유지, 봇·플레이 평가가 씀) — 근거: [0022](../decisions/0022-equity-cache-rebuildable-vsrandom-ui.md) · 미구현 T-006
 
 ### 응답 시간 (CPython 3.12, `python3 scripts/bench_equity.py --reps 20`, 2026-09-26 실측, 중앙값 / 최대)
 | 호출 | 지금(±1%p 적응형) | ±0.5%p 적응형(버린 안) | 이전(캐시 사용, 리뷰 R4 실측) |
@@ -62,7 +64,7 @@
 
 | 대상 | 무엇 |
 |---|---|
-| `ai/equity.py` | 계산·레인지 샘플러 (`smart_equity`, `equity_detail`, `mc_adaptive`, `ranged_equity`, `mc_adaptive_ranged`) |
+| `ai/equity.py` | 계산·레인지 샘플러 (`smart_equity`, `equity_detail`, `standard_error`, `mc_adaptive`, `ranged_equity`, `ranged_equity_detail`, `mc_adaptive_ranged`) |
 | `ai/preflop_equity_table.py` | 프리플랍 845값 상수 (자동 생성, 수동 편집 금지) |
 | `scripts/export_preflop_equity.py` | 상수 테이블 생성기 — 옛 DB의 `equity_cache` 프리플랍 행을 읽기 전용(`immutable=1`)으로 읽는다(`--dry-run` 지원) |
 | `scripts/bench_equity.py` | 응답 시간 측정 (DB 쓰기 없음, 임시 DB로 격리) |
@@ -73,4 +75,5 @@
 - 프리플랍 테이블의 상대 2~5명 값은 멀티웨이 동률을 1/2로 세던 시절(T-032 이전)에 계산돼 동률 과대분(+0.05~0.15%p)이 섞여 있다. 정밀도 목표(±1%p) 안이라 그대로 쓴다.
 - medium·hard 봇 판단이 캐시 시절(2.5~9ms)보다 느린 약 15~23ms라 아레나 처리량이 그만큼 줄었다.
 - 적응형 MC의 조기 종료는 추정한 표준오차로 판정하므로, 실제 1σ가 목표를 약간 넘는 스팟이 드물게 있을 수 있다(상한 2,500에서 끝나면 항상 목표 이내).
+- 패널(vs_range, 콜 EV 포함)과 Play Grader 판정(vs_random)은 아직 기준이 다르다 — T-005
 - vs_random은 상대가 아무 핸드나 든다는 가정이라 3벳팟 등에서 과대평가 — 봇은 어그레션 마진으로 보정(ADR 0015), 근본 해결은 E-2
