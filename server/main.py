@@ -46,11 +46,12 @@ def start_game(req: StartGameRequest):
         chips=req.chips,
         num_bots=req.num_bots,
         difficulty=req.difficulty,
-        small_blind=req.big_blind // 2,  # BB 입력 → SB = BB / 2
+        small_blind=req.big_blind // 2,  # BB 입력(짝수 검증됨) → SB = BB / 2
     )
+    # 첫 상태 계산까지 성공한 세션만 등록한다 — 도중에 실패하면 목록에 남지 않는다(T-027)
+    state = session.get_state(session.start_events)
     sessions[session_id] = session
-    with session.lock:
-        return session.get_state(session.start_events)
+    return state
 
 
 @app.get("/game/{session_id}/state", response_model=GameStateResponse)

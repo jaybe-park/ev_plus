@@ -153,6 +153,17 @@
   큐가 이벤트 있음↔없음으로 전환될 때의 하이라이트 리셋(activePlayer/isThinking/badge/
   bettingPlayer)도 `useEffect`가 아니라 렌더 중 조정 패턴(prevQueueEmpty 비교)으로 처리—
   근거: 2026-09-26 리뷰 W9
+- 게임 설정 검증(`POST /game/start`, `server/schemas.py::StartGameRequest`): 빅 블라인드
+  2 이상 짝수(SB = BB/2), 시작 칩 1~10,000,000 이면서 BB×10 이상, AI 봇 1~5명, 난이도
+  easy/medium/hard, 플레이어 이름 1~20자(앞뒤 공백 제거)이고 봇 이름 접두사 "🤖"로 시작
+  불가(이름이 좌석·버튼 식별자라 겹치면 안 됨). 위반은 422이고 `detail[].msg`는 이유가 적힌
+  한국어 문장(`PydanticCustomError`, 접두사 없음)이다. 세션은 첫 상태 계산까지 성공한 뒤에만
+  등록되므로 생성 중 오류가 나도 목록에 남지 않는다. 설정 화면(`SetupForm`)은 거절 이유를
+  시작 버튼 위에 "게임을 만들 수 없습니다 — <이유>"로 보여주고, 요청 중엔 버튼을 잠근다.
+  `ActionRequest`는 `action` ∈ fold/check/call/raise/allin, `amount ≥ 0`(위반 422) — 강제 장치:
+  `tests/test_poker_full.py::test_8_21_start_game_rejects_invalid_settings`,
+  `::test_8_22_session_registered_only_after_successful_start`, 설정 화면 문구는
+  `web/src/__tests__/api.test.ts`(422 평탄화)까지만(렌더링 테스트 없음)
 - API 오류: FastAPI 422의 `detail`은 배열이라 그대로 `Error`에 넘기면 배너에
   "[object Object]"가 뜬다 — `web/src/api.ts::formatApiError`가 `loc`/`msg`를 사람이 읽는
   한 줄 문장으로 평탄화한다 — 강제 장치: `web/src/__tests__/api.test.ts`
@@ -178,7 +189,7 @@
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `POST /game/start` | 세션 생성, 첫 핸드 시작 후 사람 차례까지 자동 진행 |
+| `POST /game/start` | 세션 생성, 첫 핸드 시작 후 사람 차례까지 자동 진행. 잘못된 설정은 422(한국어 이유) |
 | `GET /game/{id}/state` | 현재 `GameState` 조회(봇 차례에 멈춘 세션이면 복구 진행) |
 | `POST /game/{id}/action` | 사람 액션 제출 → 봇 자동 처리 → 다음 상태. 불법 액션은 400(상태 무변경) |
 | `POST /game/{id}/next-hand` | `hand_over=true`일 때 다음 핸드 시작(핸드 중이면 무시하고 현재 상태 반환) |

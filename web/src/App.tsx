@@ -145,7 +145,7 @@ export default function App() {
     run(() => api.submitAction(state.session_id, action, amount));
   };
   const handleNextHand = () => { if (!state) return; run(() => api.nextHand(state.session_id)); };
-  const handleNewGame  = () => { skip(); setState(null); setMyCardsRevealed(false); };
+  const handleNewGame  = () => { skip(); setState(null); setMyCardsRevealed(false); setError(null); };
 
   // 홀카드 → GTO 핸드 표기 변환
   function toGtoHand(cards: string[] | null): string | null {
@@ -168,7 +168,7 @@ export default function App() {
     return hi.gto + lo.gto + (hi.suit === lo.suit ? "s" : "o");
   }
 
-  if (!state) return <SetupForm onStart={handleStart} />;
+  if (!state) return <SetupForm onStart={handleStart} error={error} loading={loading} />;
 
   const human = state.players.find((p) => p.is_human);
 

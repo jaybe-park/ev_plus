@@ -2532,6 +2532,67 @@ def test_8_20_get_state_recovers_stuck_bot_turn():
         sessions.pop(sid, None)
 
 
+def test_8_21_start_game_rejects_invalid_settings():
+    """T-027: 잘못된 게임 설정은 422 + 이유가 적힌 한국어 안내로 거절되고 세션이 만들어지지
+    않는다(BB 1·홀수 BB·칩 0·칩 < BB×10·봇 0명/6명·알 수 없는 난이도·빈 이름·봇 이름)."""
+    client, sessions = _api_client()
+    base = {"player_name": "Player", "chips": 1000, "num_bots": 2,
+            "difficulty": "easy", "big_blind": 10}
+    bad = [
+        ({"big_blind": 1}, "빅 블라인드"),
+        ({"big_blind": 0}, "빅 블라인드"),
+        ({"big_blind": 15}, "짝수"),
+        ({"chips": 0}, "칩"),
+        ({"chips": 50}, "10배"),
+        ({"num_bots": 0}, "봇"),
+        ({"num_bots": 6}, "봇"),
+        ({"difficulty": "insane"}, "난이도"),
+        ({"player_name": "   "}, "이름"),
+        ({"player_name": "🤖 Alpha"}, "이름"),
+    ]
+    before = set(sessions)
+    for override, reason in bad:
+        body = dict(base, **override)
+        res = client.post("/game/start", json=body)
+        assert res.status_code == 422, f"{override}: 422여야 함, {res.status_code} {res.text[:200]}"
+        msgs = " / ".join(d.get("msg", "") for d in res.json()["detail"])
+        assert reason in msgs, f"{override}: 안내에 '{reason}'이 없음: {msgs}"
+        assert set(sessions) == before, f"{override}: 거절됐는데 세션이 등록됨"
+
+    # 정상 설정은 만들어지고 등록된다
+    res = client.post("/game/start", json=base)
+    assert res.status_code == 200, res.text[:200]
+    sid = res.json()["session_id"]
+    assert sid in sessions
+    assert sessions[sid].game.big_blind == 10 and sessions[sid].game.small_blind == 5
+    sessions.pop(sid, None)
+
+
+def test_8_22_session_registered_only_after_successful_start():
+    """T-027: 세션 생성 중(첫 상태 계산 포함) 오류가 나면 세션 목록에 남지 않는다."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from fastapi.testclient import TestClient
+        from server.main import app, sessions
+        from server.session import WebGameSession
+    client = TestClient(app, raise_server_exceptions=False)
+    before = set(sessions)
+    orig = WebGameSession.get_state
+
+    def boom(self, events=None):
+        raise RuntimeError("주입된 상태 계산 오류")
+
+    WebGameSession.get_state = boom
+    try:
+        res = client.post("/game/start", json={"player_name": "P", "chips": 1000, "num_bots": 1,
+                                               "difficulty": "easy", "big_blind": 10})
+    finally:
+        WebGameSession.get_state = orig
+    assert res.status_code == 500, res.status_code
+    assert set(sessions) == before, "생성에 실패한 세션이 등록돼 남음"
+
+
 # ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
@@ -2644,6 +2705,8 @@ ALL_TESTS = [
     ("8-18 동시 요청: 이벤트 가로채기·중복 없음",  test_8_18_concurrent_requests_do_not_steal_or_duplicate_events),
     ("8-19 봇 판단 예외 → 로그+안전 폴백",         test_8_19_bot_exception_logged_and_game_continues),
     ("8-20 GET state가 멈춘 봇 차례 복구",          test_8_20_get_state_recovers_stuck_bot_turn),
+    ("8-21 잘못된 게임 설정 → 422 한국어 안내",     test_8_21_start_game_rejects_invalid_settings),
+    ("8-22 생성 성공 후에만 세션 등록",             test_8_22_session_registered_only_after_successful_start),
 ]
 
 
