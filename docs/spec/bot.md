@@ -46,7 +46,7 @@
 - 봇 로직을 바꾸면 `scripts/ai_regression.py`로 legacy(개선 전 휴리스틱 봇) 대비 후퇴가 없는지 확인한다. ±10~20 bb/100은 노이즈 — 근거: [0016](../decisions/0016-bot-validation-arena-legacy.md) · 강제 장치: `scripts/ai_regression.py`(수동, exit 1) — `tests/run_all.py`에 없음
 - 튜닝 결과는 `tuning_results.json`에만 쌓이고 봇 코드는 사람이 확인 후 고친다 — 근거: [0016](../decisions/0016-bot-validation-arena-legacy.md) · 강제 장치: 장치 없음
 - 아레나는 매 핸드 칩 총량 보존을 검사하고 위반 시 `chip_violations.log`에 재현 정보를 남기고 멈춘다 — 강제 장치: `scripts/bot_arena.py` 내부 assert
-- 채택 기준(핸드 수·시드·차이)은 미정 — DECISIONS D-20
+- 채택 기준: 3,000핸드 × 시드 3, 개선 전후 차이 ≥ 표준오차 × 2(애매하면 핸드 수 늘려 재측정) — 근거: [0041](../decisions/0041-bot-adoption-criterion.md) · 강제 장치: 없음(측정 절차)
 
 ## 화면·경로·데이터
 

@@ -47,7 +47,7 @@
 - 사람 차례(`waiting_for_action`)이고 `equity_enabled`일 때만 계산한다(아레나는 끔). 같은 결정 지점(스트리트 + 현재 벳)은 재계산하지 않는다 — 강제 장치: `tests/test_poker_full.py` 5-10, 5-12
 - `vs_random`: 살아 있는 상대 수만큼 랜덤 핸드 상대(`smart_equity`, 1000샘플, 리버 1:1은 전수). `vs_range`: 상대별 추정 레인지 반영(`ranged_equity`, 레인지 정보가 없으면 vs_random과 같음). 상대별 브레이크다운과 콜 EV(bb, vs_random 기준)도 준다 — 강제 장치: `tests/test_grader.py::test_session_equity_and_review`
 - 팟오즈·콜 EV는 **유효 콜·유효 팟** 기준이다(`core/pot_odds.effective_call_pot`, 봇·Play Grader와 같은 함수). 유효 콜 = min(콜, 내 남은 칩), 유효 팟 = 팟 − 각 상대 기여 중 (내 기여 + 유효 콜)을 넘는 부분(폴드한 사람 포함). 세션은 핸드 전체 기여(`total_bet_this_round`)로 계산한다. 예: 팟 100에 상대 1,000 올인, 내 스택 100 → 콜 100·팟 200, 팟오즈 33% — 강제 장치: `tests/test_grader.py::test_short_stack_effective_call`
-- 스트리트별 추이(history)는 vs_random만 기록한다 — D-16
+- 스트리트별 추이(history)는 vs_random만 기록한다 — vs_range로 바꾸기로 함(T-006)
 - vs_random은 UI에서 빼고 vs_range만 보이기로 결정됐다(계산은 유지, 봇·플레이 평가가 씀) — 근거: [0022](../decisions/0022-equity-cache-rebuildable-vsrandom-ui.md) · 미구현 T-006
 
 ## 화면·경로·데이터
