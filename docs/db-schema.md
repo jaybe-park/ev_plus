@@ -106,7 +106,7 @@ v12부터 마이그레이션 스텝은 **SQL 문자열 또는 콜러블**(conn�
 > `vs_position` 반쪽 포맷 `"BB"`→`"BTN/BB"` 정규화) + 유니크 인덱스 생성. 데이터 손실 0
 > (기존 11행/1778핸드 보존). `backfill_v12`가 채운 노드 키는 깊이 캐노니컬 사이즈
 > 방식이었고, 지금은 워커가 저장한 실측 키로 바뀌어 있다([ADR 0009](decisions/0009-measured-size-node-key.md)).
-> 레거시 파생 경로 제거 여부는 DECISIONS D-01.
+> 레거시 파생 경로는 TODO T-001에서 제거한다.
 
 ### gto_postflop_situations / gto_postflop_hands (v2, 미사용)
 포스트플랍 GTO 데이터용으로 v2에 스키마만 선반영. 아직 데이터 수집 전이라

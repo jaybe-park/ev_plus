@@ -10,7 +10,7 @@
 //       extractAndSave('BB', 'BB vs BTN open', 2.5, 'BTN', 'vs_open').then(console.log);
 //
 // 주의: 이 스크립트는 action_seq를 보내지 않으므로 서버가 레거시 파생 키로 저장한다
-// (DECISIONS.md 참고).
+// (TODO T-001에서 action_seq 전송 추가 예정).
 async function extractAndSave(position, label, raiseSize, vsPosition = null, rangeType = 'open') {
   function colorToAction(rgb) {
     const m = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);

@@ -47,7 +47,7 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 - 일일 한도 판단은 상단 `X/100` 카운터만 권위로 본다(항시 떠 있는 안내 문구는 카운터를 못 읽을 때만 폴백). 남은 여유 ≤ `--safety-margin`(5)이면 다음 이동 전에 멈춘다. 한도에 걸린 노드는 frontier로 되돌린다 — 근거: [0012](../decisions/0012-collector-operational-safety.md) · 강제 장치: `tests/test_gto_tree.py::test_limit_hit_counter_authority`, `tests/test_gto_tree.py::test_run_requeues_node_on_limit_and_env_failure`
 - 환경 오류(navigate 실패·렌더 대기 타임아웃·추출 JS 실패·로컬 저장 실패)는 `failed`에 넣지 않고 frontier로 되돌린다. 연속 2회면 탭 재생성, 연속 6회면 안전 중단. 저장 25건마다 예방적 탭 재생성 — 근거: [0012](../decisions/0012-collector-operational-safety.md) · 강제 장치: `tests/test_gto_tree.py::test_env_failure_classification`, `tests/test_gto_tree.py::test_run_requeues_node_on_limit_and_env_failure`
 - 노드 사이 2~5초 균등 랜덤 지연. 로그인은 대행하지 않는다(사용자가 로그인해 둔 디버그 크롬에 CDP로 붙음) — 강제 장치: 장치 없음
-- 저장 라벨은 `derive_node_meta`가 노드 키에서 유도: 레이저 0명=`open`("{H} RFI"), 1명=`vs_open`, 2명=`vs_3bet`, n명=`vs_{n+1}bet`, `vs_position`은 레이저 좌석을 `/`로 연결 — 강제 장치: `tests/test_gto_tree.py::test_derive_node_meta_labels`(림프 노드 제외 — D-07)
+- 저장 라벨은 `derive_node_meta`가 노드 키에서 유도: 레이저 0명=`open`("{H} RFI"), 1명=`vs_open`, 2명=`vs_3bet`, n명=`vs_{n+1}bet`, `vs_position`은 레이저 좌석을 `/`로 연결 — 강제 장치: `tests/test_gto_tree.py::test_derive_node_meta_labels`(림프 노드 제외 — T-016)
 
 ## 화면·경로·데이터
 
@@ -76,7 +76,7 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 주요 옵션: `--limit`(기본 90) `--safety-margin`(5) `--min-delay/--max-delay`(2/5초) `--epsilon`(0.0005) `--nav-timeout`(30000ms) `--cdp-url`(`http://localhost:9222`) `--server`(`https://localhost:8765`) `--checkpoint`(`<repo>/gto_tree_checkpoint.json`, gitignore).
 체크포인트(`visited`/`frontier`/`failed`)는 저장마다 원자적으로 기록된다. 체크포인트가 없거나 frontier가 비면 DB의 수집 트리를 루트부터 훑어 미수집 자식으로 frontier를 다시 만든다.
 
-**수동 1스팟 재검증** — 특정 스팟을 눈으로 대조할 때만: 백엔드 실행 → 크롬에서 `https://localhost:8765` 인증서 허용 → GTO Wizard에서 스팟 이동 → 콘솔에서 `extractAndSave(position, label, raiseSize, vsPosition, rangeType)` 실행(badSum>0이면 저장 거부). 스크립트: `tools/gto_extract_and_save.js`(콘솔에 붙여 넣기). 수동 저장은 `action_seq`를 안 보내므로 레거시 파생 키가 된다(DECISIONS D-09).
+**수동 1스팟 재검증** — 특정 스팟을 눈으로 대조할 때만: 백엔드 실행 → 크롬에서 `https://localhost:8765` 인증서 허용 → GTO Wizard에서 스팟 이동 → 콘솔에서 `extractAndSave(position, label, raiseSize, vsPosition, rangeType)` 실행(badSum>0이면 저장 거부). 스크립트: `tools/gto_extract_and_save.js`(콘솔에 붙여 넣기). 수동 저장은 `action_seq`를 안 보내므로 레거시 파생 키가 된다(TODO T-001에서 수정).
 
 **한도**: GTO Wizard 무료 계정은 프리플랍 **100스팟/일**(스팟 이동 1회 = 1). 회사 와이파이에서는 GTO Wizard 접속이 막혀 핫스팟이 필요하다.
 
@@ -85,13 +85,13 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 - 100bb 고정 — 딥/숏/헤즈업 모두 100bb 6-max 트리로 근사한다.
 - 라이브 사이즈는 수집된 형제로 스냅되므로 사이즈 오차가 근사로 남는다. 형제가 하나면 거리 제한 없이 매칭한다(라이브 올인이 비올인 레이즈 형제로 스냅될 수 있음).
 - enum 경로는 콜러·중간 액션을 구분하지 않는다(예: "BB vs BTN open"은 SB가 콜했든 폴드했든 같은 행). 멀티웨이·헤즈업 팟이 같은 데이터를 받는다 — D-02, T-001
-- **저장 API가 `(position, vs_position, range_type)`으로 행을 찾으므로 이 3개가 같은 서로 다른 노드(예 `R2.5-F`와 `R2.5-C`)는 한 행에 덮어써진다** — 한 쪽만 남는다. 현재 vs_open 13행이 전부 콜러 있는 노드다. 수정 전에는 수집 워커를 돌리지 않는다 — D-01, T-001
-- 헤즈업 시퀀스에는 앞 4좌석 폴드가 없어서, 시퀀스 경로로 가면 6-max UTG부터 시작하는 노드로 스냅될 수 있다(enum 경로만 `BTN/SB`→`SB` 치환) — D-03, T-001
-- GTO 패널(`gto_key`)은 advisor와 별개로 한글 로그를 판정하고 enum 키만 조회한다 — 시퀀스로만 있는 노드(4벳+ 등)는 패널에 안 나오고, 힌트와 패널이 다른 노드를 가리킬 수 있다 — D-04
-- 봇은 샘플된 `allin`을 처리하지 않아 휴리스틱 폴백으로 넘어간다. 힌트 문자열에서 allin은 번역되지 않는다 — D-05
-- 미수집 큐는 쌓이기만 한다 — 워커가 읽지 않고 `collected`도 갱신되지 않는다 — D-06
-- 림프 노드(SB 림프 후 BB)가 `open`/"BB RFI"로 저장된다 — D-07
+- **저장 API가 `(position, vs_position, range_type)`으로 행을 찾으므로 이 3개가 같은 서로 다른 노드(예 `R2.5-F`와 `R2.5-C`)는 한 행에 덮어써진다** — 한 쪽만 남는다. 현재 vs_open 13행이 전부 콜러 있는 노드다. 수정 전에는 수집 워커를 돌리지 않는다 — T-001
+- 헤즈업 시퀀스에는 앞 4좌석 폴드가 없어서, 시퀀스 경로로 가면 6-max UTG부터 시작하는 노드로 스냅될 수 있다(enum 경로만 `BTN/SB`→`SB` 치환) — T-001
+- GTO 패널(`gto_key`)은 advisor와 별개로 한글 로그를 판정하고 enum 키만 조회한다 — 시퀀스로만 있는 노드(4벳+ 등)는 패널에 안 나오고, 힌트와 패널이 다른 노드를 가리킬 수 있다 — T-013
+- 봇은 샘플된 `allin`을 처리하지 않아 휴리스틱 폴백으로 넘어간다. 힌트 문자열에서 allin은 번역되지 않는다 — T-014
+- 미수집 큐는 쌓이기만 한다 — 워커가 읽지 않고 `collected`도 갱신되지 않는다 — T-015
+- 림프 노드(SB 림프 후 BB)가 `open`/"BB RFI"로 저장된다 — T-016
 - `num_active`(= 6 − 폴드 토큰 수)는 아직 소비자가 없다. 멀티웨이 조회에 쓰기 시작할 때 정의가 충분한지 다시 본다.
 - 수집은 무료 한도(100/일)에 묶여 트리 전체에 여러 날이 걸린다. 전체 규모는 미리 알 수 없다(현황 문서는 %를 쓰지 않는다).
-- `audit_gto_preflop.py`는 `poker.db`를 직접 연다(`EV_PLUS_DB` 무시). 노드 키·라벨 일치나 덮어쓰기는 검사하지 않는다 — D-11
-- 서버 저장 API는 빈도합을 검증하지 않는다(워커만 검증) — D-10
+- `audit_gto_preflop.py`는 `poker.db`를 직접 연다(`EV_PLUS_DB` 무시). 노드 키·라벨 일치나 덮어쓰기는 검사하지 않는다 — T-001, D-11
+- 서버 저장 API는 빈도합을 검증하지 않는다(워커만 검증) — T-001

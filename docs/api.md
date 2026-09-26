@@ -172,7 +172,7 @@ HandReviewEntry {
 
 ### `POST /gto/preflop/save`
 프리플랍 레인지(169핸드 빈도)를 저장(덮어쓰기). 기존 행은 **position/vs_position/range_type으로
-찾는다** — 이 3개가 같은 서로 다른 `action_seq` 노드는 한 행에 덮어써진다(DECISIONS D-01, TODO T-001).
+찾는다** — 이 3개가 같은 서로 다른 `action_seq` 노드는 한 행에 덮어써진다(TODO T-001).
 
 **요청**
 ```json
