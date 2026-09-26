@@ -277,6 +277,15 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
             freqs.get("allin", 0.0),
         ))
 
+    # 미수집 큐(range_type='seq') 완료 처리(T-015, ADR 0011 "큐=2순위"): 같은 action_seq를
+    # 가리키던 큐 행이 있으면 collected=1로 갱신 — show_missing_spots.py가 더는 미수집으로
+    # 보여주지 않는다. 큐에 없던 노드(직접 수집 등)는 매치되는 행이 없어 조용히 0행 갱신.
+    cur.execute(
+        "UPDATE gto_missing_spots_preflop SET collected=1, collected_at=datetime('now') "
+        "WHERE range_type='seq' AND vs_position=? AND collected=0",
+        (action_seq,),
+    )
+
     conn.commit()
     conn.close()
 

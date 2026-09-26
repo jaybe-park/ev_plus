@@ -4,7 +4,7 @@ poker_simulator DB 스키마 정의 및 마이그레이션
 
 import sqlite3
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -367,6 +367,33 @@ def rebuild_gto_preflop_situations_v13(conn):
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def relabel_limp_nodes_v14(conn):
+    """v14 (T-016, gto/node_key.py::derive_node_meta 림프 판정 추가): 림프 노드가
+    range_type='open'/situation_label "{H} RFI"로 잘못 저장된 기존 행을 재라벨링한다.
+
+    옛 derive_node_meta는 레이즈가 0회면 콜(림프) 토큰이 있어도 무조건 'open'을
+    반환했다(예: action_seq="F-F-F-F-C"인 행이 range_type='open', situation_label=
+    "BB RFI"로 저장됨 — 데이터 모델 밖 상황을 잘못된 라벨로 저장한 버그, ADR 0006).
+    range_type='open'으로 저장된 행만 대상으로 새 derive_node_meta를 재계산해
+    'vs_limp'로 나오는 행만 옮긴다(그 밖의 행·라벨은 건드리지 않음 — 추측 재라벨 금지).
+    action_seq가 없거나(NULL, v13 이후 없음) 재계산 결과가 없으면(결정 노드 아님) 스킵.
+    """
+    from gto.node_key import derive_node_meta
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT id, action_seq FROM gto_preflop_situations WHERE range_type='open'"
+    ).fetchall()
+    for r in rows:
+        meta = derive_node_meta(r["action_seq"]) if r["action_seq"] else None
+        if meta is None or meta["range_type"] != "vs_limp":
+            continue
+        cur.execute(
+            "UPDATE gto_preflop_situations "
+            "SET vs_position=?, range_type=?, situation_label=? WHERE id=?",
+            (meta["vs_position"], meta["range_type"], meta["situation_label"], r["id"]),
+        )
+
+
 # 버전별 1회성 마이그레이션 (connection._migrate가 현재버전 초과분만 실행)
 # 각 스텝은 SQL 문자열(executescript) 또는 콜러블(conn을 받는 파이썬 함수)일 수 있다.
 MIGRATIONS = {
@@ -417,6 +444,10 @@ MIGRATIONS = {
     13: [
         # T-001/ADR 0038: 노드 유일 키 = action_seq. enum 3종 UNIQUE 제거(테이블 재생성).
         rebuild_gto_preflop_situations_v13,
+    ],
+    14: [
+        # T-016: 림프 노드가 'open'/"{H} RFI"로 저장된 기존 행을 'vs_limp'로 재라벨링.
+        relabel_limp_nodes_v14,
     ],
 }
 

@@ -12,7 +12,7 @@ import logging
 import threading
 from typing import List, Optional, Dict
 
-from core.game import TexasHoldem, Action, Street, IllegalActionError
+from core.game import TexasHoldem, Action, Street
 from core.player import Player
 from core.pot_odds import effective_call_pot, pot_odds as calc_pot_odds, call_ev as calc_call_ev
 from ai.bot import PokerBot, BotDifficulty, opponent_range_info
@@ -23,8 +23,6 @@ from gto.grader import (
     grade_postflop_bet_or_raise,
 )
 from db.recorder import GameRecorder
-
-STREETS = [Street.PREFLOP, Street.FLOP, Street.TURN, Street.RIVER]
 
 logger = logging.getLogger(__name__)
 
@@ -77,16 +75,10 @@ class WebGameSession:
         self.hand_reviews: List[dict] = []
         self.session_reviews: List[dict] = []
 
-        # 베팅 라운드 상태
-        self._order: List[Player] = []
-        self._acted: set = set()
-        self._round_i: int = 0
-        self.street_index: int = 0
+        # 룰(베팅 순서·액션 판정·라운드 진행·팟 분배·버튼)은 전부 core TexasHoldem이 갖는다.
+        # 세션은 그 결과를 이벤트·로그·RL 기록·평가로 옮길 뿐이다(T-024).
 
         # 핸드/게임 상태
-        # 버튼 보유자는 인덱스가 아니라 이름으로 기억한다(파산으로 좌석이 빠져도 안전).
-        # None이면 다음 핸드는 game.dealer_index를 그대로 버튼으로 쓴다(첫 핸드).
-        self._button_name: Optional[str] = None
         self.hand_number: int = 0
         self.hand_over: bool = False
         self.game_over: bool = False
@@ -133,7 +125,7 @@ class WebGameSession:
             return []
 
         # 사람의 불법 액션은 상태를 바꾸기 전에 거절한다(API는 400으로 응답).
-        self.game.normalize_action(player, action, amount, self._can_raise(player))
+        self.game.validate(player, action, amount)
 
         self._events = []  # 이전 요청이 중간에 실패했어도 그 이벤트를 다시 내보내지 않는다
         self._apply(player, action, amount)
@@ -184,7 +176,7 @@ class WebGameSession:
             call_amount = max(0, self.game.current_bet - self.human.current_bet)
             # 불완전 올인만 마주해 액션이 닫혔거나 스택이 콜 이하면 레이즈 불가 → min_raise_to=0
             # (프론트 ActionBar는 min_raise_to=0이면 레이즈 UI를 끈다)
-            can_raise = (self._can_raise(self.human)
+            can_raise = (self.game.can_raise(self.human)
                          and self.human.chips > call_amount)
             if can_raise:
                 min_raise_to = self.game.current_bet + self.game.min_raise
@@ -254,18 +246,15 @@ class WebGameSession:
         self._equity_history_streets = set()
         self.hand_reviews = []
 
-        # 파산 플레이어 제거 + 무빙 버튼(직전 버튼 다음 생존자, ADR 0036)
-        self.game.seat_for_next_hand(self._button_name)
+        # 파산 플레이어 제거 + 무빙 버튼(직전 버튼 다음 생존자, ADR 0036) — core
+        self.game.seat_for_next_hand()
         if len(self.game.players) < 2 or self.human not in self.game.players:
             self.game_over = True
             return
-        self._button_name = self.game.players[self.game.dealer_index].name
 
         self.hand_number += 1
         self._hand_start_chips = {p.name: p.chips for p in self.game.players}
-        self.game.start_hand()
-        self.game.current_street = Street.PREFLOP
-        self.street_index = 0
+        self.game.start_hand()  # 블라인드·홀카드·프리플랍 라운드 준비
 
         positions = self.game.get_positions()
 
@@ -315,66 +304,33 @@ class WebGameSession:
                 "pot_after": pot_so_far, "bet_after": posted,
             })
 
-        self._setup_round(Street.PREFLOP)
         self._run_until_human()
 
     # ──────────────────────────────────────────
     # 베팅 라운드 관리
     # ──────────────────────────────────────────
 
-    def _setup_round(self, street: Street) -> None:
-        # 행동 순서는 core 규칙을 그대로 쓴다(헤즈업 프리플랍 BTN/SB 선행동 포함).
-        # _acted = 마지막 풀 레이즈 이후 행동한 플레이어(core _betting_round와 같은 의미).
-        # 블라인드 포스팅은 행동이 아니다 — SB도 자기 차례에 레이즈할 수 있고 BB는 옵션 보유.
-        self._order = self.game._betting_order(street)
-        self._acted = set()
-        self._round_i = 0
-
     def _can_raise(self, player: Player) -> bool:
-        return self.game.raise_allowed(player, self._acted)
-
-    def _is_round_over(self) -> bool:
-        # core 규칙 그대로(행동 가능 1명 + 콜할 금액 없음 → 라운드 종료, 런아웃 포함)
-        return self.game._is_round_over(self._acted)
+        return self.game.can_raise(player)
 
     def _next_to_act(self) -> Optional[Player]:
-        n = len(self._order)
-        if not self._order:
-            return None
-        checked = 0
-        while checked < n * 3:
-            if self.game._count_active() <= 1:
-                return None
-            if self._is_round_over():
-                return None
-            p = self._order[self._round_i % n]
-            if p.is_folded or p.is_all_in:
-                self._round_i += 1
-                checked += 1
-                continue
-            if p.name in self._acted and p.current_bet == self.game.current_bet:
-                self._round_i += 1
-                checked += 1
-                continue
-            return p
-        return None
+        return self.game.next_to_act()
 
     def _apply(self, player: Player, action: Action, amount: int) -> None:
         positions = self.game.get_positions()
         street = self.game.current_street.value
-        can_raise = self._can_raise(player)
 
-        # 검증: 사람은 submit_action에서 이미 거절됐다. 봇의 불법 액션은 로그를 남기고
-        # core의 안전 폴백(공격→콜/체크, 불법 체크→폴드)으로 대체한다.
-        try:
-            action = self.game.normalize_action(player, action, amount, can_raise)
-        except IllegalActionError as e:
-            if player.is_human:
-                raise
-            fallback = self.game.fallback_action(player, action)
-            logger.warning("봇 불법 액션 대체: %s %s(%s) → %s (%s)",
-                           player.name, action.value, amount, fallback.value, e)
-            action, amount = self.game.normalize_action(player, fallback, 0, can_raise), 0
+        # 검증(core): 사람은 submit_action에서 이미 거절됐다. 봇의 불법 액션은 로그를 남기고
+        # core의 안전 폴백(공격→콜/체크, 불법 체크→폴드)으로 대체한다. amount는 이후 실제로
+        # 걸리는 도달 베팅(최소 레이즈 보정·스택 한도 반영)이라 평가·적용이 같은 값을 쓴다.
+        if player.is_human:
+            action, amount = self.game.validate(player, action, amount)
+        else:
+            requested, req_amount = action, amount
+            action, amount, err = self.game.validate_or_fallback(player, action, amount)
+            if err is not None:
+                logger.warning("봇 불법 액션 대체: %s %s(%s) → %s (%s)",
+                               player.name, requested.value, req_amount, action.value, err)
 
         # 콜 금액은 apply_action 전에 계산
         call_amt = max(0, self.game.current_bet - player.current_bet)
@@ -404,7 +360,7 @@ class WebGameSession:
                 player, action, amount, self.game.current_street, call_amt,
             )
 
-        result = self.game.execute_action(player, action, amount, can_raise)
+        result = self.game.act(player, action, amount)
         action = result.action
         # 로그·이벤트·RL 기록의 금액은 요청값이 아니라 실제 칩 이동에서 만든다:
         # 콜 = 이동액, 레이즈/올인 = 도달 베팅(to_amount = 이전 베팅 + 이동액), 폴드/체크 = 0
@@ -420,14 +376,6 @@ class WebGameSession:
             )
         except Exception:
             pass
-        self._acted.add(player.name)
-        if result.reopens:
-            # 풀 레이즈만 액션을 다시 연다. 불완전 올인 뒤 이미 행동한 사람은 콜/폴드만.
-            self._acted = {player.name}
-            idx = self._order.index(player)
-            self._round_i = (idx + 1) % len(self._order)
-        else:
-            self._round_i += 1
 
         log_text = self._fmt_log(player, action, real_amount)
         self.action_log.append(log_text)
@@ -477,19 +425,10 @@ class WebGameSession:
             return safe, 0
 
     def _advance_street(self) -> None:
-        if self.game._count_active() <= 1 or self.street_index >= 3:
+        street = self.game.advance_street()  # core: 카드 딜 + 라운드 준비(끝났으면 None)
+        if street is None:
             self._do_showdown()
             return
-
-        self.street_index += 1
-        street = STREETS[self.street_index]
-        self.game.deal_community(street)
-        self.game.current_street = street
-        self.game.current_bet = 0
-        self.game.min_raise = self.game.big_blind
-        for p in self.game.players:
-            if not p.is_folded:
-                p.reset_for_street()
 
         # 새 스트리트 → 에퀴티 캐시 초기화 (결정 지점이 바뀜)
         self._equity_cache = {}
@@ -513,113 +452,44 @@ class WebGameSession:
         else:
             self._emit({"type": "community_card", "card": str(comm[-1]), "street": street.value})
 
-        self._setup_round(street)
         self._run_until_human()
 
-    def _calculate_side_pots(self) -> list:
-        all_players = self.game.players
-        contenders = [
-            p for p in all_players
-            if not p.is_folded and len(p.hole_cards) >= 2
-        ]
-        if not contenders:
-            return []
-
-        sorted_contenders = sorted(contenders, key=lambda p: p.total_bet_this_round)
-        pots = []
-        processed = {p.name: 0 for p in all_players}
-        prev_level = 0
-
-        for i, c in enumerate(sorted_contenders):
-            level = c.total_bet_this_round
-            if level <= prev_level:
-                continue
-            delta = level - prev_level
-
-            pot_amount = 0
-            for p in all_players:
-                take = min(p.total_bet_this_round - processed[p.name], delta)
-                pot_amount += take
-                processed[p.name] += take
-
-            eligible = sorted_contenders[i:]
-            if pot_amount > 0:
-                pots.append((pot_amount, eligible))
-            prev_level = level
-
-        remainder = sum(p.total_bet_this_round - processed[p.name] for p in all_players)
-        if remainder > 0 and pots:
-            pots[-1] = (pots[-1][0] + remainder, pots[-1][1])
-
-        return pots
-
     def _do_showdown(self) -> None:
-        from core.evaluator import HandEvaluator
+        """core showdown()(사이드팟·홀수 칩 포함)을 호출하고 결과를 이벤트·로그로 옮긴다."""
+        result = self.game.showdown()
+        self.winners = [w.name for w in result.winners]
 
-        contenders = [p for p in self.game.players if not p.is_folded]
-
-        if len(contenders) == 1:
-            winner = contenders[0]
-            winner.chips += self.game.pot
-            self.winners = [winner.name]
+        if not result.contested:
+            if not result.winners:  # 겨룰 카드가 없는 비정상 상태 — 팟만 정리
+                self.hand_over = True
+                return
+            winner = result.winners[0]
             win_log = f"🏆 {winner.name} 승리 (상대 폴드)"
             self.action_log.append(win_log)
             self._emit({
                 "type": "winner", "winners": [winner.name],
-                "pot": self.game.pot, "log": win_log,
+                "pot": result.pot, "log": win_log,
                 "winner_chips": {winner.name: winner.chips},
             })
         else:
-            contenders = [p for p in contenders if len(p.hole_cards) >= 2]
-            if not contenders:
-                self.game.pot = 0
-                self.hand_over = True
-                return
-
-            evals = {
-                p.name: HandEvaluator.evaluate(p.hole_cards + self.game.community_cards)
-                for p in contenders
-            }
-
+            by_name = {p.name: p for p in self.game.players}
             # 쇼다운 이벤트 — 봇 카드 공개
             self._emit({
                 "type": "showdown",
                 "hands": {
-                    p.name: [str(c) for c in p.hole_cards]
-                    for p in contenders if not p.is_human
+                    name: [str(c) for c in by_name[name].hole_cards]
+                    for name in result.evaluations if not by_name[name].is_human
                 },
             })
-
-            pots = self._calculate_side_pots()
-            all_winners: set = set()
-
-            for pot_amount, eligible in pots:
-                best = max(evals[p.name] for p in eligible)
-                pot_winners = [p for p in eligible if evals[p.name] == best]
-                share = pot_amount // len(pot_winners)
-                remainder = pot_amount % len(pot_winners)
-                for w in pot_winners:
-                    w.chips += share
-                    # 1명만 eligible한 팟 = 본인 초과 베팅 반환 → 승자 표시 안 함
-                    if len(eligible) > 1:
-                        all_winners.add(w.name)
-                if remainder:
-                    # 홀수 칩은 버튼 왼쪽부터 돌아 처음 만나는 승자에게
-                    self.game.order_from_button_left(pot_winners)[0].chips += remainder
-
-            self.winners = list(all_winners)
-            self.showdown_hands = {p.name: str(evals[p.name]) for p in contenders}
+            self.showdown_hands = {name: str(ev) for name, ev in result.evaluations.items()}
             win_log = f"🏆 {', '.join(self.winners)} 승리"
             self.action_log.append(win_log)
-
             self._emit({
                 "type": "winner",
                 "log": win_log,
                 "winners": self.winners,
-                "pot": self.game.pot,
-                "winner_chips": {w.name: w.chips
-                                 for w in self.game.players
-                                 if w.name in all_winners},
+                "pot": result.pot,
+                "winner_chips": {w.name: w.chips for w in result.winners},
             })
 
         # RL 학습 데이터: 핸드 결과 + reward 역산
@@ -627,7 +497,7 @@ class WebGameSession:
             positions = self.game.get_positions()
             self.recorder.finish_hand(
                 self.game.community_cards,
-                self.game.pot,
+                result.pot,
                 [positions.get(w, "") for w in self.winners],
                 {positions.get(p.name, ""): {
                     "start": self._hand_start_chips.get(p.name, p.chips),
@@ -640,9 +510,8 @@ class WebGameSession:
         # 세션 전체 누적 (요약 API용) — 이번 핸드 평가를 합산
         self.session_reviews.extend(self.hand_reviews)
 
-        # 딜러 이동은 다음 핸드 시작 시점(_start_new_hand)에 한다 — 핸드 종료 응답의
-        # 포지션 라벨이 방금 친 핸드 기준으로 남는다(ADR 0036).
-        self.game.pot = 0
+        # 딜러 이동은 다음 핸드 시작 시점(_start_new_hand → core seat_for_next_hand)에 한다
+        # — 핸드 종료 응답의 포지션 라벨이 방금 친 핸드 기준으로 남는다(ADR 0036).
         self.hand_over = True
 
         if self.human.chips <= 0 or sum(1 for p in self.game.players if p.chips > 0) < 2:

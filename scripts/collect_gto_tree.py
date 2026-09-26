@@ -202,6 +202,62 @@ def load_collected_from_db() -> dict:
     return collected
 
 
+def load_missing_queue_from_db() -> list:
+    """gto_missing_spots_preflop의 미완료(collected=0) 시퀀스 큐 항목(range_type='seq')
+    노드 키 목록을 반환한다. 노드 키는 vs_position 칸에 저장돼 있다(advisor._save_missing_seq).
+    """
+    from db.connection import get_connection
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT vs_position FROM gto_missing_spots_preflop "
+        "WHERE range_type='seq' AND collected=0"
+    ).fetchall()
+    conn.close()
+    return [r["vs_position"] for r in rows]
+
+
+# 큐(트리 밖 스팟)에서 프론티어로 추가하는 노드의 우선순위 — 정상 트리 프론티어(reach ≥
+# epsilon=0.0005)보다 항상 낮게 둔다. ADR 0011 "트리 밖 스팟 큐는 보조 2순위".
+QUEUE_FRONTIER_REACH = 1e-9
+
+
+def queue_frontier_additions(missing_keys: list, collected: dict) -> list:
+    """미수집 큐 키들 → 프론티어에 추가할 (tokens, reach) 목록 (ADR 0011 "큐=2순위").
+
+    각 큐 키에 대해 결정 노드가 아니면(derive_node_meta None — 잘못 들어온 항목) 스킵.
+    이미 수집됐으면(collected 갱신이 아직 안 왔거나 다른 경로로 먼저 수집된 경우의 방어)
+    스킵. 그 밖엔 **가장 얕은 미수집 조상**(자기 자신 포함, 루트부터 훑어 처음 만나는
+    미수집 프리픽스)만 하나 추가한다 — 조상이 먼저 수집돼야 그 자식들이 정상 확장
+    (compute_children)으로 이어지고, 다음 실행에서 이 함수가 다시 불릴 때(collected가
+    갱신된 상태로) 한 단계 더 깊은 조상 또는 이 키 자신을 추가한다(조상·자손 순차 수집).
+    reach_prob은 항상 QUEUE_FRONTIER_REACH로 고정한다 — 실제 도달확률을 몰라도(큐는 정상
+    트리 순회 밖에서 옴) 보조 2순위라는 사실만 중요하기 때문이다.
+    """
+    out = []
+    seen = set()
+    for key in missing_keys:
+        if key in collected:
+            continue
+        meta = derive_node_meta(key)
+        if meta is None:
+            continue  # 결정 노드 아님(베팅 종료 등) — 큐에 잘못 들어온 항목 방어
+        tokens = key.split("-") if key else []
+        target_tokens = None
+        for i in range(len(tokens) + 1):
+            prefix_key = "-".join(tokens[:i])
+            if prefix_key not in collected:
+                target_tokens = tokens[:i]
+                break
+        if target_tokens is None:
+            continue  # 조상까지 전부 이미 수집됨 — collected=1 갱신 지연 등, 스킵
+        target_key = "-".join(target_tokens)
+        if target_key in seen:
+            continue
+        seen.add(target_key)
+        out.append((target_tokens, QUEUE_FRONTIER_REACH))
+    return out
+
+
 def seed_frontier_from_db(collected: dict, epsilon: float):
     """이미 수집된 트리를 루트("")부터 BFS로 훑어, 아직 미수집인 자식들을
     도달확률 가중으로 프론티어에 시드한다(수집된 노드는 재방문하지 않음).
@@ -624,6 +680,24 @@ def run(args) -> int:
 
     # DB에 이미 있는 노드는 항상 visited로 취급(중복 재수집 방지)
     ckpt.visited |= set(collected.keys())
+
+    # T-015/ADR 0011: 미수집 큐(range_type='seq')를 프론티어에 2순위로 반영.
+    # 체크포인트를 이어가는 경우에도 매 실행 재확인(새로 쌓인 큐 항목 + 이전 실행에서
+    # 조상만 수집돼 다음 조상/자기 자신으로 넘어갈 항목 모두 반영).
+    missing_keys = load_missing_queue_from_db()
+    if missing_keys:
+        existing_frontier_keys = {n.node_key for n in frontier._items}
+        added = 0
+        for tokens, reach in queue_frontier_additions(missing_keys, collected):
+            key = "-".join(tokens)
+            if key in ckpt.visited or key in existing_frontier_keys:
+                continue
+            frontier.push(tw.TreeNode(tokens, reach))
+            existing_frontier_keys.add(key)
+            added += 1
+        if added:
+            print(f"[큐] 미수집 큐({len(missing_keys)}건)에서 프론티어에 {added}개 추가"
+                  "(ADR 0011 2순위 — 조상 미수집이면 조상부터)")
 
     # 연결
     p, browser, ctx, page = connect_cdp(args.cdp_url)
