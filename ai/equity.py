@@ -56,7 +56,13 @@ def canonical_key(hole_cards: List[Card], board: List[Card]) -> str:
     """
     수트 치환에 불변인 스팟 키.
     형식: "홀|플랍|턴|리버" (턴/리버는 순서 유지 — 스트리트 경계가 의미 있음)
+
+    카드 중복(홀-보드 간 또는 보드 내부)이 있으면 잘못된 스팟이므로 ValueError.
     """
+    all_cards = list(hole_cards) + list(board)
+    if len(all_cards) != len(set(all_cards)):
+        raise ValueError(f"canonical_key: 중복 카드 — {all_cards}")
+
     flop, turn, river = board[:3], board[3:4], board[4:5]
     best = None
     for perm in permutations(range(4)):
@@ -279,8 +285,10 @@ EXACT_FUNCS = {
 # ──────────────────────────────────────────
 
 def _db():
-    from db.connection import get_connection, _DEFAULT_DB_PATH
-    return get_connection(DB_PATH or _DEFAULT_DB_PATH)
+    """DB_PATH가 None이면 db.connection.get_connection의 EV_PLUS_DB 환경변수
+    규칙을 그대로 따른다(직접 _DEFAULT_DB_PATH를 넘기면 그 규칙을 우회하게 된다)."""
+    from db.connection import get_connection
+    return get_connection(DB_PATH)
 
 
 def bump_equity_stats(

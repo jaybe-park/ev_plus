@@ -8,8 +8,15 @@
 import sys
 import os
 import random
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ── 테스트 격리 ──────────────────────────────────────────
+# WebGameSession을 통해 GameRecorder/equity 캐시가 실제로 DB에 쓰기 때문에
+# 실 DB(그라인드 데이터)와 격리한다 — tests/test_poker_full.py와 동일 방침
+# (근거: docs/decisions/0026-stubbot-and-isolated-test-db.md).
+os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
 
 from core.card import Card, Suit, Rank
 from gto.grader import (

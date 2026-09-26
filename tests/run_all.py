@@ -3,14 +3,14 @@
 
 사용법:
     python3 tests/run_all.py            # --fast와 동일 (기본값)
-    python3 tests/run_all.py --fast     # test_poker_full.py + test_gto_tree.py (로직 검증, 수초)
-    python3 tests/run_all.py --full     # test_poker_full.py + test_equity.py + test_grader.py
-                                         # + test_gto_tree.py (프리플랍 GTO 트리 워커 순수 로직)
+    python3 tests/run_all.py --fast     # FAST_FILES (로직 검증, 수초)
+    python3 tests/run_all.py --full     # FULL_FILES (에퀴티·플레이 평가 포함)
 
 각 파일은 subprocess로 실행하며, 표준출력을 실시간으로 그대로 릴레이한다
 (자식 프로세스의 print(flush=True) 덕분에 버퍼링 없이 즉시 보임).
 마지막에 파일별 통과/실패와 총 소요 시간을 요약하고,
-하나라도 실패하면 exit code 1을 반환한다.
+운영 poker.db의 (mtime, size)를 실행 전후로 비교해 바뀌었으면(테스트의
+EV_PLUS_DB 격리 누락 신호) 실패로 처리한다. 하나라도 실패하면 exit code 1.
 """
 
 import subprocess
@@ -19,9 +19,28 @@ import time
 import os
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(TESTS_DIR)
+sys.path.insert(0, REPO_ROOT)
 
-FAST_FILES = ["test_poker_full.py", "test_gto_tree.py"]
-FULL_FILES = ["test_poker_full.py", "test_equity.py", "test_grader.py", "test_gto_tree.py"]
+from db.connection import _DEFAULT_DB_PATH  # noqa: E402  (sys.path 조작 후 임포트)
+
+FAST_FILES = ["test_poker_full.py", "test_gto_tree.py", "test_guards.py"]
+FULL_FILES = ["test_poker_full.py", "test_equity.py", "test_grader.py", "test_gto_tree.py",
+              "test_guards.py"]
+
+
+def poker_db_snapshot(path: str = _DEFAULT_DB_PATH):
+    """운영 poker.db의 (mtime, size) 스냅샷. 파일이 없으면 None(신규 환경)."""
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def poker_db_untouched(before, after) -> bool:
+    """스냅샷이 같으면(둘 다 None이거나 값이 같으면) 운영 DB가 안 바뀐 것."""
+    return before == after
 
 
 def run_file(filename: str) -> tuple[bool, float]:
@@ -54,12 +73,17 @@ def main():
     print(f"  테스트 러너 — 모드: {mode} ({', '.join(files)})", flush=True)
     print("═" * 60, flush=True)
 
+    db_before = poker_db_snapshot()
+
     suite_start = time.perf_counter()
     results: list[tuple[str, bool, float]] = []
     for filename in files:
         ok, elapsed = run_file(filename)
         results.append((filename, ok, elapsed))
     total_elapsed = time.perf_counter() - suite_start
+
+    db_after = poker_db_snapshot()
+    db_ok = poker_db_untouched(db_before, db_after)
 
     print("\n" + "═" * 60, flush=True)
     print("  통합 요약", flush=True)
@@ -68,10 +92,24 @@ def main():
         icon = "✅" if ok else "❌"
         print(f"  {icon} {filename}  ({elapsed:.2f}s)", flush=True)
     print(f"\n  총 소요 시간: {total_elapsed:.2f}s", flush=True)
+    if db_ok:
+        print(f"  ✅ 운영 poker.db 무결성 (mtime·size 변화 없음): {_DEFAULT_DB_PATH}", flush=True)
+    else:
+        print(
+            f"  ❌ 운영 poker.db가 테스트 도중 바뀌었습니다: {_DEFAULT_DB_PATH} "
+            f"(before={db_before}, after={db_after})",
+            flush=True,
+        )
     print("═" * 60, flush=True)
 
-    if any(not ok for _, ok, _ in results):
-        print("\n  ⚠️ 실패한 테스트 파일이 있습니다.", flush=True)
+    if any(not ok for _, ok, _ in results) or not db_ok:
+        if not db_ok:
+            print(
+                "\n  ⚠️ 테스트가 운영 poker.db에 썼습니다 — EV_PLUS_DB 격리 누락을 의심하세요.",
+                flush=True,
+            )
+        if any(not ok for _, ok, _ in results):
+            print("\n  ⚠️ 실패한 테스트 파일이 있습니다.", flush=True)
         sys.exit(1)
 
     sys.exit(0)
