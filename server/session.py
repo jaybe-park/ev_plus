@@ -8,9 +8,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import logging
 from typing import List, Optional, Dict
 
-from core.game import TexasHoldem, Action, Street
+from core.game import TexasHoldem, Action, Street, IllegalActionError
 from core.player import Player
 from core.pot_odds import effective_call_pot, pot_odds as calc_pot_odds, call_ev as calc_call_ev
 from ai.bot import PokerBot, BotDifficulty, opponent_range_info
@@ -23,6 +24,8 @@ from gto.grader import (
 from db.recorder import GameRecorder
 
 STREETS = [Street.PREFLOP, Street.FLOP, Street.TURN, Street.RIVER]
+
+logger = logging.getLogger(__name__)
 
 
 class WebGameSession:
@@ -115,12 +118,17 @@ class WebGameSession:
         if player is None or not player.is_human:
             return
 
+        # 사람의 불법 액션은 상태를 바꾸기 전에 거절한다(API는 400으로 응답).
+        self.game.normalize_action(player, action, amount, self._can_raise(player))
+
         self._events = []  # 새 액션마다 이벤트 초기화
         self._apply(player, action, amount)
         self._run_until_human()
 
     def next_hand(self) -> None:
-        if self.game_over:
+        # 핸드 진행 중(hand_over=False) 호출은 무시한다. 가드가 없으면 팟에 들어간 칩이
+        # _reset_hand()로 사라진다("다음 핸드" 연타·중복 요청 — T-025).
+        if self.game_over or not self.hand_over:
             return
         self._events = []
         self._start_new_hand()
@@ -132,9 +140,15 @@ class WebGameSession:
 
         call_amount = 0
         min_raise_to = 0
+        can_raise = False
         if waiting:
             call_amount = max(0, self.game.current_bet - self.human.current_bet)
-            min_raise_to = self.game.current_bet + self.game.min_raise
+            # 불완전 올인만 마주해 액션이 닫혔거나 스택이 콜 이하면 레이즈 불가 → min_raise_to=0
+            # (프론트 ActionBar는 min_raise_to=0이면 레이즈 UI를 끈다)
+            can_raise = (self._can_raise(self.human)
+                         and self.human.chips > call_amount)
+            if can_raise:
+                min_raise_to = self.game.current_bet + self.game.min_raise
 
         players_out = []
         for p in self.game.players:
@@ -177,6 +191,7 @@ class WebGameSession:
             "action_log": self.action_log[-30:],
             "call_amount": call_amount,
             "min_raise_to": min_raise_to,
+            "can_raise": can_raise,
             "events": events,
             "equity": self._get_equity_info() if (waiting and self.equity_enabled) else None,
             "hand_review": self.hand_reviews if self.hand_over else None,
@@ -248,25 +263,19 @@ class WebGameSession:
                     "street": "프리플랍",
                 })
 
-        # 2. 블라인드 이벤트 + 로그 (딜링 이후)
-        for p in self.game.players:
+        # 2. 블라인드 이벤트 + 로그 (딜링 이후). core가 포스팅한 순서(SB → BB) 그대로 발행하고,
+        #    금액은 실제로 낸 칩(숏스택이면 블라인드보다 적음)
+        for (p, posted), kind in zip(self.game.blind_posts, ("스몰", "빅")):
+            if posted <= 0:
+                continue
             pos = positions.get(p.name, "")
-            if pos in ("SB", "BTN/SB") and p.current_bet > 0:
-                log_text = f"[{pos}] {p.name}: 스몰 블라인드 ({self.game.small_blind})"
-                self.action_log.append(log_text)
-                self._emit({
-                    "type": "blind", "player": p.name, "position": pos,
-                    "amount": self.game.small_blind, "street": "프리플랍",
-                    "log": log_text, "chips_after": p.chips,
-                })
-            elif pos == "BB" and p.current_bet > 0:
-                log_text = f"[{pos}] {p.name}: 빅 블라인드 ({self.game.big_blind})"
-                self.action_log.append(log_text)
-                self._emit({
-                    "type": "blind", "player": p.name, "position": pos,
-                    "amount": self.game.big_blind, "street": "프리플랍",
-                    "log": log_text, "chips_after": p.chips,
-                })
+            log_text = f"[{pos}] {p.name}: {kind} 블라인드 ({posted})"
+            self.action_log.append(log_text)
+            self._emit({
+                "type": "blind", "player": p.name, "position": pos,
+                "amount": posted, "street": "프리플랍",
+                "log": log_text, "chips_after": p.chips,
+            })
 
         self._setup_round(Street.PREFLOP)
         self._run_until_human()
@@ -276,27 +285,19 @@ class WebGameSession:
     # ──────────────────────────────────────────
 
     def _setup_round(self, street: Street) -> None:
-        n = len(self.game.players)
-        start = (self.game.dealer_index + 3) % n if street == Street.PREFLOP else (self.game.dealer_index + 1) % n
-        self._order = [self.game.players[(start + i) % n] for i in range(n)]
+        # 행동 순서는 core 규칙을 그대로 쓴다(헤즈업 프리플랍 BTN/SB 선행동 포함).
+        # _acted = 마지막 풀 레이즈 이후 행동한 플레이어(core _betting_round와 같은 의미).
+        # 블라인드 포스팅은 행동이 아니다 — SB도 자기 차례에 레이즈할 수 있고 BB는 옵션 보유.
+        self._order = self.game._betting_order(street)
         self._acted = set()
         self._round_i = 0
 
-        # 프리플랍: SB는 이미 액션한 것으로 처리
-        if street == Street.PREFLOP:
-            positions = self.game.get_positions()
-            for p in self.game.players:
-                if positions.get(p.name, "") in ("SB", "BTN/SB") and p.current_bet > 0:
-                    self._acted.add(p.name)
+    def _can_raise(self, player: Player) -> bool:
+        return self.game.raise_allowed(player, self._acted)
 
     def _is_round_over(self) -> bool:
-        active = [p for p in self.game.players if not p.is_folded and not p.is_all_in]
-        if not active:
-            return True
-        return all(
-            p.name in self._acted and p.current_bet == self.game.current_bet
-            for p in active
-        )
+        # core 규칙 그대로(행동 가능 1명 + 콜할 금액 없음 → 라운드 종료, 런아웃 포함)
+        return self.game._is_round_over(self._acted)
 
     def _next_to_act(self) -> Optional[Player]:
         n = len(self._order)
@@ -323,6 +324,19 @@ class WebGameSession:
     def _apply(self, player: Player, action: Action, amount: int) -> None:
         positions = self.game.get_positions()
         street = self.game.current_street.value
+        can_raise = self._can_raise(player)
+
+        # 검증: 사람은 submit_action에서 이미 거절됐다. 봇의 불법 액션은 로그를 남기고
+        # core의 안전 폴백(공격→콜/체크, 불법 체크→폴드)으로 대체한다.
+        try:
+            action = self.game.normalize_action(player, action, amount, can_raise)
+        except IllegalActionError as e:
+            if player.is_human:
+                raise
+            fallback = self.game.fallback_action(player, action)
+            logger.warning("봇 불법 액션 대체: %s %s(%s) → %s (%s)",
+                           player.name, action.value, amount, fallback.value, e)
+            action, amount = self.game.normalize_action(player, fallback, 0, can_raise), 0
 
         # 콜 금액은 apply_action 전에 계산
         call_amt = max(0, self.game.current_bet - player.current_bet)
@@ -352,12 +366,16 @@ class WebGameSession:
                 player, action, amount, self.game.current_street, call_amt,
             )
 
-        self.game.apply_action(player, action, amount)
+        result = self.game.execute_action(player, action, amount, can_raise)
+        action = result.action
+        # 로그·이벤트·RL 기록의 금액은 요청값이 아니라 실제 칩 이동에서 만든다:
+        # 콜 = 이동액, 레이즈/올인 = 도달 베팅(to_amount = 이전 베팅 + 이동액), 폴드/체크 = 0
+        real_amount = self._event_amount(result)
 
         try:
             self.recorder.record_action(
                 positions.get(player.name, "BTN"), player.is_human,
-                self.game.current_street, _ctx, action, amount,
+                self.game.current_street, _ctx, action, real_amount,
                 call_amount=call_amt, equity=_equity,
                 bot_profile=_profile, players_state=_players_state,
                 gto=_gto_for_record,
@@ -365,24 +383,24 @@ class WebGameSession:
         except Exception:
             pass
         self._acted.add(player.name)
-        if action in (Action.RAISE, Action.ALL_IN):
+        if result.reopens:
+            # 풀 레이즈만 액션을 다시 연다. 불완전 올인 뒤 이미 행동한 사람은 콜/폴드만.
             self._acted = {player.name}
             idx = self._order.index(player)
             self._round_i = (idx + 1) % len(self._order)
         else:
             self._round_i += 1
 
-        log_text = self._fmt_log(player, action, call_amt, amount)
+        log_text = self._fmt_log(player, action, real_amount)
         self.action_log.append(log_text)
 
         # 액션 이벤트 발행
-        event_amount = amount if action in (Action.RAISE,) else call_amt
         self._emit({
             "type": "action",
             "player": player.name,
             "position": positions.get(player.name, ""),
             "action": action.value,
-            "amount": event_amount,
+            "amount": real_amount,
             "street": street,
             "log": log_text,
             "chips_after": player.chips,
@@ -395,13 +413,6 @@ class WebGameSession:
                 self._advance_street()
                 return
             if player.is_human:
-                # 모든 상대가 올인 + 베팅 없음 → 자동 체크 (런아웃)
-                opponents = [p for p in self.game.players if not p.is_human and not p.is_folded]
-                all_opponents_allin = bool(opponents) and all(p.is_all_in for p in opponents)
-                no_bet_to_call = self.game.current_bet <= self.human.current_bet
-                if all_opponents_allin and no_bet_to_call:
-                    self._apply(player, Action.CHECK, 0)
-                    continue
                 return
             bot = self.bots.get(player.name)
             if bot:
@@ -586,7 +597,17 @@ class WebGameSession:
     # 헬퍼
     # ──────────────────────────────────────────
 
-    def _fmt_log(self, player: Player, action: Action, call_amt: int, amount: int) -> str:
+    @staticmethod
+    def _event_amount(result) -> int:
+        """ActionResult → 로그·이벤트 금액(콜=이동액, 레이즈/올인=도달 베팅, 그 외 0)."""
+        if result.action == Action.CALL:
+            return result.moved
+        if result.action in (Action.RAISE, Action.ALL_IN):
+            return result.to_amount
+        return 0
+
+    def _fmt_log(self, player: Player, action: Action, amount: int) -> str:
+        """amount는 _event_amount() 값(실제 칩 이동 기준)."""
         positions = self.game.get_positions()
         pos = positions.get(player.name, "")
         pos_str = f"[{pos}]" if pos else ""
@@ -595,11 +616,11 @@ class WebGameSession:
         elif action == Action.CHECK:
             return f"{pos_str} {player.name}: 체크"
         elif action == Action.CALL:
-            return f"{pos_str} {player.name}: 콜 ({call_amt})"
+            return f"{pos_str} {player.name}: 콜 ({amount})"
         elif action == Action.RAISE:
             return f"{pos_str} {player.name}: 레이즈 → {amount}"
         elif action == Action.ALL_IN:
-            return f"{pos_str} {player.name}: 올인!"
+            return f"{pos_str} {player.name}: 올인! ({amount})"
         return f"{pos_str} {player.name}: {action.value}"
 
     def _get_gto_key(self) -> Optional[dict]:

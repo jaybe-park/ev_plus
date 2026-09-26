@@ -38,3 +38,4 @@
 | [0035](0035-gto-lookup-sequence-first.md) | GTO 조회는 액션 순서 키 먼저, 간단 라벨은 "근사" 예비 | 유효 | gto-preflop |
 | [0036](0036-moving-button.md) | 파산으로 좌석이 빠질 때는 무빙 버튼 | 유효 | game |
 | [0037](0037-allin-only-snaps-to-allin-sibling.md) | 라이브 올인은 올인 형제에만 스냅한다(레이즈 형제와 구분) | 유효 | gto-preflop |
+| [0038](0038-action-validation-and-real-amounts.md) | 액션 판정은 core 한 곳 — 사람 불법 액션은 거절, 봇은 안전 폴백, 금액은 실제 칩 이동 | 유효 | game |

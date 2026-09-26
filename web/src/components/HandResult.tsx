@@ -4,9 +4,10 @@ interface Props {
   state: GameState;
   onNextHand: () => void;
   onNewGame: () => void;
+  loading: boolean;
 }
 
-export default function HandResult({ state, onNextHand, onNewGame }: Props) {
+export default function HandResult({ state, onNextHand, onNewGame, loading }: Props) {
   const { winners, showdown_hands, game_over, players, hand_number, hand_review } = state;
   const human = players.find((p) => p.is_human);
   const humanWon = human ? winners.includes(human.name) : false;
@@ -80,7 +81,8 @@ export default function HandResult({ state, onNextHand, onNewGame }: Props) {
 
             <button
               onClick={onNextHand}
-              className="w-full py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl"
+              disabled={loading}
+              className="w-full py-3 bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl"
             >
               다음 핸드 →
             </button>

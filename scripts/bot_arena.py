@@ -24,7 +24,7 @@ import time
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-from core.game import Action
+from core.game import Action, IllegalActionError
 from ai.bot import PokerBot, BotDifficulty
 from server.session import WebGameSession
 
@@ -145,7 +145,12 @@ def run_arena(seats: list, hands: int, big_blind: int, seed=None, verbose=False)
             gs = session.game._get_game_state()
             gs["action_log"] = session.action_log
             action, amount = drivers[player.name].decide_action(gs)
-            session.submit_action(action.value, amount)
+            try:
+                session.submit_action(action.value, amount)
+            except IllegalActionError:
+                # 사람 좌석을 모는 봇도 다른 봇과 같은 안전 폴백을 쓴다
+                fallback = session.game.fallback_action(player, action)
+                session.submit_action(fallback.value, 0)
             guard += 1
             if guard > 100:
                 raise RuntimeError("핸드가 끝나지 않음 (무한 루프 감지)")

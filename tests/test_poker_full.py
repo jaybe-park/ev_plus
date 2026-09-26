@@ -289,25 +289,32 @@ def test_2_2_bb_gets_option_after_calls():
     assert new_state is not None
 
 def test_2_3_raise_reopens_action():
-    """레이즈 후 이전 액션한 플레이어에게 다시 기회가 돌아와야 함"""
+    """풀 레이즈만 액션을 다시 연다(reopens=True, min_raise 갱신).
+    최소 레이즈 미만 올인은 current_bet만 올리고 재오픈하지 않는다(min_raise 유지)."""
     game, players = make_game(3, chips=1000, sb=10)
     # 딜러=0, SB=1(P1), BB=2(P2), UTG=0(P0)
     game.start_hand()
     game.current_street = Street.PREFLOP
 
-    # P0(UTG) 레이즈
-    game.apply_action(players[0], Action.RAISE, 60)
-    # P1(SB) 콜
-    game.apply_action(players[1], Action.CALL, 50)
-    # P2(BB) 재레이즈(3-bet)
-    game.apply_action(players[2], Action.RAISE, 180)
+    r = game.execute_action(players[0], Action.RAISE, 60)      # 오픈 60 (+40)
+    assert r.reopens and game.min_raise == 40, (r, game.min_raise)
+    r = game.execute_action(players[1], Action.CALL)
+    assert not r.reopens and r.moved == 50, r
+    r = game.execute_action(players[2], Action.RAISE, 180)     # 3벳 180 (+120)
+    assert r.reopens and game.current_bet == 180 and game.min_raise == 120, (r, game.min_raise)
+    assert game.current_bet - players[0].current_bet == 120
 
-    # 이제 P0에게 다시 액션 기회가 있어야 함
-    # current_bet=180, P0.current_bet=60 이므로 P0는 아직 콜/폴드/레이즈 가능
-    assert game.current_bet == 180
-    assert players[0].current_bet == 60
-    call_needed = game.current_bet - players[0].current_bet
-    assert call_needed == 120, f"P0가 콜하려면 120 필요, got {call_needed}"
+    # P1이 140만 남기고 올인 → 200(+20, 최소 레이즈 120 미만) = 불완전 레이즈
+    players[1].chips = 140
+    r = game.execute_action(players[1], Action.ALL_IN)
+    assert r.action == Action.ALL_IN and not r.reopens, r
+    assert game.current_bet == 200 and game.min_raise == 120, \
+        f"불완전 올인은 current_bet만 올리고 min_raise 유지: {game.current_bet}, {game.min_raise}"
+    # 이미 행동한 P0는 레이즈 불가(콜/폴드만)
+    acted = {"P0", "P1", "P2"}
+    assert not game.raise_allowed(players[0], acted)
+    assert not game.apply_action(players[0], Action.RAISE, 400, raise_allowed=False)
+    assert game.apply_action(players[0], Action.CALL, raise_allowed=False)
 
 def test_2_4_allin_ends_round_when_no_callers():
     """모두 폴드하고 올인한 사람 혼자 남으면 라운드 즉시 종료"""
@@ -375,8 +382,10 @@ def test_3_1_pot_conservation():
             if not state["waiting_for_action"]:
                 break
             action = random.choice(["call", "check", "fold"])
-            if action == "fold" and state["call_amount"] == 0:
+            if state["call_amount"] == 0 and action == "fold":
                 action = "check"
+            if state["call_amount"] > 0 and action == "check":
+                action = "call"  # 벳을 마주한 체크는 불법(거절됨)
             sess.submit_action(action, 0)
 
         state = sess.get_state()
@@ -513,6 +522,7 @@ def test_4_2_bankrupt_player_removed():
             break
 
     initial_count = len(sess.game.players)
+    sess.hand_over = True  # next_hand는 핸드 종료 후에만 동작한다(T-025 가드)
     sess.next_hand()
     after_count = len(sess.game.players)
     assert after_count == initial_count - 1, \
@@ -1562,6 +1572,429 @@ def test_7_6_save_normalizes_vs3bet_half_format():
 
 
 # ═════════════════════════════════════════════════════════════
+# 영역 8 — 세션 경로 룰 (WebGameSession 실제 실행 경로)
+#   core 헬퍼(_betting_order, apply_action)만 부르는 테스트는 웹 경로의 버그를
+#   못 잡았다(2026-09-26 리뷰 RC1). 여기 테스트는 전부 WebGameSession 공개 API
+#   (submit_action / next_hand / get_state의 events)로 검사한다.
+# ═════════════════════════════════════════════════════════════
+
+def _total_chips(sess):
+    return sum(p.chips for p in sess.game.players) + sess.game.pot
+
+
+def _scripted_session(num_bots, scripts=None, chips=None, dealer_index=0, sb=10):
+    """원하는 좌석·스택·봇 스크립트로 '새 핸드'를 시작한 세션을 만든다.
+
+    WebGameSession 생성자는 첫 핸드를 바로 진행시키므로, 생성 후 스택·딜러·봇을
+    다시 세팅하고 핸드 종료 상태에서 next_hand()로 깨끗한 핸드를 시작한다.
+    scripts: {봇 이름: [(Action, amount), ...]} — 소진되면 콜/체크.
+    chips: 좌석 순서(사람 먼저)대로의 스택 리스트.
+    반환: (sess, events) — events는 새 핸드 시작~사람 차례까지의 이벤트.
+    """
+    from server.session import WebGameSession
+    sess = WebGameSession("s8", "Human", 1000, num_bots, "easy", sb, equity_enabled=False)
+    for i, p in enumerate(sess.game.players):
+        p.chips = chips[i] if chips else 1000
+    sess.game.pot = 0
+    sess.game.dealer_index = dealer_index
+    scripts = scripts or {}
+    for name, bot in list(sess.bots.items()):
+        sess.bots[name] = StubBot(bot.player, scripts.get(name))
+    sess.get_state()  # 생성자 이벤트 비우기
+    sess.hand_over = True
+    sess.next_hand()
+    return sess, sess.get_state()["events"]
+
+
+def _action_events(events):
+    return [e for e in events if e["type"] == "action"]
+
+
+def test_8_1_next_hand_double_call_keeps_chips():
+    """T-025: 핸드 종료 후 next_hand를 연달아 두 번 불러도 핸드는 하나만 넘어가고
+    칩 합계가 그대로다."""
+    sess, _ = _scripted_session(2)
+    total = _total_chips(sess)
+    sess.submit_action("fold", 0)
+    assert sess.hand_over, "사람 폴드 후 봇 2명이 핸드를 끝내야 함"
+    hand_no = sess.hand_number
+    sess.next_hand()
+    sess.next_hand()  # 연타 — 무시돼야 함
+    assert sess.hand_number == hand_no + 1, \
+        f"핸드가 한 번만 넘어가야 함: {hand_no} → {sess.hand_number}"
+    assert _total_chips(sess) == total, f"칩 합계 변화: {total} → {_total_chips(sess)}"
+
+
+def test_8_2_next_hand_during_hand_ignored():
+    """T-025: 핸드 진행 중 next_hand 요청은 무시된다(팟 칩이 사라지지 않음)."""
+    sess, _ = _scripted_session(3)
+    assert sess.get_state()["waiting_for_action"]
+    sess.submit_action("raise", 200)
+    total = _total_chips(sess)
+    hand_no = sess.hand_number
+    pot = sess.game.pot
+    assert not sess.hand_over and pot > 0
+    sess.next_hand()
+    assert sess.hand_number == hand_no, "핸드 중 next_hand가 새 핸드를 시작함"
+    assert sess.game.pot == pot, f"팟 변화: {pot} → {sess.game.pot}"
+    assert _total_chips(sess) == total, f"칩 합계 변화: {total} → {_total_chips(sess)}"
+
+
+def test_8_3_headsup_btnsb_first_and_bb_option():
+    """T-019: 헤즈업 프리플랍은 BTN/SB가 먼저 행동하고, BTN/SB가 림프하면 BB(사람)가
+    체크/레이즈 옵션을 받는다(세션 경로)."""
+    # dealer_index=1 → 봇이 BTN/SB, 사람이 BB. 봇은 림프(콜).
+    sess, events = _scripted_session(1, dealer_index=1,
+                                     scripts={"🤖 Alpha": [(Action.CALL, 10)]})
+    acts = _action_events(events)
+    assert acts, f"사람(BB) 차례 전에 BTN/SB 액션이 있어야 함: {events}"
+    assert acts[0]["position"] == "BTN/SB", f"첫 액션 포지션: {acts[0]}"
+    state = sess.get_state()
+    assert state["waiting_for_action"], "림프 후 BB(사람)에게 옵션이 와야 함"
+    assert state["street"] == "프리플랍", f"BB 옵션 없이 스트리트가 넘어감: {state['street']}"
+    assert state["call_amount"] == 0 and state["min_raise_to"] > 0, \
+        f"BB는 체크/레이즈 가능해야 함: call={state['call_amount']} min_raise_to={state['min_raise_to']}"
+
+
+def test_8_4_headsup_human_btnsb_acts_first():
+    """T-019: 사람이 BTN/SB면 프리플랍 첫 결정이 사람이고(봇 액션 없음), 사람이 림프하면
+    BB 봇이 이어서 행동한다."""
+    sess, events = _scripted_session(1, dealer_index=0)
+    assert not _action_events(events), f"BTN/SB(사람)보다 먼저 행동한 사람이 있음: {events}"
+    state = sess.get_state()
+    assert state["waiting_for_action"] and state["call_amount"] == 10
+    sess.submit_action("call", 0)
+    acts = _action_events(sess.get_state()["events"])
+    assert [a["position"] for a in acts[:2]] == ["BTN/SB", "BB"], \
+        f"림프 뒤 BB가 행동해야 함: {[(a['position'], a['action']) for a in acts]}"
+
+
+def test_8_5_headsup_btnsb_first_decision_has_gto_hint():
+    """T-019: 헤즈업 BTN/SB 첫 결정에서 GTO 힌트가 보인다(격리 DB에 SB RFI 시딩)."""
+    from db.connection import get_connection
+    import gto.loader as gto_loader
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR IGNORE INTO gto_preflop_situations "
+        "(position, vs_position, range_type, raise_size, situation_label) "
+        "VALUES ('SB', NULL, 'open', 3.0, 'SB RFI')")
+    sid = conn.execute(
+        "SELECT id FROM gto_preflop_situations WHERE position='SB' AND range_type='open'"
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT OR IGNORE INTO gto_preflop_hands "
+        "(situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin) "
+        "VALUES (?, 'AKs', 0.0, 0.0, 1.0, 0.0)", (sid,))
+    conn.commit()
+    conn.close()
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+
+    sess, _ = _scripted_session(1, dealer_index=0)
+    sess.human.hole_cards = [c("A", "S"), c("K", "S")]
+    # 첫 결정 시점의 구조화 시퀀스는 비어 있어야 한다(BB의 가짜 선행 체크가 끼면 노드 오염)
+    assert sess.game.preflop_action_seq() == [], \
+        f"BTN/SB 첫 결정 전 시퀀스가 비어 있지 않음: {sess.game.preflop_action_seq()}"
+    state = sess.get_state()
+    assert state["waiting_for_action"]
+    assert state["gto_hint"], f"헤즈업 BTN/SB 첫 결정에 GTO 힌트가 없음: {state['gto_hint']}"
+
+
+def _flop_bet_scenario(beta_stack):
+    """3인, 딜러=Beta → 사람=SB(플랍 선행동), Alpha=BB. 프리플랍은 모두 20으로 림프/체크.
+    플랍: 사람 벳 100 → Alpha 콜 → Beta 올인(플랍 시작 스택 beta_stack - 20)."""
+    sess, _ = _scripted_session(
+        2, dealer_index=2, chips=[1000, 1000, beta_stack],
+        scripts={"🤖 Alpha": [(Action.CHECK, 0), (Action.CALL, 100)],
+                 "🤖 Beta": [(Action.CALL, 20), (Action.ALL_IN, 0)]})
+    assert sess.get_state()["call_amount"] == 10, "사람(SB) 프리플랍 차례여야 함"
+    sess.submit_action("call", 0)
+    state = sess.get_state()
+    assert state["street"] == "플랍" and state["waiting_for_action"], state["street"]
+    sess.submit_action("raise", 100)
+    return sess
+
+
+def test_8_6_short_allin_under_call_does_not_reopen():
+    """T-020: 벳 100 → 콜 → 50 올인(콜도 못 채움) 뒤 처음 벳한 사람에게 액션이 다시
+    오지 않는다(라운드 종료)."""
+    sess = _flop_bet_scenario(beta_stack=70)
+    state = sess.get_state()
+    flop_acts = [(a["player"], a["action"]) for a in _action_events(state["events"])
+                 if a["street"] == "플랍"]
+    assert flop_acts == [("Human", "raise"), ("🤖 Alpha", "call"), ("🤖 Beta", "allin")], \
+        f"50 올인 뒤 재오픈되면 안 됨: {flop_acts}"
+    assert state["street"] == "턴", f"플랍 라운드가 끝나야 함: {state['street']}"
+
+
+def test_8_7_incomplete_raise_allin_call_or_fold_only():
+    """T-020: 벳 100 → 콜 → 150 올인(최소 레이즈 미만) 뒤 처음 벳한 사람은 콜/폴드만."""
+    from core.game import IllegalActionError
+    sess = _flop_bet_scenario(beta_stack=170)
+    state = sess.get_state()
+    assert state["waiting_for_action"] and state["call_amount"] == 50, \
+        f"사람이 50을 더 콜해야 함: call={state['call_amount']}"
+    assert state["can_raise"] is False and state["min_raise_to"] == 0, \
+        f"레이즈 불가가 응답에 보여야 함: can_raise={state['can_raise']} min_raise_to={state['min_raise_to']}"
+    for bad in [("raise", 400), ("allin", 0)]:
+        try:
+            sess.submit_action(*bad)
+            raise AssertionError(f"닫힌 액션에서 {bad}가 거절되지 않음")
+        except IllegalActionError:
+            pass
+    sess.submit_action("call", 0)
+    assert sess.game.current_street == Street.TURN and sess.human.chips == 1000 - 20 - 150, \
+        f"콜 후 턴으로: street={sess.game.current_street} chips={sess.human.chips}"
+
+
+def test_8_8_full_allin_updates_min_raise():
+    """T-020: BB 20에서 500 올인(레이즈 480) 뒤 최소 레이즈-투가 980으로 보인다."""
+    # 딜러=Alpha → Beta=SB, 사람=BB, 프리플랍 첫 행동 Alpha
+    sess, events = _scripted_session(
+        2, dealer_index=1, chips=[1000, 500, 1000],
+        scripts={"🤖 Alpha": [(Action.ALL_IN, 0)]})
+    state = sess.get_state()
+    assert state["waiting_for_action"] and state["current_bet"] == 500, state["current_bet"]
+    assert state["min_raise_to"] == 980, f"최소 레이즈-투 980이어야 함: {state['min_raise_to']}"
+
+
+def test_8_9_raise_over_stack_becomes_allin():
+    """T-020: 칩 300으로 1000 레이즈를 보내면 300 올인이 되고, 유령 베팅이 생기지 않는다."""
+    # 딜러=사람(3인이라 UTG 겸 BTN, 프리플랍 첫 행동). 봇은 콜 금액만큼 콜(스텁).
+    sess, _ = _scripted_session(2, dealer_index=0, chips=[300, 1000, 1000])
+    sess.submit_action("raise", 1000)
+    events = _action_events(sess.get_state()["events"])
+    h_act = next(a for a in events if a["player"] == "Human")
+    assert h_act["action"] == "allin", f"스택 초과 레이즈는 올인: {h_act}"
+    assert sess.human.is_all_in and sess.human.total_bet_this_round == 300
+    # 유령 current_bet(1000)이 있었다면 봇이 1000을 콜했을 것 — 실제로는 300만 콜해야 함
+    for name in ("🤖 Alpha", "🤖 Beta"):
+        call = next(a for a in events if a["player"] == name and a["street"] == "프리플랍")
+        assert call["chips_after"] == 700, f"{name}은 300까지만 콜해야 함: {call}"
+
+
+def test_8_13_runout_when_one_player_can_act():
+    """T-023: 행동 가능한 사람이 1명이고 콜할 금액이 없으면 남은 카드가 바로 깔린다
+    (남은 봇·사람에게 스트리트마다 액션을 묻지 않음)."""
+    # ① 사람(BTN/SB, 500) 프리플랍 올인 → 봇(1000) 콜 → 봇만 칩이 남아도 액션 없이 쇼다운
+    sess, _ = _scripted_session(1, dealer_index=0, chips=[500, 1000])
+    sess.submit_action("allin", 0)
+    st = sess.get_state()
+    post = [a for a in _action_events(st["events"]) if a["street"] != "프리플랍"]
+    assert not post, f"상대가 전부 올인인데 포스트플랍 액션을 물음: {[(a['player'], a['action']) for a in post]}"
+    assert st["hand_over"] and len(st["community_cards"]) == 5
+    assert [e["street"] for e in st["events"] if e["type"] == "street_start"] == ["플랍", "턴", "리버"]
+
+    # ② 봇 올인 → 사람 콜 → 사람에게 자동 체크 이벤트 없이 런아웃
+    sess, _ = _scripted_session(1, dealer_index=0, chips=[1000, 400],
+                                scripts={"🤖 Alpha": [(Action.ALL_IN, 0)]})
+    sess.submit_action("raise", 60)   # BTN/SB 오픈 → BB 봇 올인 400
+    st = sess.get_state()
+    assert st["waiting_for_action"] and st["call_amount"] == 340, st["call_amount"]
+    sess.submit_action("call", 0)
+    st = sess.get_state()
+    post = [a for a in _action_events(st["events"]) if a["street"] != "프리플랍"]
+    assert not post, f"사람에게 무의미한 체크가 생김: {[(a['player'], a['action']) for a in post]}"
+    assert st["hand_over"] and len(st["community_cards"]) == 5
+
+    # ③ 콜할 금액이 있으면 묻는다: 플랍에서 봇이 올인하면 사람은 결정해야 한다
+    sess, _ = _scripted_session(1, dealer_index=0, chips=[1000, 300],
+                                scripts={"🤖 Alpha": [(Action.CHECK, 0), (Action.ALL_IN, 0)]})
+    sess.submit_action("call", 0)     # 림프 → BB 체크 → 플랍, BB(봇) 선행동 올인
+    st = sess.get_state()
+    assert st["street"] == "플랍" and st["waiting_for_action"] and st["call_amount"] == 280, \
+        f"콜할 금액이 있으면 사람에게 물어야 함: street={st['street']} call={st['call_amount']}"
+
+
+def test_8_14_blind_events_sb_then_bb_when_human_bb():
+    """T-002: 내가 BB일 때(인원 2~6) blind 이벤트는 항상 [SB, BB] 순서다."""
+    for n_bots in range(1, 6):
+        n = n_bots + 1
+        # 사람(좌석 0)이 BB가 되는 딜러: 헤즈업은 상대가 딜러, 3인 이상은 딜러+2 = 0
+        dealer = 1 if n == 2 else (n - 2) % n
+        sess, events = _scripted_session(n_bots, dealer_index=dealer)
+        assert sess.game.get_positions()["Human"] == "BB", sess.game.get_positions()
+        blinds = [(e["position"], e["player"]) for e in events if e["type"] == "blind"]
+        sb_label = "BTN/SB" if n == 2 else "SB"
+        assert [b[0] for b in blinds] == [sb_label, "BB"], f"{n}인: blind 순서 {blinds}"
+        assert blinds[1][1] == "Human"
+
+
+def test_8_10_illegal_check_rejected_not_recorded():
+    """T-021: 벳을 마주한 체크 요청은 거절되고(API 400) 로그·이벤트·RL 기록에 남지 않는다."""
+    from core.game import IllegalActionError
+    # 세션 경로: 딜러=사람(3인 UTG) → 첫 결정에서 콜 20을 마주함
+    sess, _ = _scripted_session(2, dealer_index=0)
+    assert sess.get_state()["call_amount"] == 20
+    log_before = list(sess.action_log)
+    rec_before = len(sess.recorder._pending_preflop)
+    total = _total_chips(sess)
+    try:
+        sess.submit_action("check", 0)
+        raise AssertionError("벳을 마주한 체크가 거절되지 않음")
+    except IllegalActionError:
+        pass
+    state = sess.get_state()
+    assert state["events"] == [], f"거절된 액션이 이벤트를 남김: {state['events']}"
+    assert sess.action_log == log_before, "거절된 체크가 액션 로그에 남음"
+    assert len(sess.recorder._pending_preflop) == rec_before, "거절된 체크가 RL 기록에 남음"
+    assert _total_chips(sess) == total and state["waiting_for_action"]
+
+    # API 경로: 400 + 상태 무변경
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from fastapi.testclient import TestClient
+        from server.main import app, sessions
+    client = TestClient(app)
+    sessions["api-t021"] = sess
+    res = client.post("/game/api-t021/action", json={"action": "check", "amount": 0})
+    assert res.status_code == 400, f"불법 체크는 400이어야 함: {res.status_code} {res.text}"
+    assert "체크" in res.json()["detail"]
+    assert sess.action_log == log_before
+    sessions.pop("api-t021", None)
+
+
+def test_8_11_bot_illegal_action_falls_back():
+    """T-021: 봇이 불법 액션을 내면 경고 로그를 남기고 안전한 액션으로 대체된다
+    (불법 체크 → 폴드, 막힌 레이즈/올인 → 콜, 콜할 금액 없으면 체크)."""
+    import logging
+    records = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    lg = logging.getLogger("server.session")
+    h = _H(level=logging.WARNING)
+    lg.addHandler(h)
+    try:
+        # 딜러=사람(UTG). 사람 레이즈 60 → Alpha(SB)가 불법 체크 → 폴드로 대체
+        sess, _ = _scripted_session(2, dealer_index=0,
+                                    scripts={"🤖 Alpha": [(Action.CHECK, 0)]})
+        sess.submit_action("raise", 60)
+        acts = _action_events(sess.get_state()["events"])
+        alpha = next(a for a in acts if a["player"] == "🤖 Alpha")
+        assert alpha["action"] == "fold", f"불법 체크는 폴드로 대체: {alpha}"
+        assert any("Alpha" in m and "불법" in m for m in records), f"경고 로그 없음: {records}"
+    finally:
+        lg.removeHandler(h)
+
+    game, players = make_game(3)
+    game.start_hand()
+    p0 = players[0]  # BTN(UTG), 콜 20 마주함
+    assert game.fallback_action(p0, Action.CHECK) == Action.FOLD
+    assert game.fallback_action(p0, Action.RAISE) == Action.CALL
+    assert game.fallback_action(p0, Action.ALL_IN) == Action.CALL
+    game.current_bet = 0
+    assert game.fallback_action(p0, Action.RAISE) == Action.CHECK
+
+
+class _RandomBot(StubBot):
+    """퍼저용: 합법·불법을 가리지 않고 무작위 액션을 낸다(불법이면 세션이 폴백)."""
+
+    def __init__(self, player, rng):
+        super().__init__(player)
+        self._rng = rng
+
+    def decide_action(self, game_state):
+        r = self._rng.random()
+        cb = game_state["current_bet"]
+        if r < 0.15:
+            return Action.FOLD, 0
+        if r < 0.35:
+            return Action.CHECK, 0
+        if r < 0.70:
+            return Action.CALL, 0
+        if r < 0.93:
+            return Action.RAISE, self._rng.randint(0, max(1, cb * 4 + 100))
+        return Action.ALL_IN, 0
+
+
+def _walk_events(events, chips, bets):
+    """이벤트 금액 = 실제 칩 이동 불변식 검사. chips/bets는 호출 간 유지되는 추적 상태."""
+    for e in events:
+        t = e["type"]
+        if t == "street_start":
+            for k in bets:
+                bets[k] = 0
+        elif t in ("blind", "action"):
+            p = e["player"]
+            moved = chips[p] - e["chips_after"]
+            assert moved >= 0, f"칩이 늘어나는 {t} 이벤트: {e}"
+            if t == "blind":
+                assert moved > 0 and e["amount"] == moved, f"블라인드 금액≠실제 포스팅: {e} moved={moved}"
+            elif e["action"] in ("fold", "check"):
+                assert moved == 0 and e["amount"] == 0, f"{e['action']}인데 칩 이동: {e}"
+            elif e["action"] == "call":
+                assert e["amount"] == moved, f"콜 금액≠이동액: {e} moved={moved}"
+            else:
+                assert e["amount"] == bets[p] + moved, \
+                    f"{e['action']} 금액≠도달 베팅: {e} bet_before={bets[p]} moved={moved}"
+            if e.get("action") not in ("fold", "check"):
+                assert f"{e['amount']}" in e["log"], f"로그 금액 불일치: {e}"
+            bets[p] += moved
+            chips[p] = e["chips_after"]
+        elif t == "winner":
+            chips.update(e.get("winner_chips") or {})
+
+
+def test_8_12_session_fuzz_event_amounts_and_conservation():
+    """T-021 퍼저(시드 고정, 세션 경로): 무작위 스택·인원·액션(불법 포함)으로 수백 핸드를
+    돌려 ① 이벤트·로그 금액 = 실제 칩 이동(블라인드 포함) ② 칩 보존 ③ 사람 불법 액션은
+    상태를 바꾸지 않음을 검사한다."""
+    import random
+    import logging
+    from core.game import IllegalActionError
+    rng = random.Random(20260926)
+    lg = logging.getLogger("server.session")
+    old_level = lg.level
+    lg.setLevel(logging.ERROR)  # 봇 폴백 경고는 여기서 의도된 것
+    hands = 0
+    try:
+        while hands < 250:
+            n_bots = rng.randint(1, 5)
+            stacks = [rng.choice([rng.randint(5, 60), rng.randint(100, 2000)])
+                      for _ in range(n_bots + 1)]
+            sess, events = _scripted_session(n_bots, chips=stacks,
+                                             dealer_index=rng.randint(0, n_bots))
+            for name, bot in list(sess.bots.items()):
+                sess.bots[name] = _RandomBot(bot.player, rng)
+            total = sum(stacks)
+            for _ in range(15):  # 세션당 최대 15핸드
+                if sess.game_over:
+                    break
+                chips = dict(sess._hand_start_chips)
+                bets = {k: 0 for k in chips}
+                _walk_events(events, chips, bets)
+                guard = 0
+                while not sess.hand_over:
+                    guard += 1
+                    assert guard < 60, "핸드가 끝나지 않음"
+                    st = sess.get_state()
+                    _walk_events(st["events"], chips, bets)
+                    assert _total_chips(sess) == total, "칩 보존 위반"
+                    if not st["waiting_for_action"]:
+                        break
+                    act = rng.choice(["fold", "check", "call", "raise", "allin"])
+                    amt = rng.randint(0, st["current_bet"] * 4 + 100)
+                    log_len = len(sess.action_log)
+                    try:
+                        sess.submit_action(act, amt)
+                    except IllegalActionError:
+                        assert len(sess.action_log) == log_len and _total_chips(sess) == total
+                        sess.submit_action("call" if st["call_amount"] > 0 else "check", 0)
+                st = sess.get_state()
+                _walk_events(st["events"], chips, bets)
+                assert _total_chips(sess) == total, "칩 보존 위반(핸드 종료)"
+                hands += 1
+                sess.next_hand()
+                events = sess.get_state()["events"]
+    finally:
+        lg.setLevel(old_level)
+
+
+# ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
 
@@ -1644,6 +2077,21 @@ ALL_TESTS = [
     ("7-4  BB RFI 불가+큐 미기록(G6)",          test_7_4_bb_never_rfi_and_no_queue),
     ("7-5  오프너가 히어로보다 뒤 좌석→None(G6)", test_7_5_vs_open_opener_after_hero_is_none),
     ("7-6  save의 vs_3bet 반쪽 포맷 정규화(G17)", test_7_6_save_normalizes_vs3bet_half_format),
+    # 영역 8 — 세션 경로 룰
+    ("8-1  next_hand 연타 → 한 핸드만, 칩 보존",  test_8_1_next_hand_double_call_keeps_chips),
+    ("8-2  핸드 중 next_hand 무시",              test_8_2_next_hand_during_hand_ignored),
+    ("8-3  헤즈업 BTN/SB 선행동 + BB 옵션",      test_8_3_headsup_btnsb_first_and_bb_option),
+    ("8-4  헤즈업 사람 BTN/SB 첫 결정",           test_8_4_headsup_human_btnsb_acts_first),
+    ("8-5  헤즈업 BTN/SB 첫 결정 GTO 힌트",       test_8_5_headsup_btnsb_first_decision_has_gto_hint),
+    ("8-6  콜 미만 올인은 재오픈 없음",           test_8_6_short_allin_under_call_does_not_reopen),
+    ("8-7  불완전 레이즈 올인 → 콜/폴드만",       test_8_7_incomplete_raise_allin_call_or_fold_only),
+    ("8-8  풀 레이즈 올인이 min_raise 갱신",      test_8_8_full_allin_updates_min_raise),
+    ("8-9  스택 초과 레이즈 → 올인",              test_8_9_raise_over_stack_becomes_allin),
+    ("8-10 불법 체크 거절(400)·기록 없음",        test_8_10_illegal_check_rejected_not_recorded),
+    ("8-11 봇 불법 액션 → 로그+안전 폴백",        test_8_11_bot_illegal_action_falls_back),
+    ("8-12 세션 퍼저: 이벤트 금액=칩 이동·보존",  test_8_12_session_fuzz_event_amounts_and_conservation),
+    ("8-13 행동 가능 1명 + 콜 없음 → 런아웃",     test_8_13_runout_when_one_player_can_act),
+    ("8-14 사람 BB일 때 blind 이벤트 SB→BB",      test_8_14_blind_events_sb_then_bb_when_human_bb),
 ]
 
 
@@ -1655,8 +2103,9 @@ AREA_LABELS = {
     "5": "영역 5 — 웹 세션",
     "6": "영역 6 — 버그 픽스",
     "7": "영역 7 — 프리플랍 GTO 원칙",
+    "8": "영역 8 — 세션 경로 룰",
 }
-AREA_ORDER = ["1", "2", "3", "4", "5", "6", "7"]
+AREA_ORDER = ["1", "2", "3", "4", "5", "6", "7", "8"]
 
 
 if __name__ == "__main__":

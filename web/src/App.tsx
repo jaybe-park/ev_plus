@@ -246,6 +246,7 @@ export default function App() {
                 state={state}
                 onNextHand={handleNextHand}
                 onNewGame={handleNewGame}
+                loading={loading}
               />
             )}
           </div>

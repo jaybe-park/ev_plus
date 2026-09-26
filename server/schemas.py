@@ -106,7 +106,8 @@ class GameStateResponse(BaseModel):
     gto_hint: Optional[str] = None
     action_log: List[str] = []
     call_amount: int = 0
-    min_raise_to: int = 0
+    min_raise_to: int = 0             # 레이즈 불가(액션 닫힘·스택 부족)면 0
+    can_raise: bool = False           # 사람이 지금 레이즈/올인-레이즈를 할 수 있는가
     events: List[GameEvent] = []   # 이번 응답에서 발생한 이벤트 목록
     gto_key: Optional[Dict[str, Any]] = None  # GTO 레인지 조회용 키 {position, vs_position, range_type}
     equity: Optional[EquityInfo] = None       # 에퀴티 패널 (waiting_for_action=true일 때)

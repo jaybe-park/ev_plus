@@ -13,6 +13,7 @@ from typing import Optional
 
 from server.schemas import StartGameRequest, ActionRequest, GameStateResponse, SessionReviewResponse
 from server.session import WebGameSession
+from core.game import IllegalActionError
 
 app = FastAPI(title="Texas Hold'em Poker")
 
@@ -54,7 +55,11 @@ def submit_action(session_id: str, req: ActionRequest):
     session = sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-    session.submit_action(req.action, req.amount)
+    try:
+        session.submit_action(req.action, req.amount)
+    except IllegalActionError as e:
+        # 불법 액션은 상태를 바꾸지 않고 거절한다(기록·방송·평가 없음)
+        raise HTTPException(status_code=400, detail=str(e))
     return session.get_state()
 
 
