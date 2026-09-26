@@ -22,6 +22,9 @@ import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from db.connection import check_db_size_guard, DEFAULT_MAX_DB_GB
 
 _stop = threading.Event()
 
@@ -74,11 +77,21 @@ def main():
     parser.add_argument("--seats", type=str,
                         default="hard,hard,medium,medium,easy,easy")
     parser.add_argument("--hands-per-run", type=int, default=500)
+    parser.add_argument(
+        "--max-db-gb", type=float, default=DEFAULT_MAX_DB_GB,
+        help=f"DB 파일 크기가 이 값(GB)을 넘으면 시작하지 않음 (기본 {DEFAULT_MAX_DB_GB:g})"
+    )
     args = parser.parse_args()
+
+    reason = check_db_size_guard(max_gb=args.max_db_gb)
+    if reason:
+        print(f"🛑 {reason}")
+        sys.exit(1)
 
     print("그라인드 시작 — Ctrl+C로 안전 종료 (진행분은 모두 DB에 저장됨)\n", flush=True)
 
-    worker = _spawn(["scripts/equity_worker.py"], "워커")
+    worker_args = ["scripts/equity_worker.py", "--max-db-gb", str(args.max_db_gb)]
+    worker = _spawn(worker_args, "워커")
     arena_thread = threading.Thread(
         target=_arena_loop, args=(args.seats, args.hands_per_run), daemon=True)
     arena_thread.start()
@@ -92,7 +105,7 @@ def main():
             if worker.poll() is not None:
                 # 워커가 스스로 끝나는 일은 사실상 없음 (스윕이 무한) — 재시작
                 print("[그라인드] 워커 재시작", flush=True)
-                worker = _spawn(["scripts/equity_worker.py"], "워커")
+                worker = _spawn(worker_args, "워커")
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[그라인드] ⏸ 중단 요청 — 자식 프로세스 정리 중", flush=True)

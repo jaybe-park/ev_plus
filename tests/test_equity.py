@@ -12,8 +12,12 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# GTO 프리플랍 로더/어드바이저가 db.connection.get_connection()으로 실 DB를
-# 읽으므로(인자 없이 호출 시 기본 poker.db) 그라인드/운영 데이터와 격리한다.
+# ── 테스트 격리 ──────────────────────────────────────────
+# 이 파일 대부분의 테스트는 ai.equity.DB_PATH를 개별적으로 임시 파일로
+# 바꾸지만, gto.loader.get_raise_range 등 db.connection.get_connection()을
+# 인자 없이 호출하는 경로는 EV_PLUS_DB가 비어 있으면 운영 poker.db를 만들어
+# 버린다. run_all.py의 poker.db 무결성 가드가 이를 실제로 잡아냈다 — 다른
+# 테스트 파일과 동일하게 모듈 임포트 시점에 환경변수 자체를 격리한다.
 os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
 
 from core.card import Card, Suit, Rank

@@ -46,7 +46,7 @@ from ai.equity import (
 # 기본 워커 수: CPU-2 (그라인드의 아레나 프로세스 몫 배려). --workers 1이면
 # 기존 순차 경로 그대로 사용(회귀 안전, 디버깅용).
 DEFAULT_WORKERS = max(1, (os.cpu_count() or 2) - 2)
-from db.connection import get_connection
+from db.connection import get_connection, check_db_size_guard, DEFAULT_MAX_DB_GB
 
 # 배치 인출/저장 크기 (작업 3 — 워커 배치 인출/저장)
 BATCH_FETCH_RIVER = 500   # 리버는 스팟당 매우 빠르므로 크게
@@ -1072,7 +1072,18 @@ def main():
         help=f"병렬 워커 프로세스 수 (기본 {DEFAULT_WORKERS} = CPU-2). "
              "1이면 기존 순차 경로 그대로 사용(회귀 안전)."
     )
+    parser.add_argument(
+        "--max-db-gb", type=float, default=DEFAULT_MAX_DB_GB,
+        help=f"DB 파일 크기가 이 값(GB)을 넘으면 시작하지 않음 (기본 {DEFAULT_MAX_DB_GB:g})"
+    )
     args = parser.parse_args()
+
+    if not args.status:
+        # --status는 조회만 하므로 가드 대상 아님(현황 확인이 막히면 안 됨)
+        reason = check_db_size_guard(max_gb=args.max_db_gb)
+        if reason:
+            print(f"🛑 {reason}")
+            sys.exit(1)
 
     conn = get_connection()
 

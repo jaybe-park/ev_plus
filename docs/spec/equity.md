@@ -23,6 +23,14 @@
 - 턴 = 리버 자식 46개 합, 플랍 = 턴 자식 47개 합(스트리트 분해 DP). 캐시가 메모 테이블이라 플랍 1개 계산에 턴·리버 정확값 약 2,200행이 부산물로 남는다 — 근거: [0018](../decisions/0018-equity-fast-paths.md) · 강제 장치: `tests/test_equity.py::test_street_dp`
 - 같은 보드의 리버 스팟은 `board_rank_table`(보드 밖 2장 조합 1,081개 랭크)을 한 번 만들어 이진탐색 + 블로커 보정으로 계산한다. 결과는 `exact_counts_river`와 같아야 한다 — 근거: [0018](../decisions/0018-equity-fast-paths.md) · 강제 장치: `tests/test_equity.py::test_board_rank_table`
 - 프리플랍은 전수 불가(21억 조합) → 169핸드 × 상대 1~5명을 샘플 누적한다.
+- `_db()`는 `DB_PATH`가 `None`이면 `get_connection(None)`으로 위임한다 — `_DEFAULT_DB_PATH`를
+  직접 넘기면 `db/connection.py`의 `EV_PLUS_DB` 환경변수 규칙(테스트 격리)을 우회하게
+  되므로 금지 — 강제 장치: `tests/test_equity.py`(EV_PLUS_DB 격리 하에서 실 DB 미접촉)
+- `canonical_key`는 홀-보드 또는 보드 내부에 중복 카드가 있으면 `ValueError` — 강제 장치:
+  `tests/test_guards.py::test_canonical_key_duplicate_cards`
+- `scripts/equity_worker.py`·`scripts/grind.py`는 시작 시(단, `--status`는 조회만이라 예외)
+  `db.connection.check_db_size_guard`로 DB 파일 크기가 임계치(기본 20GB, `--max-db-gb`로
+  조정)를 넘으면 실행하지 않고 이유를 출력한다 — 강제 장치: `tests/test_guards.py::test_db_size_guard`
 
 ### 워커
 - 우선순위: 리버 → 턴 → 플랍 전수조사(게임에서 만난 스팟) → 프리플랍/멀티웨이 샘플 누적(상대 수 적은 것부터) → 체계적 플랍 스윕(큐가 빌 때만, 커서는 `worker_meta`) — 근거: [0019](../decisions/0019-equity-worker-priority.md) · 강제 장치: 장치 없음
