@@ -54,3 +54,6 @@ chip_violations.log
 *.db-wal
 *.db.bak
 *.db.*backup*
+*.db.slim
+*.db.slim-shm
+*.db.slim-wal

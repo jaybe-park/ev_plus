@@ -21,7 +21,7 @@ import os
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 FAST_FILES = ["test_poker_full.py", "test_gto_tree.py"]
-FULL_FILES = ["test_poker_full.py", "test_equity.py", "test_grader.py", "test_gto_tree.py"]
+FULL_FILES = ["test_poker_full.py", "test_equity.py", "test_grader.py", "test_gto_tree.py", "test_slim_db.py"]
 
 
 def run_file(filename: str) -> tuple[bool, float]:
