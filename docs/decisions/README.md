@@ -9,7 +9,7 @@
 | [0003](0003-layered-css-parser.md) | 레이어 기반 CSS 파서로 GTO Wizard 빈도 추출 | 유효 | gto-preflop |
 | [0004](0004-raise-size-measured.md) | raise_size는 실측 bb(REAL), 공식은 폴백에만 | 유효 | gto-preflop |
 | [0005](0005-100bb-and-headsup-sb.md) | 100bb 고정 근사, 헤즈업은 6-max SB 재사용, 3~5인은 제외 | 유효 | gto-preflop |
-| [0006](0006-enum-first-and-model-guards.md) | enum 경로 우선·시퀀스 폴백 병렬 공존 + 데이터 모델 밖 가드 | 유효 | gto-preflop |
+| [0006](0006-enum-first-and-model-guards.md) | enum 경로 우선·시퀀스 폴백 병렬 공존 + 데이터 모델 밖 가드 | 일부 대체됨 → 0035 (조회 순서. 데이터 모델 밖 가드는 유효) | gto-preflop |
 | [0007](0007-structured-preflop-seq.md) | advisor 입력은 구조화 프리플랍 시퀀스(한글 로그 파싱 금지) | 유효 | gto-preflop |
 | [0008](0008-node-key-action-seq.md) | 노드 키 = GTO Wizard preflop_actions 문자열, 스키마 안 A, DB가 source of truth | 유효 | gto-preflop |
 | [0009](0009-measured-size-node-key.md) | 저장 노드 키는 실측 사이즈 verbatim(깊이-캐노니컬 스냅 폐기) | 유효 | gto-preflop |
@@ -35,3 +35,4 @@
 | [0032](0032-partial-index-only-for-pending-queues.md) | 대기 큐 인덱스는 부분 인덱스로만, 인덱스 삭제 전 EXPLAIN QUERY PLAN 확인 | 대체됨 → 0034 | db |
 | [0033](0033-no-direct-writes-to-shared-db.md) | 공유 운영 DB에 직접 쓰지 않는다 — 스크립트 경유 | 유효 | db |
 | [0034](0034-abolish-equity-cache.md) | 에퀴티 캐시 폐기 — 프리플랍 상수 테이블 + 실시간 계산, 정밀도 목표 ±0.5%p | 유효 | equity |
+| [0035](0035-gto-lookup-sequence-first.md) | GTO 조회는 액션 순서 키 먼저, 간단 라벨은 "근사" 예비 | 유효 | gto-preflop |
