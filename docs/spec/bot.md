@@ -25,6 +25,7 @@
 ### 포스트플랍
 - equity: hard는 상대 레인지 정보가 하나라도 있으면 `ranged_equity`, 없으면(모두 unknown) `smart_equity`(vs 랜덤, 캐시 활용). easy·medium은 항상 `smart_equity` — 근거: [0014](../decisions/0014-difficulty-is-mc-resolution.md) · 강제 장치: 장치 없음
 - 상대 레인지(hard·에퀴티 패널 공용, `opponent_range_info`): 프리플랍 레이저 → 그 포지션 RFI 레이즈 레인지, 오프너에게 콜한 사람 → 그 오프너 상대 콜 레인지, 그 외 → 랜덤. 레인지는 GTO 빈도가 가중치(빈도 ≤ 2%인 핸드 제외) — 강제 장치: `tests/test_equity.py::test_ranged_equity`(샘플러·콤보 수·블로커. 역할 판정은 장치 없음)
+- 헤즈업 딜러 라벨 `BTN/SB`는 레인지 조회 시 `SB`로 바꾼다(레이저·콜러 본인과 오프너 모두). BTN/SB 오픈 → SB RFI 레인지, BTN/SB 오픈에 BB 콜 → BB vs SB 콜 레인지 — 근거: [0005](../decisions/0005-100bb-and-headsup-sb.md) · 강제 장치: `tests/test_equity.py::test_headsup_range_uses_sb`(순수 함수 + 헤즈업 세션 패널 vs_range)
 - 벳을 받으면: equity가 레이즈 기준 이상이면 레이즈(트랩 빈도만큼 콜) → 드로우면 포지션 가중 세미블러프 레이즈 → 아니면 `equity ≥ 팟오즈 + 콜 마진 + 어그레션 마진 × min(벳/팟, 1.2)`이면 콜, 아니면 폴드. 드로우는 마진 −0.04(임플라이드 오즈) — 근거: [0015](../decisions/0015-aggression-margin.md) · 강제 장치: `tests/test_equity.py::test_bot_decisions`(넛 폴드 없음, 트래시 폴드, 좋은 오즈 드로우 폴드 없음)
 - 팟오즈(포스트플랍·프리플랍 휴리스틱)는 유효 콜·유효 팟 기준이다(`core/pot_odds.effective_call_pot`, 패널·Play Grader와 같은 함수). game_state에는 이번 스트리트 기여(`players[].current_bet`)만 있어 스트리트 기준으로 넘긴다 — 액션 중인 플레이어는 이전 스트리트를 모두 맞췄으므로 핸드 전체 기준과 같다. 어그레션 마진의 벳/팟은 캡하지 않은 원래 벳 크기(상대 레인지 신호)다 — 강제 장치: `tests/test_equity.py::test_bot_decisions`(스택 100이면 1,000 올인에 콜, 스택 5,000이면 폴드)
 - 어그레션 마진의 벳/팟(`facing_bet_ratio`) = 공격자의 이번 스트리트 벳(current_bet) ÷ 공격자가 액션하기 직전 팟(팟 − current_bet만큼 넣은 사람들의 이번 스트리트 벳). 레이즈를 받아도 실제 레이즈 크기로 본다: 팟 100에 내가 50 벳, 상대 150 레이즈 → 1.0. 공격자가 그 스트리트 첫 액션이라고 가정한다(벳-3벳 전쟁에선 약간 과대) — 강제 장치: `tests/test_equity.py::test_bot_decisions`(bet_ratio 4사례 + 팟 크기 레이즈에 A-high 폴드)
@@ -72,7 +73,6 @@ python3 scripts/tune_bot.py --profile hard --param semibluff_freq --evolve --sta
 ## 알려진 한계
 
 - 상대 레인지 추정(`opponent_range_info`)과 3벳+ 판정(`_count_raises`)은 아직 한글 `action_log`를 문자열·이름 부분매칭으로 파싱한다(ADR 0007 원칙 미적용). 3벳한 상대도 RFI 레인지로, 올인은 레이저로 취급하고, `_count_raises`는 올인을 세지 않는다 — TODO E-2(레인지 출발점)
-- 헤즈업에서는 `BTN/SB` 라벨로 레인지를 찾으므로 GTO 레인지가 없어 상대가 랜덤으로 취급된다(advisor만 SB로 치환, ADR 0005 위반) — T-017
 - GTO가 `allin`을 샘플하면 봇이 처리하지 못해 휴리스틱으로 떨어진다 — T-014
 - medium 봇과 Play Grader 포스트플랍 EV는 vs_random 기준이다(3벳팟에서 과대) — T-005
 - 포스트플랍 베팅 기반 레인지 좁히기 없음 — E-2

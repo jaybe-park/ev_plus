@@ -450,6 +450,86 @@ def test_ranged_equity():
         print("  ⏭  UTG RFI 데이터 없음 — GTO 연동 테스트 스킵")
 
 
+def test_headsup_range_uses_sb():
+    print("\n[E-14] 헤즈업 BTN/SB 상대 레인지 = SB 레인지 (T-017, ADR 0005)")
+    import gto.loader as gto_loader
+    from db.connection import get_connection
+    from ai.bot import opponent_range_info
+    from server.session import WebGameSession
+    from core.game import Street
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    prev_db, prev_env = eq.DB_PATH, os.environ.get("EV_PLUS_DB")
+    eq.DB_PATH = tmp
+    os.environ["EV_PLUS_DB"] = tmp
+    try:
+        conn = get_connection()
+        # 좁은 SB RFI(AA·KK) + BB vs SB 콜 레인지(QQ·JJ)를 시딩
+        for pos, vs, rtype, hands in (("SB", None, "open", {"AA": (0, 1), "KK": (0, 1)}),
+                                      ("BB", "SB", "vs_open", {"QQ": (1, 0), "JJ": (1, 0)})):
+            sid = conn.execute(
+                "INSERT INTO gto_preflop_situations (position, vs_position, range_type, "
+                "raise_size, situation_label) VALUES (?,?,?,3.0,?)",
+                (pos, vs, rtype, f"{pos} {rtype}"),
+            ).lastrowid
+            for hand, (call, rz) in hands.items():
+                conn.execute(
+                    "INSERT INTO gto_preflop_hands (situation_id, hand, freq_fold, freq_call, "
+                    "freq_raise, freq_allin) VALUES (?,?,0,?,?,0)", (sid, hand, call, rz))
+        conn.commit()
+        conn.close()
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+
+        st = {"positions": {"Hero": "BB", "Bot": "BTN/SB"},
+              "action_log": ["[BTN/SB] Bot: 스몰 블라인드 (10)", "[BB] Hero: 빅 블라인드 (20)",
+                             "[BTN/SB] Bot: 레이즈 (60)"]}
+        (sampler, role), = opponent_range_info(st, [{"name": "Bot"}])
+        check("BTN/SB 레이저 → raiser", role == "raiser", f"={role}")
+        check("BTN/SB 레이저 레인지 = SB RFI(AA·KK 12콤보)",
+              sampler is not None and len(sampler.combos) == 12,
+              f"={sampler and len(sampler.combos)}")
+        st2 = {"positions": {"Hero": "BTN/SB", "Bot": "BB"},
+               "action_log": ["[BTN/SB] Hero: 레이즈 (60)", "[BB] Bot: 콜 (40)"]}
+        (sampler2, role2), = opponent_range_info(st2, [{"name": "Bot"}])
+        check("BTN/SB 오픈에 BB 콜 → BB vs SB 콜 레인지(QQ·JJ 12콤보)",
+              role2 == "caller" and sampler2 is not None and len(sampler2.combos) == 12,
+              f"={role2} {sampler2 and len(sampler2.combos)}")
+
+        # 실제 패널 경로: 헤즈업 세션에서 봇(BTN/SB)이 오픈 → vs_range가 SB 레인지 기준
+        random.seed(17)
+        s = WebGameSession(session_id="t017", human_name="Hero", chips=2000,
+                           num_bots=1, difficulty="easy", small_blind=10)
+        bot_p = next(p for p in s.game.players if p is not s.human)
+        s.game.dealer_index = s.game.players.index(bot_p)
+        pos = s.game.get_positions()
+        check("헤즈업 봇 라벨 = BTN/SB", pos.get(bot_p.name) == "BTN/SB", f"={pos}")
+        for p in s.game.players:
+            p.is_folded = False
+        s.human.hole_cards = cards("Qh", "Qd")
+        s.game.community_cards = cards("7c", "4d", "2s")
+        s.game.current_street = Street.FLOP
+        s.action_log = [f"[BTN/SB] {bot_p.name}: 레이즈 (60)", f"[BB] Hero: 콜 (40)", "── 플랍 ──"]
+        s._equity_cache = {}
+        info = s._get_equity_info()
+        check("패널 상대 role = raiser", info["opponents"][0]["role"] == "raiser",
+              f"={info['opponents']}")
+        check("패널 vs_range(QQ vs AA·KK ≈ 0.19)가 vs_random(≈0.8)과 다름",
+              info["vs_range"] < 0.35 and info["vs_random"] > 0.65,
+              f"range={info['vs_range']} random={info['vs_random']}")
+    finally:
+        eq._flush_contributions()
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+        eq.DB_PATH = prev_db
+        if prev_env is None:
+            os.environ.pop("EV_PLUS_DB", None)
+        else:
+            os.environ["EV_PLUS_DB"] = prev_env
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def test_fast_evaluator():
     print("\n[E-9] 고속 7카드 평가기 등가성")
     from core.evaluator import HandEvaluator, evaluate_rank
@@ -595,6 +675,7 @@ if __name__ == "__main__":
     test_board_wetness()
     test_bot_decisions()
     test_ranged_equity()
+    test_headsup_range_uses_sb()
     test_fast_evaluator()
     test_street_dp()
     test_made_hand_rank()

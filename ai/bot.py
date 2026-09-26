@@ -66,6 +66,11 @@ class BotDifficulty(Enum):
     HARD   = "hard"
 
 
+def _range_pos(pos: str) -> str:
+    """GTO 레인지 조회용 포지션. 헤즈업 딜러 라벨 BTN/SB는 6-max SB 데이터를 쓴다(ADR 0005)."""
+    return "SB" if pos == "BTN/SB" else pos
+
+
 def opponent_range_info(state: dict, opponents: list) -> list:
     """
     프리플랍 액션 로그로 살아있는 상대들의 핸드 레인지 추정.
@@ -92,14 +97,14 @@ def opponent_range_info(state: dict, opponents: list) -> list:
                     callers.append((name, pos))
                 break
 
-    opener_pos = raisers[0][1] if raisers else None
+    opener_pos = _range_pos(raisers[0][1]) if raisers else None
     raiser_names = {n for n, _ in raisers}
     caller_names = {n for n, _ in callers}
 
     result = []
     for opp in opponents:
         name = opp["name"]
-        pos = positions.get(name, "")
+        pos = _range_pos(positions.get(name, ""))
         weights = None
         role = "unknown"
         if name in raiser_names:
