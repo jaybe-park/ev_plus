@@ -17,14 +17,19 @@
   좌석 수별 고정 배열로 정한다 — 근거: [0024](../decisions/0024-hj-position-naming.md)
   · 강제 장치: 장치 없음(그 자체를 검사하는 테스트는 없음. 6인 좌석 순서 사용 예:
     `tests/test_poker_full.py::test_2_5_preflop_betting_order_3players`)
-- 헤즈업(2인)은 딜러가 `BTN/SB` 겸임, 상대가 `BB`다. 프리플랍은 `BTN/SB`가 선행동,
-  포스트플랍은 `BB`가 선행동한다(6인 이상과 반대) — 강제 장치:
-  `tests/test_poker_full.py::test_6_1_headsup_blind_posting`,
-  `::test_6_2_headsup_preflop_btnSB_acts_first`, `::test_6_3_headsup_postflop_bb_acts_first`
-- 프리플랍 행동 순서는 UTG부터(딜러+3), SB는 블라인드 포스팅으로 이미 액션한 것으로
+- 행동 순서·라운드 시작 acted는 core 한 곳(`TexasHoldem._betting_order`, `initial_acted`)이
+  정하고 웹 세션(`WebGameSession._setup_round`)은 그것을 호출만 한다.
+- 헤즈업(2인)은 딜러가 `BTN/SB` 겸임, 상대가 `BB`다. 프리플랍은 `BTN/SB`가 선행동하고
+  BTN/SB가 림프하면 BB가 체크/레이즈 옵션을 받는다. 포스트플랍은 `BB`가 선행동한다
+  (6인 이상과 반대). BTN/SB 첫 결정 시점의 프리플랍 시퀀스는 비어 있어 GTO 힌트가 SB RFI
+  노드로 조회된다 — 강제 장치(세션 경로): `tests/test_poker_full.py::test_8_3_headsup_btnsb_first_and_bb_option`,
+  `::test_8_4_headsup_human_btnsb_acts_first`, `::test_8_5_headsup_btnsb_first_decision_has_gto_hint`
+  · core 헬퍼: `::test_6_1_headsup_blind_posting`, `::test_6_2_headsup_preflop_btnSB_acts_first`,
+  `::test_6_3_headsup_postflop_bb_acts_first`
+- 3인 이상 프리플랍 행동 순서는 UTG부터(딜러+3), SB는 블라인드 포스팅으로 이미 액션한 것으로
   처리되고 BB만 옵션(체크/레이즈)을 보유한다. 포스트플랍은 SB(딜러+1)부터 — 강제 장치:
-  `tests/test_poker_full.py::test_2_5_preflop_betting_order_3players`,
-  `::test_2_7_postflop_sb_acts_first`, `::test_2_1_bb_option_check`
+  core 헬퍼만 `tests/test_poker_full.py::test_2_5_preflop_betting_order_3players`,
+  `::test_2_7_postflop_sb_acts_first` (세션은 같은 함수를 호출하므로 간접 보장)
 - 레이즈·올인이 나오면 그 전에 이미 액션했던 활성 플레이어 전원이 다시 기회를 얻는다
   (본인만 남기고 acted 집합 초기화) — 강제 장치: `tests/test_poker_full.py::test_2_3_raise_reopens_action`
 - 최소 레이즈: 요청 금액이 `현재 베팅 + 직전 레이즈 크기` 미만이면 그 값으로 자동 보정한다

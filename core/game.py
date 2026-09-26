@@ -268,16 +268,7 @@ class TexasHoldem:
         """베팅 라운드 진행"""
         order = self._betting_order(street)
         n = len(order)
-
-        # 프리플랍: SB는 포스팅으로 acted 처리, BB는 레이즈 옵션이 있으므로 제외
-        acted: set = set()
-        if street == Street.PREFLOP:
-            positions = self.get_positions()
-            for p in self.players:
-                pos = positions.get(p.name, "")
-                # SB/BTN/SB만 acted에 포함 (BB는 아직 옵션 있음)
-                if pos in ("SB", "BTN/SB") and p.current_bet > 0:
-                    acted.add(p.name)
+        acted = self.initial_acted(street)
 
         i = 0
         while True:
@@ -313,6 +304,18 @@ class TexasHoldem:
     def _active_players_from_dealer(self) -> List[Player]:
         n = len(self.players)
         return [self.players[(self.dealer_index + 1 + i) % n] for i in range(n)]
+
+    def initial_acted(self, street: Street) -> set:
+        """라운드 시작 시 '이미 액션한' 플레이어 이름 집합.
+        프리플랍: SB(헤즈업은 BTN/SB)는 포스팅으로 acted 처리, BB는 옵션이 있으므로 제외.
+        웹 세션(server/session.py)과 core 베팅 루프가 같이 쓴다."""
+        acted: set = set()
+        if street == Street.PREFLOP:
+            positions = self.get_positions()
+            for p in self.players:
+                if positions.get(p.name, "") in ("SB", "BTN/SB") and p.current_bet > 0:
+                    acted.add(p.name)
+        return acted
 
     def _betting_order(self, street: Street) -> List[Player]:
         n = len(self.players)

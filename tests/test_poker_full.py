@@ -1586,6 +1586,66 @@ def test_8_2_next_hand_during_hand_ignored():
     assert _total_chips(sess) == total, f"칩 합계 변화: {total} → {_total_chips(sess)}"
 
 
+def test_8_3_headsup_btnsb_first_and_bb_option():
+    """T-019: 헤즈업 프리플랍은 BTN/SB가 먼저 행동하고, BTN/SB가 림프하면 BB(사람)가
+    체크/레이즈 옵션을 받는다(세션 경로)."""
+    # dealer_index=1 → 봇이 BTN/SB, 사람이 BB. 봇은 림프(콜).
+    sess, events = _scripted_session(1, dealer_index=1,
+                                     scripts={"🤖 Alpha": [(Action.CALL, 10)]})
+    acts = _action_events(events)
+    assert acts, f"사람(BB) 차례 전에 BTN/SB 액션이 있어야 함: {events}"
+    assert acts[0]["position"] == "BTN/SB", f"첫 액션 포지션: {acts[0]}"
+    state = sess.get_state()
+    assert state["waiting_for_action"], "림프 후 BB(사람)에게 옵션이 와야 함"
+    assert state["street"] == "프리플랍", f"BB 옵션 없이 스트리트가 넘어감: {state['street']}"
+    assert state["call_amount"] == 0 and state["min_raise_to"] > 0, \
+        f"BB는 체크/레이즈 가능해야 함: call={state['call_amount']} min_raise_to={state['min_raise_to']}"
+
+
+def test_8_4_headsup_human_btnsb_acts_first():
+    """T-019: 사람이 BTN/SB면 프리플랍 첫 결정이 사람이고(봇 액션 없음), 사람이 림프하면
+    BB 봇이 이어서 행동한다."""
+    sess, events = _scripted_session(1, dealer_index=0)
+    assert not _action_events(events), f"BTN/SB(사람)보다 먼저 행동한 사람이 있음: {events}"
+    state = sess.get_state()
+    assert state["waiting_for_action"] and state["call_amount"] == 10
+    sess.submit_action("call", 0)
+    acts = _action_events(sess.get_state()["events"])
+    assert [a["position"] for a in acts[:2]] == ["BTN/SB", "BB"], \
+        f"림프 뒤 BB가 행동해야 함: {[(a['position'], a['action']) for a in acts]}"
+
+
+def test_8_5_headsup_btnsb_first_decision_has_gto_hint():
+    """T-019: 헤즈업 BTN/SB 첫 결정에서 GTO 힌트가 보인다(격리 DB에 SB RFI 시딩)."""
+    from db.connection import get_connection
+    import gto.loader as gto_loader
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR IGNORE INTO gto_preflop_situations "
+        "(position, vs_position, range_type, raise_size, situation_label) "
+        "VALUES ('SB', NULL, 'open', 3.0, 'SB RFI')")
+    sid = conn.execute(
+        "SELECT id FROM gto_preflop_situations WHERE position='SB' AND range_type='open'"
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT OR IGNORE INTO gto_preflop_hands "
+        "(situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin) "
+        "VALUES (?, 'AKs', 0.0, 0.0, 1.0, 0.0)", (sid,))
+    conn.commit()
+    conn.close()
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+
+    sess, _ = _scripted_session(1, dealer_index=0)
+    sess.human.hole_cards = [c("A", "S"), c("K", "S")]
+    # 첫 결정 시점의 구조화 시퀀스는 비어 있어야 한다(BB의 가짜 선행 체크가 끼면 노드 오염)
+    assert sess.game.preflop_action_seq() == [], \
+        f"BTN/SB 첫 결정 전 시퀀스가 비어 있지 않음: {sess.game.preflop_action_seq()}"
+    state = sess.get_state()
+    assert state["waiting_for_action"]
+    assert state["gto_hint"], f"헤즈업 BTN/SB 첫 결정에 GTO 힌트가 없음: {state['gto_hint']}"
+
+
 # ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
@@ -1670,6 +1730,9 @@ ALL_TESTS = [
     # 영역 8 — 세션 경로 룰
     ("8-1  next_hand 연타 → 한 핸드만, 칩 보존",  test_8_1_next_hand_double_call_keeps_chips),
     ("8-2  핸드 중 next_hand 무시",              test_8_2_next_hand_during_hand_ignored),
+    ("8-3  헤즈업 BTN/SB 선행동 + BB 옵션",      test_8_3_headsup_btnsb_first_and_bb_option),
+    ("8-4  헤즈업 사람 BTN/SB 첫 결정",           test_8_4_headsup_human_btnsb_acts_first),
+    ("8-5  헤즈업 BTN/SB 첫 결정 GTO 힌트",       test_8_5_headsup_btnsb_first_decision_has_gto_hint),
 ]
 
 

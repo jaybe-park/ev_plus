@@ -277,18 +277,10 @@ class WebGameSession:
     # ──────────────────────────────────────────
 
     def _setup_round(self, street: Street) -> None:
-        n = len(self.game.players)
-        start = (self.game.dealer_index + 3) % n if street == Street.PREFLOP else (self.game.dealer_index + 1) % n
-        self._order = [self.game.players[(start + i) % n] for i in range(n)]
-        self._acted = set()
+        # 행동 순서·초기 acted는 core 규칙을 그대로 쓴다(헤즈업 프리플랍 BTN/SB 선행동 포함).
+        self._order = self.game._betting_order(street)
+        self._acted = self.game.initial_acted(street)
         self._round_i = 0
-
-        # 프리플랍: SB는 이미 액션한 것으로 처리
-        if street == Street.PREFLOP:
-            positions = self.game.get_positions()
-            for p in self.game.players:
-                if positions.get(p.name, "") in ("SB", "BTN/SB") and p.current_bet > 0:
-                    self._acted.add(p.name)
 
     def _is_round_over(self) -> bool:
         active = [p for p in self.game.players if not p.is_folded and not p.is_all_in]
