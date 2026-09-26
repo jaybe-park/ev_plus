@@ -56,9 +56,11 @@ def grade_preflop_action(action: str, gto_recommendation: Optional[dict]) -> Gra
 
     max_action = max(freqs, key=lambda k: freqs[k])
     freq_str = ", ".join(f"{k} {v*100:.0f}%" for k, v in freqs.items() if v > 0.01)
+    # 간단 라벨 예비 조회 결과(정확한 노드 아님, ADR 0035)는 평가 사유에도 근사로 표시
+    approx = "(근사) " if gto_recommendation.get("approx") else ""
 
     if action == max_action:
-        reason = f"GTO 최빈 액션과 일치 ({freq_str})"
+        reason = f"{approx}GTO 최빈 액션과 일치 ({freq_str})"
         return GradeResult(street="프리플랍", action=action, grade="✅", reason=reason, ev_loss_bb=None)
 
     chosen_freq = freqs.get(action, 0.0)
@@ -69,7 +71,7 @@ def grade_preflop_action(action: str, gto_recommendation: Optional[dict]) -> Gra
     else:
         grade = "🔴"
 
-    reason = (f"최빈 액션은 {max_action} ({freqs.get(max_action, 0)*100:.0f}%), "
+    reason = (f"{approx}최빈 액션은 {max_action} ({freqs.get(max_action, 0)*100:.0f}%), "
               f"선택한 {action}은 빈도 {chosen_freq*100:.0f}% ({freq_str})")
     return GradeResult(street="프리플랍", action=action, grade=grade, reason=reason, ev_loss_bb=None)
 

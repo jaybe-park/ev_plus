@@ -1,6 +1,6 @@
 # DB — 현재 사양
 
-> 최종 갱신: 2026-09-26 · 관련 결정: [0030](../decisions/0030-sqlite-over-server-db.md), [0031](../decisions/0031-bot-hand-archive-human-hand-retain.md), [0032](../decisions/0032-partial-index-only-for-pending-queues.md), [0033](../decisions/0033-no-direct-writes-to-shared-db.md), [0020](../decisions/0020-sqlite-single-writer.md), [0021](../decisions/0021-equity-stats-incremental.md)
+> 최종 갱신: 2026-09-26 · 관련 결정: [0030](../decisions/0030-sqlite-over-server-db.md), [0031](../decisions/0031-bot-hand-archive-human-hand-retain.md), [0032](../decisions/0032-partial-index-only-for-pending-queues.md), [0033](../decisions/0033-no-direct-writes-to-shared-db.md), [0020](../decisions/0020-sqlite-single-writer.md), [0021](../decisions/0021-equity-stats-incremental.md), [0044](../decisions/0044-node-row-key-is-action-seq.md)
 
 ## 무엇을 하는가
 
@@ -24,7 +24,9 @@
 ### 스키마 버전·마이그레이션
 - `SCHEMA_VERSION`(`db/schema.py`) 상수와 `schema_version` 테이블(적용 이력)로 버전을 관리한다. 연결마다 `_migrate()`가 현재 버전을 넘는 마이그레이션만 순서대로 실행한다 — 강제 장치: 없음(`db/connection.py::_migrate`)
 - 신규 DB(이력 0)는 마이그레이션을 건너뛰고 `ALL_STATEMENTS`(최종 상태 DDL)만 실행한다. 기존 DB만 `MIGRATIONS[v]`를 순서대로 적용한다 — 이유: 마이그레이션에는 특정 버전에서만 유효한 `DROP`/`ALTER`(아직 존재하지 않는 테이블 대상)가 섞여 있어 신규 DB에 그대로 실행하면 에러가 나거나 불필요한 삭제가 된다 — 강제 장치: 없음
-- 마이그레이션 스텝은 SQL 문자열 또는 콜러블(connection을 받는 파이썬 함수)일 수 있다. 콜러블은 순수 SQL로 표현 불가한 결정론적 데이터 백필(예: v12 노드 키 계산, `backfill_v12`)에 쓴다 — 강제 장치: 없음
+- 마이그레이션 스텝은 SQL 문자열 또는 콜러블(connection을 받는 파이썬 함수)일 수 있다. 콜러블은 순수 SQL로 표현 불가한 결정론적 데이터 백필(예: v12 노드 키 계산, `backfill_v12`)이나 테이블 재생성(v13)에 쓴다 — 강제 장치: `tests/test_poker_full.py::test_6_15_migration_normalizes_vs3bet_format`(v12 백필), `::test_7_14_migration_v13_preserves_data`(v13)
+- 현재 버전은 **13**이다. v13은 `gto_preflop_situations`를 재생성해 `UNIQUE(position, vs_position, range_type)`를 없애고 `action_seq`를 `NOT NULL`로 바꾼다(행·id·핸드 보존) — 근거: [0044](../decisions/0044-node-row-key-is-action-seq.md) · 강제 장치: `tests/test_poker_full.py::test_7_14_migration_v13_preserves_data`
+- 제약을 없애는 변경은 SQLite 공식 절차(새 테이블 → 복사 → 옛 테이블 DROP → 이름 변경)로 한다. 참조하는 FK가 `ON DELETE CASCADE`면 옛 테이블 DROP이 자식 행을 지우므로, 트랜잭션 밖에서 `PRAGMA foreign_keys=OFF` → 재생성 → `PRAGMA foreign_key_check` → 다시 ON 순서로 한다. 옮길 수 없는 행(예 키가 NULL)이 있으면 추측으로 채우거나 버리지 않고 예외로 멈춘다 — 강제 장치: `tests/test_poker_full.py::test_7_14_migration_v13_preserves_data`(핸드 보존·CASCADE 유지·NULL 중단)
 
 ### 인덱스
 - 항상 조건이 걸리는 대기 큐(예: `exact=0`인 미완료 행)에는 **부분 인덱스**만 만든다. 조건 없는 전체 인덱스는 테이블이 커질수록 쓰기 비용만 늘고 읽기에는 안 쓰인다 — 근거: [0032](../decisions/0032-partial-index-only-for-pending-queues.md)

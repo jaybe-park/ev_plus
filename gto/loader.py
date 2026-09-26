@@ -60,7 +60,9 @@ def _load_all() -> None:
     global _loaded
     if _loaded:
         return
-    # 재로드(테스트가 _loaded=False로 무효화) 시 시퀀스 캐시도 함께 초기화
+    # 재로드(_loaded=False로 무효화) 시 두 캐시를 모두 초기화 — 라벨 캐시는 "먼저 들어온
+    # 콜러 없는 노드 유지" 규칙이라 옛 항목이 남으면 새 데이터가 가려진다.
+    _cache.clear()
     _cache_by_seq.clear()
 
     try:
@@ -68,8 +70,10 @@ def _load_all() -> None:
         conn = get_connection()
         cur = conn.cursor()
 
+        from gto.node_key import has_caller
+
         situations = cur.execute(
-            "SELECT * FROM gto_preflop_situations"
+            "SELECT * FROM gto_preflop_situations ORDER BY id"
         ).fetchall()
 
         for s in situations:
@@ -106,26 +110,41 @@ def _load_all() -> None:
                 hands[h["hand"]] = freqs
 
             key = (s["position"], s["vs_position"], s["range_type"])
+            seq_key = s["action_seq"]
             entry = {
                 "situation":     s["situation_label"],
                 "raise_size":    s["raise_size"],  # REAL(bb) 또는 None — 텍스트 플레이스홀더 없음
                 "range_type":    s["range_type"],
                 "hands":         hands,
+                "node_key":      seq_key,
             }
-            _cache[key] = entry
 
-            # ② 시퀀스 키 병렬 인덱스(있는 행만). enum 캐시와 동일 객체 공유 →
-            # 두 경로가 항상 같은 레인지를 가리킴(검증 게이트 a).
-            cols = s.keys()
-            seq_key = s["action_seq"] if "action_seq" in cols else None
+            # 노드 키(action_seq) 인덱스 — 정확한 노드 조회(ADR 0035 1순위).
             if seq_key is not None:
                 _cache_by_seq[seq_key] = entry
+
+            # 간단 라벨 인덱스(ADR 0035 2순위, 근사): 한 라벨에 노드가 여럿일 수 있다
+            # (예 "BB vs BTN open" = F-F-F-R2.5-F 와 F-F-F-R2.5-C). 라벨은 **콜러 없는
+            # 노드**만 대표한다 — 콜러 있는 노드를 라벨로 내주면 헤즈업 팟이 멀티웨이
+            # 데이터를 받는다(T-001). 콜러 없는 노드가 없으면 라벨 조회는 None.
+            if seq_key is None or has_caller(seq_key):
+                continue
+            if key in _cache:
+                # 같은 라벨의 콜러 없는 노드가 둘 이상(사이즈만 다른 수동 저장 등) — 먼저
+                # 저장된 행(id 작은 쪽)을 유지하고 식별 가능하게 경고한다.
+                logger.warning(
+                    "GTO 라벨 %s에 콜러 없는 노드가 여럿: %r 유지, %r 무시",
+                    key, _cache[key].get("node_key"), seq_key,
+                )
+                continue
+            _cache[key] = entry
 
         conn.close()
         _loaded = True
 
     except Exception as e:
-        # DB 없거나 마이그레이션 전이면 조용히 실패 (힌트 없음)
+        # DB 없거나 마이그레이션 전이면 실패 (힌트 없음) — 원인은 로그로 남긴다
+        logger.warning("GTO 프리플랍 데이터 로드 실패: %s", e)
         _loaded = True  # 재시도 방지
 
 

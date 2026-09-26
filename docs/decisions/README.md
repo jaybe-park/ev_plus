@@ -11,7 +11,7 @@
 | [0005](0005-100bb-and-headsup-sb.md) | 100bb 고정 근사, 헤즈업은 6-max SB 재사용, 3~5인은 제외 | 유효 | gto-preflop |
 | [0006](0006-enum-first-and-model-guards.md) | enum 경로 우선·시퀀스 폴백 병렬 공존 + 데이터 모델 밖 가드 | 일부 대체됨 → 0035 (조회 순서. 데이터 모델 밖 가드는 유효) | gto-preflop |
 | [0007](0007-structured-preflop-seq.md) | advisor 입력은 구조화 프리플랍 시퀀스(한글 로그 파싱 금지) | 유효 | gto-preflop |
-| [0008](0008-node-key-action-seq.md) | 노드 키 = GTO Wizard preflop_actions 문자열, 스키마 안 A, DB가 source of truth | 유효 | gto-preflop |
+| [0008](0008-node-key-action-seq.md) | 노드 키 = GTO Wizard preflop_actions 문자열, 스키마 안 A, DB가 source of truth | 일부 대체됨 → 0044 (enum 3종 UNIQUE 유지 부분. 노드 키 포맷·DB source of truth는 유효) | gto-preflop |
 | [0009](0009-measured-size-node-key.md) | 저장 노드 키는 실측 사이즈 verbatim(깊이-캐노니컬 스냅 폐기) | 유효 | gto-preflop |
 | [0010](0010-runtime-sibling-snap.md) | 런타임 스냅 = 수집된 레이즈 형제, 없으면 큐+휴리스틱 | 유효 | gto-preflop |
 | [0011](0011-data-driven-tree-collection.md) | 데이터 기반 트리 수집(가정 금지, ε 분기, 도달확률 best-first) | 유효 | gto-preflop |
@@ -44,3 +44,4 @@
 | [0041](0041-bot-adoption-criterion.md) | 봇 개선 채택 기준 — 아레나 차이가 표준오차의 2배 이상 | 유효 | bot |
 | [0042](0042-drop-grader-stage2.md) | Play Grader 2단계(GTO Wizard EV값 수집) 폐기 | 유효 | bot |
 | [0043](0043-restore-session-on-reload.md) | 새로고침하면 진행 중인 게임을 이어간다(서버 재시작은 복구하지 않음) | 유효 | game |
+| [0044](0044-node-row-key-is-action-seq.md) | 노드 행의 유일 키는 action_seq 하나, 3종 키는 action_seq에서 유도 | 유효 | gto-preflop |
