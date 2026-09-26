@@ -37,6 +37,8 @@ web/dist/
 # ④ 트리 워커 진행상황 체크포인트(로컬 상태)
 gto_tree_checkpoint.json
 gto_tree_checkpoint.tmp
+# 수집 현황 리포트 — 로컬 DB·체크포인트에서 생성(scripts/gto_tree_report.py)
+docs/gto-preflop-progress.md
 
 # 테스트/커버리지
 .pytest_cache/
