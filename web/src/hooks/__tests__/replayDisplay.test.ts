@@ -1,0 +1,149 @@
+// T-029: 재생 중 표시 상태 = "이전 상태 + 소비한 이벤트". 픽스처는 실제 WebGameSession 응답
+// (tests/make_replay_fixture.py로 생성 — 4인, 사람 UTG 폴드 후 봇 3명이 리버 쇼다운까지 / 다음 핸드 시작).
+import { describe, it, expect } from "vitest";
+import fixture from "./fixtures/replay_session.json";
+import type { GameState, GameEvent } from "../../types";
+import {
+  initialDisplay, applyEvent, applyEvents, projectState, eventTiming, HUMAN_ACTION_MS,
+  panelState, shownState,
+  type DisplayState,
+} from "../eventQueueLogic";
+
+const fold = fixture.fold_to_showdown as unknown as { prev: GameState; next: GameState };
+const newHand = fixture.new_hand as unknown as { prev: GameState; next: GameState };
+
+/** 이벤트를 하나씩 소비하며 매 시점의 화면 상태(projectState)를 모은다. */
+function frames(prev: GameState, next: GameState, isNewHand: boolean) {
+  let d: DisplayState = initialDisplay(prev, null, next, isNewHand);
+  const out: { event: GameEvent; shown: GameState }[] = [];
+  for (const e of next.events) {
+    d = applyEvent(d, e);
+    out.push({ event: e, shown: projectState(next, d) });
+  }
+  return { start: projectState(next, initialDisplay(prev, null, next, isNewHand)), out, final: d };
+}
+
+describe("재생 표시 상태 — 폴드 후 봇들이 진행 (T-029)", () => {
+  const { start, out, final } = frames(fold.prev, fold.next, false);
+
+  it("재생 시작 화면은 요청 직전 상태다(최종 팟·스트리트·보드가 먼저 보이지 않는다)", () => {
+    expect(start.pot).toBe(fold.prev.pot);
+    expect(start.street).toBe("프리플랍");
+    expect(start.community_cards).toEqual([]);
+    expect(fold.next.street).toBe("리버");       // 서버 최종 상태는 이미 리버
+    expect(fold.next.community_cards.length).toBe(5);
+    for (const p of start.players) {
+      const before = fold.prev.players.find((q) => q.name === p.name)!;
+      expect([p.chips, p.current_bet, p.is_folded]).toEqual([before.chips, before.current_bet, before.is_folded]);
+    }
+  });
+
+  it("팟은 액션 이벤트와 같은 시점에 바뀐다(pot_after)", () => {
+    for (const { event, shown } of out) {
+      if (event.type === "action" || event.type === "blind") expect(shown.pot).toBe(event.pot_after);
+    }
+  });
+
+  it("스트리트 라벨·보드 카드는 street_start/community_card 이벤트에서만 바뀐다", () => {
+    let street = "프리플랍";
+    let cards = 0;
+    for (const { event, shown } of out) {
+      if (event.type === "street_start") street = event.street;
+      if (event.type === "community_card") cards += 1;
+      expect(shown.street).toBe(street);
+      expect(shown.community_cards.length).toBe(cards);
+    }
+  });
+
+  it("봇 베팅액은 그 봇의 액션 이벤트 전에는 보이지 않는다", () => {
+    // 플랍 Beta 레이즈 직전 프레임에서 Beta의 베팅은 0(스트리트 시작 리셋)
+    const i = out.findIndex(({ event }) => event.type === "action" && event.action === "raise");
+    const beta = (event: GameEvent) => (event as { player: string }).player;
+    const who = beta(out[i].event);
+    expect(out[i - 1].shown.players.find((p) => p.name === who)!.current_bet).toBe(0);
+    expect(out[i].shown.players.find((p) => p.name === who)!.current_bet)
+      .toBe((out[i].event as { bet_after: number }).bet_after);
+  });
+
+  it("폴드 표시는 그 폴드 이벤트부터", () => {
+    expect(start.players.find((p) => p.is_human)!.is_folded).toBe(false);
+    expect(out[0].shown.players.find((p) => p.is_human)!.is_folded).toBe(true);
+  });
+
+  it("모든 이벤트를 소비하면 서버 최종 상태와 같다", () => {
+    const shown = projectState(fold.next, final);
+    expect(shown.pot).toBe(fold.next.pot);
+    expect(shown.street).toBe(fold.next.street);
+    expect(shown.community_cards).toEqual(fold.next.community_cards);
+    expect(shown.action_log).toEqual(fold.next.action_log);
+    expect(shown.players.map((p) => [p.name, p.chips, p.current_bet, p.is_folded]))
+      .toEqual(fold.next.players.map((p) => [p.name, p.chips, p.current_bet, p.is_folded]));
+    expect(final.showdownRevealed).toBe(true);
+  });
+
+  it("스킵(남은 이벤트 한 번에 소비)도 같은 최종 상태", () => {
+    const d0 = initialDisplay(fold.prev, null, fold.next, false);
+    const half = applyEvents(d0, fold.next.events.slice(0, 7));
+    expect(applyEvents(half, fold.next.events.slice(7))).toEqual(final);
+  });
+});
+
+describe("재생 표시 상태 — 새 핸드 시작", () => {
+  const { start, final } = frames(newHand.prev, newHand.next, true);
+
+  it("딜링 전: 팟 0, 카드 0장, 칩 = 직전 핸드 종료 칩", () => {
+    expect(start.pot).toBe(0);
+    const d = initialDisplay(newHand.prev, null, newHand.next, true);
+    for (const p of newHand.next.players) {
+      expect(d.seats[p.name].dealt).toBe(0);
+      expect(d.seats[p.name].chips).toBe(newHand.prev.players.find((q) => q.name === p.name)!.chips);
+    }
+  });
+
+  it("블라인드·딜링을 모두 소비하면 서버 상태와 같다", () => {
+    const shown = projectState(newHand.next, final);
+    expect(shown.pot).toBe(newHand.next.pot);
+    expect(shown.players.map((p) => [p.chips, p.current_bet]))
+      .toEqual(newHand.next.players.map((p) => [p.chips, p.current_bet]));
+    for (const p of newHand.next.players) expect(final.seats[p.name].dealt).toBe(2);
+  });
+});
+
+describe("힌트 패널은 재생이 끝날 때까지 이전 값 (T-029)", () => {
+  // 사람이 플랍에서 콜 → 턴·리버가 깔리는 응답: 새 에퀴티는 아직 안 보인 카드를 반영한 값
+  const before = { ...fold.prev, equity: { vs_range: 0.4 } } as unknown as GameState;
+  const after = { ...fold.next, equity: { vs_range: 0.9 }, gto: null } as unknown as GameState;
+
+  it("재생 중: 에퀴티·GTO·액션 바는 재생 직전 상태", () => {
+    expect(panelState(true, before, after)).toBe(before);
+  });
+  it("재생 끝: 새 상태", () => {
+    expect(panelState(false, before, after)).toBe(after);
+  });
+  it("테이블은 재생 중 표시 상태, 끝나면 서버 최종 상태", () => {
+    const d = initialDisplay(fold.prev, null, fold.next, false);
+    expect(shownState(true, d, fold.next).street).toBe("프리플랍");
+    expect(shownState(false, d, fold.next)).toBe(fold.next);
+  });
+});
+
+describe("이벤트 타이밍 — 사람 액션은 즉시, 봇만 연출 (T-029)", () => {
+  const human = fold.next.players.find((p) => p.is_human)!.name;
+  const humanFold = fold.next.events[0];
+  const botCall = fold.next.events[1];
+
+  it("사람 자신의 액션은 '생각 중' 없이 0ms에 반영", () => {
+    expect(eventTiming(humanFold, human, 1500, 0.4)).toEqual({ thinking: false, applyAt: 0, next: HUMAN_ACTION_MS });
+  });
+
+  it("봇 액션은 생각 중 → 배지(40%) → 다음", () => {
+    expect(eventTiming(botCall, human, 1500, 0.4)).toEqual({ thinking: true, applyAt: 600, next: 1500 });
+  });
+
+  it("기계적 이벤트는 시작하자마자 반영, 딜링은 지연 끝에 반영", () => {
+    const street = fold.next.events.find((e) => e.type === "street_start")!;
+    expect(eventTiming(street, human, 600, 0.4)).toEqual({ thinking: false, applyAt: 0, next: 600 });
+    const deal = newHand.next.events.find((e) => e.type === "deal_card")!;
+    expect(eventTiming(deal, human, 220, 0.4)).toEqual({ thinking: false, applyAt: 220, next: 220 });
+  });
+});

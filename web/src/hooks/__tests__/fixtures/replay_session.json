@@ -1,0 +1,946 @@
+{
+ "fold_to_showdown": {
+  "prev": {
+   "session_id": "s8",
+   "hand_number": 2,
+   "street": "프리플랍",
+   "pot": 30,
+   "current_bet": 20,
+   "min_raise": 20,
+   "big_blind": 20,
+   "community_cards": [],
+   "players": [
+    {
+     "name": "Human",
+     "chips": 1000,
+     "current_bet": 0,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": true,
+     "position": "UTG",
+     "hole_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "name": "🤖 Alpha",
+     "chips": 1000,
+     "current_bet": 0,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "BTN",
+     "hole_cards": null
+    },
+    {
+     "name": "🤖 Beta",
+     "chips": 990,
+     "current_bet": 10,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "SB",
+     "hole_cards": null
+    },
+    {
+     "name": "🤖 Gamma",
+     "chips": 980,
+     "current_bet": 20,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "BB",
+     "hole_cards": null
+    }
+   ],
+   "waiting_for_action": true,
+   "hand_over": false,
+   "game_over": false,
+   "winners": [],
+   "showdown_hands": {},
+   "gto": {
+    "found": false,
+    "position": "UTG"
+   },
+   "action_log": [
+    "[SB] 🤖 Beta: 스몰 블라인드 (10)",
+    "[BB] 🤖 Gamma: 빅 블라인드 (20)"
+   ],
+   "call_amount": 20,
+   "min_raise_to": 40,
+   "can_raise": true,
+   "events": [],
+   "equity": null,
+   "hand_review": null
+  },
+  "next": {
+   "session_id": "s8",
+   "hand_number": 2,
+   "street": "리버",
+   "pot": 0,
+   "current_bet": 0,
+   "min_raise": 20,
+   "big_blind": 20,
+   "community_cards": [
+    "8♣",
+    "8♠",
+    "J♥",
+    "2♦",
+    "J♦"
+   ],
+   "players": [
+    {
+     "name": "Human",
+     "chips": 1000,
+     "current_bet": 0,
+     "is_folded": true,
+     "is_all_in": false,
+     "is_human": true,
+     "position": "UTG",
+     "hole_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "name": "🤖 Alpha",
+     "chips": 920,
+     "current_bet": 0,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "BTN",
+     "hole_cards": [
+      "A♦",
+      "7♦"
+     ]
+    },
+    {
+     "name": "🤖 Beta",
+     "chips": 920,
+     "current_bet": 0,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "SB",
+     "hole_cards": [
+      "6♦",
+      "6♥"
+     ]
+    },
+    {
+     "name": "🤖 Gamma",
+     "chips": 1160,
+     "current_bet": 0,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "BB",
+     "hole_cards": [
+      "8♥",
+      "K♣"
+     ]
+    }
+   ],
+   "waiting_for_action": false,
+   "hand_over": true,
+   "game_over": false,
+   "winners": [
+    "🤖 Gamma"
+   ],
+   "showdown_hands": {
+    "🤖 Alpha": "투 페어 [A♦ J♥ J♦ 8♣ 8♠]",
+    "🤖 Beta": "투 페어 [J♥ J♦ 8♣ 8♠ 6♦]",
+    "🤖 Gamma": "풀 하우스 [J♥ J♦ 8♥ 8♣ 8♠]"
+   },
+   "gto": null,
+   "action_log": [
+    "[SB] 🤖 Beta: 스몰 블라인드 (10)",
+    "[BB] 🤖 Gamma: 빅 블라인드 (20)",
+    "[UTG] Human: 폴드",
+    "[BTN] 🤖 Alpha: 콜 (20)",
+    "[SB] 🤖 Beta: 콜 (10)",
+    "[BB] 🤖 Gamma: 체크",
+    "── 플랍 ──",
+    "[SB] 🤖 Beta: 레이즈 → 60",
+    "[BB] 🤖 Gamma: 콜 (60)",
+    "[BTN] 🤖 Alpha: 콜 (60)",
+    "── 턴 ──",
+    "[SB] 🤖 Beta: 체크",
+    "[BB] 🤖 Gamma: 체크",
+    "[BTN] 🤖 Alpha: 체크",
+    "── 리버 ──",
+    "[SB] 🤖 Beta: 체크",
+    "[BB] 🤖 Gamma: 체크",
+    "[BTN] 🤖 Alpha: 체크",
+    "🏆 🤖 Gamma 승리"
+   ],
+   "call_amount": 0,
+   "min_raise_to": 0,
+   "can_raise": false,
+   "events": [
+    {
+     "type": "action",
+     "player": "Human",
+     "position": "UTG",
+     "action": "fold",
+     "amount": 0,
+     "street": "프리플랍",
+     "log": "[UTG] Human: 폴드",
+     "chips_after": 1000,
+     "pot_after": 30,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Alpha",
+     "position": "BTN",
+     "action": "call",
+     "amount": 20,
+     "street": "프리플랍",
+     "log": "[BTN] 🤖 Alpha: 콜 (20)",
+     "chips_after": 980,
+     "pot_after": 50,
+     "bet_after": 20
+    },
+    {
+     "type": "action",
+     "player": "🤖 Beta",
+     "position": "SB",
+     "action": "call",
+     "amount": 10,
+     "street": "프리플랍",
+     "log": "[SB] 🤖 Beta: 콜 (10)",
+     "chips_after": 980,
+     "pot_after": 60,
+     "bet_after": 20
+    },
+    {
+     "type": "action",
+     "player": "🤖 Gamma",
+     "position": "BB",
+     "action": "check",
+     "amount": 0,
+     "street": "프리플랍",
+     "log": "[BB] 🤖 Gamma: 체크",
+     "chips_after": 980,
+     "pot_after": 60,
+     "bet_after": 20
+    },
+    {
+     "type": "street_start",
+     "street": "플랍",
+     "log": "── 플랍 ──",
+     "pot_after": 60
+    },
+    {
+     "type": "community_card",
+     "card": "8♣",
+     "street": "플랍"
+    },
+    {
+     "type": "community_card",
+     "card": "8♠",
+     "street": "플랍"
+    },
+    {
+     "type": "community_card",
+     "card": "J♥",
+     "street": "플랍"
+    },
+    {
+     "type": "action",
+     "player": "🤖 Beta",
+     "position": "SB",
+     "action": "raise",
+     "amount": 60,
+     "street": "플랍",
+     "log": "[SB] 🤖 Beta: 레이즈 → 60",
+     "chips_after": 920,
+     "pot_after": 120,
+     "bet_after": 60
+    },
+    {
+     "type": "action",
+     "player": "🤖 Gamma",
+     "position": "BB",
+     "action": "call",
+     "amount": 60,
+     "street": "플랍",
+     "log": "[BB] 🤖 Gamma: 콜 (60)",
+     "chips_after": 920,
+     "pot_after": 180,
+     "bet_after": 60
+    },
+    {
+     "type": "action",
+     "player": "🤖 Alpha",
+     "position": "BTN",
+     "action": "call",
+     "amount": 60,
+     "street": "플랍",
+     "log": "[BTN] 🤖 Alpha: 콜 (60)",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 60
+    },
+    {
+     "type": "street_start",
+     "street": "턴",
+     "log": "── 턴 ──",
+     "pot_after": 240
+    },
+    {
+     "type": "community_card",
+     "card": "2♦",
+     "street": "턴"
+    },
+    {
+     "type": "action",
+     "player": "🤖 Beta",
+     "position": "SB",
+     "action": "check",
+     "amount": 0,
+     "street": "턴",
+     "log": "[SB] 🤖 Beta: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Gamma",
+     "position": "BB",
+     "action": "check",
+     "amount": 0,
+     "street": "턴",
+     "log": "[BB] 🤖 Gamma: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Alpha",
+     "position": "BTN",
+     "action": "check",
+     "amount": 0,
+     "street": "턴",
+     "log": "[BTN] 🤖 Alpha: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "street_start",
+     "street": "리버",
+     "log": "── 리버 ──",
+     "pot_after": 240
+    },
+    {
+     "type": "community_card",
+     "card": "J♦",
+     "street": "리버"
+    },
+    {
+     "type": "action",
+     "player": "🤖 Beta",
+     "position": "SB",
+     "action": "check",
+     "amount": 0,
+     "street": "리버",
+     "log": "[SB] 🤖 Beta: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Gamma",
+     "position": "BB",
+     "action": "check",
+     "amount": 0,
+     "street": "리버",
+     "log": "[BB] 🤖 Gamma: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Alpha",
+     "position": "BTN",
+     "action": "check",
+     "amount": 0,
+     "street": "리버",
+     "log": "[BTN] 🤖 Alpha: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "showdown",
+     "hands": {
+      "🤖 Alpha": [
+       "A♦",
+       "7♦"
+      ],
+      "🤖 Beta": [
+       "6♦",
+       "6♥"
+      ],
+      "🤖 Gamma": [
+       "8♥",
+       "K♣"
+      ]
+     }
+    },
+    {
+     "type": "winner",
+     "log": "🏆 🤖 Gamma 승리",
+     "winners": [
+      "🤖 Gamma"
+     ],
+     "pot": 240,
+     "winner_chips": {
+      "🤖 Gamma": 1160
+     }
+    }
+   ],
+   "equity": null,
+   "hand_review": []
+  }
+ },
+ "new_hand": {
+  "prev": {
+   "session_id": "s8",
+   "hand_number": 2,
+   "street": "리버",
+   "pot": 0,
+   "current_bet": 0,
+   "min_raise": 20,
+   "big_blind": 20,
+   "community_cards": [
+    "8♣",
+    "8♠",
+    "J♥",
+    "2♦",
+    "J♦"
+   ],
+   "players": [
+    {
+     "name": "Human",
+     "chips": 1000,
+     "current_bet": 0,
+     "is_folded": true,
+     "is_all_in": false,
+     "is_human": true,
+     "position": "UTG",
+     "hole_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "name": "🤖 Alpha",
+     "chips": 920,
+     "current_bet": 0,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "BTN",
+     "hole_cards": [
+      "A♦",
+      "7♦"
+     ]
+    },
+    {
+     "name": "🤖 Beta",
+     "chips": 920,
+     "current_bet": 0,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "SB",
+     "hole_cards": [
+      "6♦",
+      "6♥"
+     ]
+    },
+    {
+     "name": "🤖 Gamma",
+     "chips": 1160,
+     "current_bet": 0,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "BB",
+     "hole_cards": [
+      "8♥",
+      "K♣"
+     ]
+    }
+   ],
+   "waiting_for_action": false,
+   "hand_over": true,
+   "game_over": false,
+   "winners": [
+    "🤖 Gamma"
+   ],
+   "showdown_hands": {
+    "🤖 Alpha": "투 페어 [A♦ J♥ J♦ 8♣ 8♠]",
+    "🤖 Beta": "투 페어 [J♥ J♦ 8♣ 8♠ 6♦]",
+    "🤖 Gamma": "풀 하우스 [J♥ J♦ 8♥ 8♣ 8♠]"
+   },
+   "gto": null,
+   "action_log": [
+    "[SB] 🤖 Beta: 스몰 블라인드 (10)",
+    "[BB] 🤖 Gamma: 빅 블라인드 (20)",
+    "[UTG] Human: 폴드",
+    "[BTN] 🤖 Alpha: 콜 (20)",
+    "[SB] 🤖 Beta: 콜 (10)",
+    "[BB] 🤖 Gamma: 체크",
+    "── 플랍 ──",
+    "[SB] 🤖 Beta: 레이즈 → 60",
+    "[BB] 🤖 Gamma: 콜 (60)",
+    "[BTN] 🤖 Alpha: 콜 (60)",
+    "── 턴 ──",
+    "[SB] 🤖 Beta: 체크",
+    "[BB] 🤖 Gamma: 체크",
+    "[BTN] 🤖 Alpha: 체크",
+    "── 리버 ──",
+    "[SB] 🤖 Beta: 체크",
+    "[BB] 🤖 Gamma: 체크",
+    "[BTN] 🤖 Alpha: 체크",
+    "🏆 🤖 Gamma 승리"
+   ],
+   "call_amount": 0,
+   "min_raise_to": 0,
+   "can_raise": false,
+   "events": [
+    {
+     "type": "action",
+     "player": "Human",
+     "position": "UTG",
+     "action": "fold",
+     "amount": 0,
+     "street": "프리플랍",
+     "log": "[UTG] Human: 폴드",
+     "chips_after": 1000,
+     "pot_after": 30,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Alpha",
+     "position": "BTN",
+     "action": "call",
+     "amount": 20,
+     "street": "프리플랍",
+     "log": "[BTN] 🤖 Alpha: 콜 (20)",
+     "chips_after": 980,
+     "pot_after": 50,
+     "bet_after": 20
+    },
+    {
+     "type": "action",
+     "player": "🤖 Beta",
+     "position": "SB",
+     "action": "call",
+     "amount": 10,
+     "street": "프리플랍",
+     "log": "[SB] 🤖 Beta: 콜 (10)",
+     "chips_after": 980,
+     "pot_after": 60,
+     "bet_after": 20
+    },
+    {
+     "type": "action",
+     "player": "🤖 Gamma",
+     "position": "BB",
+     "action": "check",
+     "amount": 0,
+     "street": "프리플랍",
+     "log": "[BB] 🤖 Gamma: 체크",
+     "chips_after": 980,
+     "pot_after": 60,
+     "bet_after": 20
+    },
+    {
+     "type": "street_start",
+     "street": "플랍",
+     "log": "── 플랍 ──",
+     "pot_after": 60
+    },
+    {
+     "type": "community_card",
+     "card": "8♣",
+     "street": "플랍"
+    },
+    {
+     "type": "community_card",
+     "card": "8♠",
+     "street": "플랍"
+    },
+    {
+     "type": "community_card",
+     "card": "J♥",
+     "street": "플랍"
+    },
+    {
+     "type": "action",
+     "player": "🤖 Beta",
+     "position": "SB",
+     "action": "raise",
+     "amount": 60,
+     "street": "플랍",
+     "log": "[SB] 🤖 Beta: 레이즈 → 60",
+     "chips_after": 920,
+     "pot_after": 120,
+     "bet_after": 60
+    },
+    {
+     "type": "action",
+     "player": "🤖 Gamma",
+     "position": "BB",
+     "action": "call",
+     "amount": 60,
+     "street": "플랍",
+     "log": "[BB] 🤖 Gamma: 콜 (60)",
+     "chips_after": 920,
+     "pot_after": 180,
+     "bet_after": 60
+    },
+    {
+     "type": "action",
+     "player": "🤖 Alpha",
+     "position": "BTN",
+     "action": "call",
+     "amount": 60,
+     "street": "플랍",
+     "log": "[BTN] 🤖 Alpha: 콜 (60)",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 60
+    },
+    {
+     "type": "street_start",
+     "street": "턴",
+     "log": "── 턴 ──",
+     "pot_after": 240
+    },
+    {
+     "type": "community_card",
+     "card": "2♦",
+     "street": "턴"
+    },
+    {
+     "type": "action",
+     "player": "🤖 Beta",
+     "position": "SB",
+     "action": "check",
+     "amount": 0,
+     "street": "턴",
+     "log": "[SB] 🤖 Beta: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Gamma",
+     "position": "BB",
+     "action": "check",
+     "amount": 0,
+     "street": "턴",
+     "log": "[BB] 🤖 Gamma: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Alpha",
+     "position": "BTN",
+     "action": "check",
+     "amount": 0,
+     "street": "턴",
+     "log": "[BTN] 🤖 Alpha: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "street_start",
+     "street": "리버",
+     "log": "── 리버 ──",
+     "pot_after": 240
+    },
+    {
+     "type": "community_card",
+     "card": "J♦",
+     "street": "리버"
+    },
+    {
+     "type": "action",
+     "player": "🤖 Beta",
+     "position": "SB",
+     "action": "check",
+     "amount": 0,
+     "street": "리버",
+     "log": "[SB] 🤖 Beta: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Gamma",
+     "position": "BB",
+     "action": "check",
+     "amount": 0,
+     "street": "리버",
+     "log": "[BB] 🤖 Gamma: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "action",
+     "player": "🤖 Alpha",
+     "position": "BTN",
+     "action": "check",
+     "amount": 0,
+     "street": "리버",
+     "log": "[BTN] 🤖 Alpha: 체크",
+     "chips_after": 920,
+     "pot_after": 240,
+     "bet_after": 0
+    },
+    {
+     "type": "showdown",
+     "hands": {
+      "🤖 Alpha": [
+       "A♦",
+       "7♦"
+      ],
+      "🤖 Beta": [
+       "6♦",
+       "6♥"
+      ],
+      "🤖 Gamma": [
+       "8♥",
+       "K♣"
+      ]
+     }
+    },
+    {
+     "type": "winner",
+     "log": "🏆 🤖 Gamma 승리",
+     "winners": [
+      "🤖 Gamma"
+     ],
+     "pot": 240,
+     "winner_chips": {
+      "🤖 Gamma": 1160
+     }
+    }
+   ],
+   "equity": null,
+   "hand_review": []
+  },
+  "next": {
+   "session_id": "s8",
+   "hand_number": 3,
+   "street": "프리플랍",
+   "pot": 80,
+   "current_bet": 20,
+   "min_raise": 20,
+   "big_blind": 20,
+   "community_cards": [],
+   "players": [
+    {
+     "name": "Human",
+     "chips": 980,
+     "current_bet": 20,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": true,
+     "position": "BB",
+     "hole_cards": [
+      "7♣",
+      "6♣"
+     ]
+    },
+    {
+     "name": "🤖 Alpha",
+     "chips": 900,
+     "current_bet": 20,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "UTG",
+     "hole_cards": null
+    },
+    {
+     "name": "🤖 Beta",
+     "chips": 900,
+     "current_bet": 20,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "BTN",
+     "hole_cards": null
+    },
+    {
+     "name": "🤖 Gamma",
+     "chips": 1140,
+     "current_bet": 20,
+     "is_folded": false,
+     "is_all_in": false,
+     "is_human": false,
+     "position": "SB",
+     "hole_cards": null
+    }
+   ],
+   "waiting_for_action": true,
+   "hand_over": false,
+   "game_over": false,
+   "winners": [],
+   "showdown_hands": {},
+   "gto": {
+    "found": false,
+    "position": "BB"
+   },
+   "action_log": [
+    "[SB] 🤖 Gamma: 스몰 블라인드 (10)",
+    "[BB] Human: 빅 블라인드 (20)",
+    "[UTG] 🤖 Alpha: 콜 (20)",
+    "[BTN] 🤖 Beta: 콜 (20)",
+    "[SB] 🤖 Gamma: 콜 (10)"
+   ],
+   "call_amount": 0,
+   "min_raise_to": 40,
+   "can_raise": true,
+   "events": [
+    {
+     "type": "deal_card",
+     "player": "🤖 Gamma",
+     "position": "SB",
+     "round": 1,
+     "street": "프리플랍"
+    },
+    {
+     "type": "deal_card",
+     "player": "Human",
+     "position": "BB",
+     "round": 1,
+     "street": "프리플랍"
+    },
+    {
+     "type": "deal_card",
+     "player": "🤖 Alpha",
+     "position": "UTG",
+     "round": 1,
+     "street": "프리플랍"
+    },
+    {
+     "type": "deal_card",
+     "player": "🤖 Beta",
+     "position": "BTN",
+     "round": 1,
+     "street": "프리플랍"
+    },
+    {
+     "type": "deal_card",
+     "player": "🤖 Gamma",
+     "position": "SB",
+     "round": 2,
+     "street": "프리플랍"
+    },
+    {
+     "type": "deal_card",
+     "player": "Human",
+     "position": "BB",
+     "round": 2,
+     "street": "프리플랍"
+    },
+    {
+     "type": "deal_card",
+     "player": "🤖 Alpha",
+     "position": "UTG",
+     "round": 2,
+     "street": "프리플랍"
+    },
+    {
+     "type": "deal_card",
+     "player": "🤖 Beta",
+     "position": "BTN",
+     "round": 2,
+     "street": "프리플랍"
+    },
+    {
+     "type": "blind",
+     "player": "🤖 Gamma",
+     "position": "SB",
+     "amount": 10,
+     "street": "프리플랍",
+     "log": "[SB] 🤖 Gamma: 스몰 블라인드 (10)",
+     "chips_after": 1150,
+     "pot_after": 10,
+     "bet_after": 10
+    },
+    {
+     "type": "blind",
+     "player": "Human",
+     "position": "BB",
+     "amount": 20,
+     "street": "프리플랍",
+     "log": "[BB] Human: 빅 블라인드 (20)",
+     "chips_after": 980,
+     "pot_after": 30,
+     "bet_after": 20
+    },
+    {
+     "type": "action",
+     "player": "🤖 Alpha",
+     "position": "UTG",
+     "action": "call",
+     "amount": 20,
+     "street": "프리플랍",
+     "log": "[UTG] 🤖 Alpha: 콜 (20)",
+     "chips_after": 900,
+     "pot_after": 50,
+     "bet_after": 20
+    },
+    {
+     "type": "action",
+     "player": "🤖 Beta",
+     "position": "BTN",
+     "action": "call",
+     "amount": 20,
+     "street": "프리플랍",
+     "log": "[BTN] 🤖 Beta: 콜 (20)",
+     "chips_after": 900,
+     "pot_after": 70,
+     "bet_after": 20
+    },
+    {
+     "type": "action",
+     "player": "🤖 Gamma",
+     "position": "SB",
+     "action": "call",
+     "amount": 10,
+     "street": "프리플랍",
+     "log": "[SB] 🤖 Gamma: 콜 (10)",
+     "chips_after": 1140,
+     "pot_after": 80,
+     "bet_after": 20
+    }
+   ],
+   "equity": null,
+   "hand_review": null
+  }
+ }
+}

@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import type { GameState, SetupConfig, GtoRange, SessionReview } from "./types";
 import { api } from "./api";
 import { useEventQueue } from "./hooks/useEventQueue";
+import { panelState, shownState } from "./hooks/eventQueueLogic";
 import SetupForm from "./components/SetupForm";
 import PokerTable from "./components/PokerTable";
 import ActionBar from "./components/ActionBar";
@@ -40,21 +41,19 @@ export default function App() {
 
   const {
     isReplaying,
+    display,
     activePlayer,
     isThinking,
     badge,
-    visibleCardCount,
-    visibleLogCount,
-    foldedDuringReplay,
     bettingPlayer,
-    dealtCards,
-    showdownRevealed,
-    displayedChips,
-    committedActions,
     enqueue,
     skip,
-    setVisibleCardCount,
+    reset: resetReplay,
   } = useEventQueue();
+
+  // 재생 직전의 상태 — 재생 중 힌트 패널(에퀴티·GTO)과 액션 바는 이 값을 유지한다(T-029).
+  // 새 값(아직 안 깔린 카드가 반영된 에퀴티 등)은 재생이 끝난 뒤에만 보인다.
+  const [replayBase, setReplayBase] = useState<GameState | null>(null);
 
   // 서버 응답을 받아 이벤트 큐를 세팅하는 공통 처리
   const applyNewState = useCallback(
@@ -63,28 +62,13 @@ export default function App() {
       prevHandNumber.current = next.hand_number;
       if (isNewHand) setMyCardsRevealed(false); // 새 핸드: 카드 숨김 초기화
 
-      // 새 핸드: 커뮤니티 카드 0부터 시작
-      // 이어지는 액션: 이전 표시 카드 수부터 시작
-      const initialCardCount = isNewHand ? 0 : (state?.community_cards.length ?? 0);
-      const initialFolded    = isNewHand ? [] : (state?.players.filter((p) => p.is_folded).map((p) => p.name) ?? []);
-      const initialLogCount  = isNewHand ? 0 : (state?.action_log.length ?? 0);
-      // 새 핸드: 블라인드가 이미 반영된 next.players 에서 chips+current_bet 으로 역산
-      // → SB: 990+10=1000, BB: 980+20=1000 (블라인드 포스팅 전 값)
-      // 기존 핸드: 직전 상태의 chips (이번 액션 전 값)
-      const initialChips = isNewHand
-        ? Object.fromEntries(next.players.map((p) => [p.name, p.chips + p.current_bet]))
-        : Object.fromEntries((state?.players ?? next.players).map((p) => [p.name, p.chips]));
-
+      setReplayBase(state);
       setState(next);
       storeSessionId(next.session_id);
-
-      if (next.events.length > 0) {
-        enqueue(next.events, initialCardCount, initialFolded, initialLogCount, isNewHand, initialChips);
-      } else {
-        setVisibleCardCount(next.community_cards.length);
-      }
+      // 재생 시작점 = 요청 직전 상태(state). 새 핸드면 블라인드 전부터.
+      enqueue(next.events, state, next, isNewHand);
     },
-    [state, enqueue, setVisibleCardCount]
+    [state, enqueue]
   );
 
   const run = useCallback(
@@ -129,7 +113,9 @@ export default function App() {
 
   // GTO 레인지 페치 — 게임 상태의 gto.node_key(advisor 추천이 쓴 노드)가 바뀔 때마다(T-013).
   // 힌트(내 패 빈도)와 레인지가 같은 노드에서 온다. UTG RFI 노드 키는 ""이므로 null과 구분한다.
-  const gtoNodeKey = state?.gto?.found ? (state.gto.node_key ?? null) : null;
+  // 재생 중엔 재생 직전 상태의 노드를 유지한다(T-029) — 새 노드 조회는 재생이 끝난 뒤
+  const panelSource = state ? panelState(isReplaying, replayBase, state) : null;
+  const gtoNodeKey = panelSource?.gto?.found ? (panelSource.gto.node_key ?? null) : null;
   useEffect(() => {
     if (gtoNodeKey === null) return;
 
@@ -175,7 +161,8 @@ export default function App() {
   };
   const handleNextHand = () => { if (!state) return; run(() => api.nextHand(state.session_id)); };
   const handleNewGame  = () => {
-    skip();
+    resetReplay();
+    setReplayBase(null);
     setState(null);
     setMyCardsRevealed(false);
     setError(null);
@@ -220,7 +207,10 @@ export default function App() {
     );
   }
 
-  const human = state.players.find((p) => p.is_human);
+  // 지금 화면에 보일 상태 하나: 재생 중이면 "이전 상태 + 소비한 이벤트"(T-029), 아니면 서버 최종 상태
+  const shown = shownState(isReplaying, display, state);
+  const panel = panelState(isReplaying, replayBase, state);
+  const human = shown.players.find((p) => p.is_human);
 
   // 액션 버튼: 재생 중·로딩 중·세션 만료면 비활성
   const actionDisabled = isReplaying || loading || sessionExpired;
@@ -235,7 +225,7 @@ export default function App() {
           <div className="flex items-center gap-4 text-sm">
             <span className="text-gray-400">핸드 #{state.hand_number}</span>
             <span className="text-yellow-400 font-bold">
-              {human?.name}: {(isReplaying && human ? (displayedChips.get(human.name) ?? human.chips) : human?.chips ?? 0).toLocaleString()} 칩
+              {human?.name}: {(human?.chips ?? 0).toLocaleString()} 칩
             </span>
             {sessionReview && (
               <span className="text-gray-400 text-xs">
@@ -276,20 +266,17 @@ export default function App() {
         <div className="flex-1 flex items-center justify-center p-4 relative">
           <div className="w-full max-w-3xl relative">
             <PokerTable
-              state={state}
+              state={shown}
               activePlayer={activePlayer}
               isThinking={isThinking}
               badge={badge}
-              visibleCardCount={visibleCardCount}
-              foldedDuringReplay={foldedDuringReplay}
               bettingPlayer={bettingPlayer}
               isReplaying={isReplaying}
-              dealtCards={dealtCards}
+              cardsDealt={(name) => (isReplaying && display ? (display.seats[name]?.dealt ?? 0) : 2)}
               myCardsRevealed={myCardsRevealed}
               onRevealCards={() => setMyCardsRevealed((v) => !v)}
-              showdownRevealed={showdownRevealed}
-              displayedChips={displayedChips}
-              committedActions={committedActions}
+              showdownRevealed={!isReplaying || !!display?.showdownRevealed}
+              committedAction={(name) => display?.seats[name]?.committed ?? undefined}
             />
             {state.hand_over && !isReplaying && (
               <HandResult
@@ -306,7 +293,7 @@ export default function App() {
         {!state.game_over && (
           <div className="shrink-0">
             <ActionBar
-              state={state}
+              state={panel}
               onAction={handleAction}
               loading={loading}
               disabled={actionDisabled || !state.waiting_for_action || state.hand_over}
@@ -353,9 +340,9 @@ export default function App() {
               }`}
             >
               {t === "log" ? "📋 로그" : "💡 힌트"}
-              {t === "hint" && hintEnabled && state.gto && (
+              {t === "hint" && hintEnabled && panel.gto && (
                 <span className="ml-1 text-[10px]">
-                  {state.gto.found && effectiveGtoRange?.found ? "🟢" : "🔴"}
+                  {panel.gto.found && effectiveGtoRange?.found ? "🟢" : "🔴"}
                 </span>
               )}
             </button>
@@ -365,11 +352,7 @@ export default function App() {
         <div className="flex-1 overflow-hidden">
           {rightTab === "log" ? (
             <div className="p-3 h-full">
-              <ActionLog
-                log={isReplaying
-                  ? state.action_log.slice(0, visibleLogCount)
-                  : state.action_log}
-              />
+              <ActionLog log={shown.action_log} />
             </div>
           ) : hintEnabled ? (
             <div className="h-full overflow-y-auto">
@@ -377,17 +360,17 @@ export default function App() {
               <div className="border-b border-gray-800">
                 <div className="px-3 pt-2 text-xs font-medium text-gray-400">📈 에퀴티</div>
                 <EquityPanel
-                  equity={state.equity}
-                  callAmount={state.call_amount}
+                  equity={panel.equity}
+                  callAmount={panel.call_amount}
                   isMyTurn={state.waiting_for_action && !isReplaying}
                 />
               </div>
               {/* GTO */}
               <GtoPanel
-                gto={state.gto}
+                gto={panel.gto}
                 gtoRange={effectiveGtoRange}
                 myHand={toGtoHand(
-                  state.players.find(p => p.is_human)?.hole_cards ?? null
+                  panel.players.find(p => p.is_human)?.hole_cards ?? null
                 )}
                 isLoading={gtoLoading}
               />

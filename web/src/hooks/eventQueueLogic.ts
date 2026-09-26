@@ -2,7 +2,7 @@
 // 타이머로 언제 반영할지(스케줄링)는 useEventQueue.ts가 맡고, 이 파일은 부작용 없이
 // 입력(GameEvent)에서 출력(배지 텍스트/커밋 레이블/리셋 여부)만 계산한다 — vitest로
 // 이벤트 순서·텍스트를 검증하기 위해 분리(T-030).
-import type { GameEvent, ActionBadge } from "../types";
+import type { GameEvent, ActionBadge, GameState } from "../types";
 
 export const BET_ACTIONS = new Set(["call", "raise", "allin"]);
 
@@ -75,4 +75,185 @@ export function commitEffectFor(event: GameEvent): CommitEffect {
  */
 export function replayCommitEffects(events: GameEvent[]): CommitEffect[] {
   return events.map(commitEffectFor);
+}
+
+// ─────────────────────────────────────────────────────────────
+// 재생 표시 상태 (T-029)
+//   응답이 오면 서버 최종 상태(next)를 바로 그리지 않는다. 재생 중에는 "이전 상태 + 지금까지
+//   소비한 이벤트"로 만든 DisplayState 하나만 그린다(applyEvent 리듀서). 팟·스트리트·베팅·칩·
+//   폴드·카드 수·로그 줄 수가 모두 여기서 나오므로 애니메이션과 같은 시점에 바뀐다.
+// ─────────────────────────────────────────────────────────────
+
+export interface SeatView {
+  chips: number;
+  bet: number;               // 이번 스트리트 베팅
+  folded: boolean;
+  allIn: boolean;
+  dealt: number;             // 받은 홀카드 수(딜링 애니메이션)
+  committed: string | null;  // 좌석 아래 마지막 액션 레이블
+}
+
+export interface DisplayState {
+  street: string;
+  pot: number;
+  cardCount: number;         // 보이는 커뮤니티 카드 수
+  logCount: number;          // 보이는 로그 줄 수
+  showdownRevealed: boolean;
+  seats: Record<string, SeatView>;
+}
+
+/**
+ * 재생 시작점. 새 핸드면 블라인드 전(칩 = 직전 핸드 종료 칩, 없으면 next의 chips+current_bet),
+ * 이어지는 액션이면 요청 직전 상태(prevState)에서 시작한다. 좌석 레이블은 직전 표시에서 이어받는다.
+ */
+export function initialDisplay(
+  prevState: GameState | null,
+  prevDisplay: DisplayState | null,
+  next: GameState,
+  isNewHand: boolean,
+): DisplayState {
+  if (isNewHand || !prevState) {
+    const prevChips = new Map((prevState?.players ?? []).map((p) => [p.name, p.chips]));
+    const seats: Record<string, SeatView> = {};
+    for (const p of next.players) {
+      const handStart = isNewHand ? prevChips.get(p.name) : undefined;
+      seats[p.name] = {
+        chips: handStart ?? p.chips + p.current_bet,
+        bet: 0, folded: false, allIn: false, dealt: 0, committed: null,
+      };
+    }
+    return { street: "프리플랍", pot: 0, cardCount: 0, logCount: 0, showdownRevealed: false, seats };
+  }
+  const seats: Record<string, SeatView> = {};
+  for (const p of prevState.players) {
+    seats[p.name] = {
+      chips: p.chips, bet: p.current_bet, folded: p.is_folded, allIn: p.is_all_in, dealt: 2,
+      committed: prevDisplay?.seats[p.name]?.committed ?? null,
+    };
+  }
+  return {
+    street: prevState.street,
+    pot: prevState.pot,
+    cardCount: prevState.community_cards.length,
+    logCount: prevState.action_log.length,
+    showdownRevealed: false,
+    seats,
+  };
+}
+
+function withSeat(d: DisplayState, name: string, patch: Partial<SeatView>): Record<string, SeatView> {
+  const cur = d.seats[name] ?? { chips: 0, bet: 0, folded: false, allIn: false, dealt: 0, committed: null };
+  return { ...d.seats, [name]: { ...cur, ...patch } };
+}
+
+/** 이벤트 하나를 소비한 뒤의 표시 상태(순수 리듀서). */
+export function applyEvent(d: DisplayState, e: GameEvent): DisplayState {
+  const logCount = e.log ? d.logCount + 1 : d.logCount;
+  switch (e.type) {
+    case "deal_card": {
+      const cur = d.seats[e.player]?.dealt ?? 0;
+      return { ...d, seats: withSeat(d, e.player, { dealt: Math.min(cur + 1, 2) }) };
+    }
+    case "blind":
+      return {
+        ...d, logCount,
+        pot: e.pot_after ?? d.pot + e.amount,
+        seats: withSeat(d, e.player, {
+          chips: e.chips_after ?? d.seats[e.player]?.chips ?? 0,
+          bet: e.bet_after ?? e.amount,
+          committed: makeCommitLabel(e),
+        }),
+      };
+    case "action": {
+      const seat = d.seats[e.player];
+      const chips = e.chips_after ?? seat?.chips ?? 0;
+      return {
+        ...d, logCount,
+        pot: e.pot_after ?? d.pot,
+        seats: withSeat(d, e.player, {
+          chips,
+          bet: e.bet_after ?? seat?.bet ?? 0,
+          folded: (seat?.folded ?? false) || e.action === "fold",
+          allIn: (seat?.allIn ?? false) || e.action === "allin" || (e.action !== "fold" && chips === 0),
+          committed: makeCommitLabel(e),
+        }),
+      };
+    }
+    case "street_start": {
+      const seats: Record<string, SeatView> = {};
+      for (const [k, s] of Object.entries(d.seats)) seats[k] = { ...s, bet: 0, committed: null };
+      return { ...d, logCount, street: e.street, pot: e.pot_after ?? d.pot, seats };
+    }
+    case "community_card":
+      return { ...d, logCount, cardCount: d.cardCount + 1 };
+    case "showdown":
+      return { ...d, logCount, showdownRevealed: true };
+    case "winner": {
+      let seats = d.seats;
+      for (const [name, c] of Object.entries(e.winner_chips ?? {})) {
+        seats = withSeat({ ...d, seats }, name, { chips: c });
+      }
+      return { ...d, logCount, pot: 0, seats };
+    }
+  }
+  return d;
+}
+
+/** 이벤트 목록 전체를 소비한 표시 상태(스킵·테스트용). */
+export function applyEvents(d: DisplayState, events: GameEvent[]): DisplayState {
+  return events.reduce(applyEvent, d);
+}
+
+/**
+ * 서버 최종 상태 next를 표시 상태로 덮어 "지금 화면에 보일 GameState" 하나를 만든다.
+ * 팟·스트리트·보드·로그·좌석 칩/베팅/폴드/올인이 표시 상태에서 나온다.
+ */
+export function projectState(next: GameState, d: DisplayState): GameState {
+  return {
+    ...next,
+    street: d.street,
+    pot: d.pot,
+    community_cards: next.community_cards.slice(0, d.cardCount),
+    action_log: next.action_log.slice(0, d.logCount),
+    players: next.players.map((p) => {
+      const s = d.seats[p.name];
+      return s ? { ...p, chips: s.chips, current_bet: s.bet, is_folded: s.folded, is_all_in: s.allIn } : p;
+    }),
+  };
+}
+
+/**
+ * 힌트 패널(에퀴티·GTO)·액션 바가 읽을 상태. 재생 중엔 재생 직전 상태를 유지해, 아직 화면에
+ * 깔리지 않은 카드가 반영된 새 에퀴티·GTO 노드를 먼저 보이지 않는다(T-029).
+ */
+export function panelState(isReplaying: boolean, replayBase: GameState | null, current: GameState): GameState {
+  return isReplaying && replayBase ? replayBase : current;
+}
+
+/** 테이블이 그릴 상태 하나: 재생 중이면 표시 상태로 덮은 것, 아니면 서버 최종 상태. */
+export function shownState(isReplaying: boolean, display: DisplayState | null, current: GameState): GameState {
+  return isReplaying && display ? projectState(current, display) : current;
+}
+
+// ── 이벤트 타이밍 ─────────────────────────────────────────
+
+/** 사람 자신의 액션은 "생각 중" 없이 즉시 반영하고 배지만 잠깐 보인다(봇만 연출 — 결정됨). */
+export const HUMAN_ACTION_MS = 350;
+
+export interface EventTiming {
+  thinking: boolean;  // "생각 중" 점 표시 여부
+  applyAt: number;    // 표시 상태에 반영하는 시각(ms, 이벤트 시작 기준)
+  next: number;       // 다음 이벤트로 넘어가는 시각(ms)
+}
+
+/** delay는 getEventDelay 값. thinkingRatio는 봇 액션의 "생각 중" 비율. */
+export function eventTiming(e: GameEvent, humanName: string | null, delay: number, thinkingRatio: number): EventTiming {
+  if (e.type === "action") {
+    if (humanName !== null && e.player === humanName) {
+      return { thinking: false, applyAt: 0, next: HUMAN_ACTION_MS };
+    }
+    return { thinking: true, applyAt: delay * thinkingRatio, next: delay };
+  }
+  if (e.type === "deal_card") return { thinking: false, applyAt: delay, next: delay };
+  return { thinking: false, applyAt: 0, next: delay };
 }

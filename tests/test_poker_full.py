@@ -2256,13 +2256,17 @@ class _RandomBot(StubBot):
         return Action.ALL_IN, 0
 
 
-def _walk_events(events, chips, bets):
-    """이벤트 금액 = 실제 칩 이동 불변식 검사. chips/bets는 호출 간 유지되는 추적 상태."""
+def _walk_events(events, chips, bets, pot=None):
+    """이벤트 금액 = 실제 칩 이동 불변식 검사. chips/bets는 호출 간 유지되는 추적 상태.
+    pot({"pot": n}, 호출 간 유지)을 주면 재생 표시 상태 필드(T-029)도 검사한다:
+    pot_after = 누적 이동액, bet_after = 그 플레이어의 이번 스트리트 누적 베팅."""
     for e in events:
         t = e["type"]
         if t == "street_start":
             for k in bets:
                 bets[k] = 0
+            if pot is not None:
+                assert e["pot_after"] == pot["pot"], f"street_start pot_after 불일치: {e} want {pot['pot']}"
         elif t in ("blind", "action"):
             p = e["player"]
             moved = chips[p] - e["chips_after"]
@@ -2280,13 +2284,18 @@ def _walk_events(events, chips, bets):
                 assert f"{e['amount']}" in e["log"], f"로그 금액 불일치: {e}"
             bets[p] += moved
             chips[p] = e["chips_after"]
+            if pot is not None:
+                pot["pot"] += moved
+                assert e["pot_after"] == pot["pot"] and e["bet_after"] == bets[p],                     f"pot_after/bet_after 불일치: {e} want pot={pot['pot']} bet={bets[p]}"
         elif t == "winner":
             chips.update(e.get("winner_chips") or {})
+            if pot is not None:
+                pot["pot"] = 0
 
 
 def test_8_12_session_fuzz_event_amounts_and_conservation():
     """T-021 퍼저(시드 고정, 세션 경로): 무작위 스택·인원·액션(불법 포함)으로 수백 핸드를
-    돌려 ① 이벤트·로그 금액 = 실제 칩 이동(블라인드 포함) ② 칩 보존 ③ 사람 불법 액션은
+    돌려 ① 이벤트·로그 금액 = 실제 칩 이동(블라인드 포함), 재생용 pot_after/bet_after(T-029) ② 칩 보존 ③ 사람 불법 액션은
     상태를 바꾸지 않음 ④ 파산 전환을 포함한 무빙 버튼 이동(T-022)을 검사한다."""
     import random
     import logging
@@ -2312,7 +2321,8 @@ def test_8_12_session_fuzz_event_amounts_and_conservation():
                     break
                 chips = dict(sess._hand_start_chips)
                 bets = {k: 0 for k in chips}
-                _walk_events(events, chips, bets)
+                pot = {"pot": 0}
+                _walk_events(events, chips, bets, pot)
                 guard = 0
                 while not sess.hand_over:
                     guard += 1
@@ -2330,7 +2340,9 @@ def test_8_12_session_fuzz_event_amounts_and_conservation():
                     except IllegalActionError:
                         assert len(sess.action_log) == log_len and _total_chips(sess) == total
                         ev = sess.submit_action("call" if st["call_amount"] > 0 else "check", 0)
-                    _walk_events(ev, chips, bets)
+                    _walk_events(ev, chips, bets, pot)
+                    if not sess.hand_over:
+                        assert pot["pot"] == sess.game.pot, f"재생 팟 {pot['pot']} != 실제 {sess.game.pot}"
                 assert _total_chips(sess) == total, "칩 보존 위반(핸드 종료)"
                 hands += 1
                 btn_label = "BTN/SB" if len(sess.game.players) == 2 else "BTN"

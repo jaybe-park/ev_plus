@@ -299,9 +299,11 @@ class WebGameSession:
 
         # 2. 블라인드 이벤트 + 로그 (딜링 이후). core가 포스팅한 순서(SB → BB) 그대로 발행하고,
         #    금액은 실제로 낸 칩(숏스택이면 블라인드보다 적음)
+        pot_so_far = self.game.pot - sum(max(0, x) for _, x in self.game.blind_posts)
         for (p, posted), kind in zip(self.game.blind_posts, ("스몰", "빅")):
             if posted <= 0:
                 continue
+            pot_so_far += posted  # 블라인드는 core가 이미 다 포스팅했다 — 이벤트 시점의 팟은 누적분
             pos = positions.get(p.name, "")
             log_text = f"[{pos}] {p.name}: {kind} 블라인드 ({posted})"
             self.action_log.append(log_text)
@@ -309,6 +311,8 @@ class WebGameSession:
                 "type": "blind", "player": p.name, "position": pos,
                 "amount": posted, "street": "프리플랍",
                 "log": log_text, "chips_after": p.chips,
+                # 재생 표시 상태용(T-029): 이 이벤트 직후의 팟·그 플레이어 이번 스트리트 베팅
+                "pot_after": pot_so_far, "bet_after": posted,
             })
 
         self._setup_round(Street.PREFLOP)
@@ -438,6 +442,8 @@ class WebGameSession:
             "street": street,
             "log": log_text,
             "chips_after": player.chips,
+            "pot_after": self.game.pot,          # 재생 표시 상태용(T-029)
+            "bet_after": player.current_bet,
         })
 
     def _run_until_human(self) -> None:
@@ -496,6 +502,7 @@ class WebGameSession:
             "type": "street_start",
             "street": street.value,
             "log": street_log,
+            "pot_after": self.game.pot,  # 스트리트 전환 직후 팟(베팅은 모두 0) — T-029
         })
 
         # 커뮤니티 카드 이벤트 (장별로 분리)

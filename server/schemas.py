@@ -108,6 +108,8 @@ class GameEvent(BaseModel):
     round: Optional[int] = None                      # deal_card: 1 or 2
     log: Optional[str] = None                        # 액션 로그 텍스트
     chips_after: Optional[int] = None                # action/blind: 액션 후 플레이어 잔여 칩
+    pot_after: Optional[int] = None                  # blind/action/street_start: 이벤트 직후 팟 (T-029)
+    bet_after: Optional[int] = None                  # blind/action: 그 플레이어의 이번 스트리트 베팅 (T-029)
     winner_chips: Optional[Dict[str, int]] = None    # winner: 승자별 최종 칩
 
 

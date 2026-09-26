@@ -139,20 +139,32 @@
   사라지지 않는다. 결과 창 "다음 핸드" 버튼은 요청 중(`loading`) 비활성 — 강제 장치:
   `tests/test_poker_full.py::test_8_1_next_hand_double_call_keeps_chips`,
   `::test_8_2_next_hand_during_hand_ignored` (버튼 비활성은 장치 없음 — `HandResult.tsx`)
-- 프론트 `useEventQueue`는 `events[]`를 소비해 지연 재생한다. `action` 이벤트만
-  "생각 중"(THINKING_RATIO 구간) → 배지 표시 2단계이고, 나머지 이벤트는 단일 지연 후
-  즉시 다음으로 넘어간다. `chips_after`가 실린 이벤트(`action`/`blind`/`winner`)만
-  표시 칩을 갱신한다 — 원본: `web/src/hooks/useEventQueue.ts`
-- 이벤트 → 배지 텍스트/좌석 커밋 레이블 판단은 순수 함수로 분리돼 있다
-  (`web/src/hooks/eventQueueLogic.ts`: `formatBadge`, `makeCommitLabel`, `commitEffectFor`).
-  타이머 스케줄링(`useEventQueue.ts`)은 이 함수들의 결과를 언제 반영할지만 맡는다 —
-  이벤트 순서·텍스트 회귀는 vitest로 검증 — 강제 장치:
-  `web/src/hooks/__tests__/eventQueueLogic.test.ts`
-- `isReplaying`은 별도 state가 아니라 `queue.length > 0`으로 매 렌더 파생한다(전에는
-  `enqueue`/effect 두 곳에서 따로 동기화해 set-state-in-effect 린트 위반의 원인이었다).
-  큐가 이벤트 있음↔없음으로 전환될 때의 하이라이트 리셋(activePlayer/isThinking/badge/
-  bettingPlayer)도 `useEffect`가 아니라 렌더 중 조정 패턴(prevQueueEmpty 비교)으로 처리—
-  근거: 2026-09-26 리뷰 W9
+- **재생 표시 상태는 하나다**(T-029): 응답이 오면 서버 최종 상태를 바로 그리지 않는다. 재생
+  중에는 "요청 직전 상태 + 지금까지 소비한 이벤트"로 만든 표시 상태(`DisplayState`)만 테이블에
+  그린다 — 팟·스트리트 라벨·보드 카드 수·로그 줄 수·좌석 칩/베팅/폴드/올인/받은 카드 수가 모두
+  순수 리듀서 `eventQueueLogic.applyEvent`에서 나오고 `projectState(next, display)`로 GameState
+  하나가 된다. 그래서 폴드 후 봇들이 진행하는 동안 팟·스트리트·베팅액이 애니메이션과 같은 시점에
+  바뀐다. 새 핸드의 시작점은 블라인드 전(칩 = 직전 핸드 종료 칩, 팟 0, 카드 0장), 이어지는
+  액션의 시작점은 요청 직전 상태다. 스킵은 남은 이벤트를 한 번에 소비한다(최종 상태와 같음) —
+  강제 장치: `web/src/hooks/__tests__/replayDisplay.test.ts`(실제 세션 응답 픽스처, 생성 `tests/make_replay_fixture.py`
+  `fixtures/replay_session.json`: 시작 화면 = 직전 상태, 팟 = 이벤트 `pot_after`, 스트리트·보드는
+  해당 이벤트에서만, 봇 베팅은 그 봇 액션부터, 전부 소비 = 서버 최종 상태, 스킵 동일, 새 핸드)
+- 이벤트 페이로드: `blind`/`action`은 `pot_after`(이벤트 직후 팟)·`bet_after`(그 플레이어의
+  이번 스트리트 베팅), `street_start`는 `pot_after`를 싣는다. `winner` 이후 표시 팟은 0 — 강제
+  장치: `tests/test_poker_full.py::test_8_12_session_fuzz_event_amounts_and_conservation`(누적 이동액
+  = `pot_after`, 스트리트 누적 = `bet_after`, 사람 차례 팟 = 실제 팟)
+- 힌트 패널(에퀴티·GTO)과 액션 바는 재생 중 **재생 직전 상태**를 유지한다(`panelState`). 새
+  에퀴티(아직 안 깔린 카드 반영)·새 GTO 노드 조회는 재생이 끝난 뒤에만 보인다 — 강제 장치:
+  `web/src/hooks/__tests__/replayDisplay.test.ts`("힌트 패널은 재생이 끝날 때까지 이전 값")
+- 타이밍(`eventTiming`): 봇 `action`은 "생각 중"(THINKING_RATIO 구간) → 표시 반영 + 배지 →
+  다음. **사람 자신의 액션은 "생각 중" 없이 즉시 반영**하고 배지만 `HUMAN_ACTION_MS`(350ms)
+  보인다(봇만 연출). `deal_card`는 지연 끝에 반영, 그 밖의 이벤트는 시작하자마자 반영하고 지연 후
+  다음으로 — 강제 장치: `web/src/hooks/__tests__/replayDisplay.test.ts`("이벤트 타이밍")
+- 이벤트 → 배지 텍스트/좌석 커밋 레이블(`formatBadge`, `makeCommitLabel`)도 같은 모듈의 순수
+  함수다. `useEventQueue.ts`는 언제 반영할지(타이머)와 하이라이트 연출(생각 중·배지·칩 날아가기)만
+  맡는다 — 강제 장치: `web/src/hooks/__tests__/eventQueueLogic.test.ts`
+- `isReplaying`은 `queue.length > 0`으로 매 렌더 파생한다. 큐가 비는 순간의 하이라이트 리셋은
+  렌더 중 조정 패턴(prevQueueEmpty 비교)으로 처리 — 근거: 2026-09-26 리뷰 W9
 - 세션 수명: 세션은 서버 메모리(`server/main.py::sessions`)에만 있다. 마지막 요청 후
   `SESSION_TTL_SEC`(24시간)이 지나거나 세션 수가 `MAX_SESSIONS`(20)를 넘으면 가장 오래 안 쓴
   세션부터 정리한다(요청마다·새 게임 등록 시 `_prune_sessions`). 정리됐거나 서버가 재시작돼
@@ -209,8 +221,8 @@
 | `server/session.py` | `WebGameSession` — 스텝 방식 진행, 이벤트 큐, 에퀴티/평가/GTO 연결, 사이드팟 승자 계산 |
 | `server/main.py` | FastAPI 라우터(게임 엔드포인트 + GTO 관리 API) |
 | `server/schemas.py` | 응답/이벤트 Pydantic 모델 |
-| `web/src/hooks/useEventQueue.ts` | 이벤트 큐 리플레이(지연·배지·칩 애니메이션, 타이머 스케줄링) |
-| `web/src/hooks/eventQueueLogic.ts` | 이벤트 → 배지/커밋 레이블 판단(순수 함수, vitest 대상) |
+| `web/src/hooks/useEventQueue.ts` | 이벤트 큐 재생 타이머·하이라이트 연출 |
+| `web/src/hooks/eventQueueLogic.ts` | 재생 표시 상태 리듀서·투영, 패널 상태, 타이밍, 배지/레이블(순수 함수, vitest 대상) |
 | `web/src/api.ts` | fetch 래퍼 + 422 detail 배열 평탄화(`formatApiError`) + 상태 코드 실은 `ApiError` |
 | `web/src/sessionStore.ts` | 세션 번호 `sessionStorage` 보관(새로고침 후 이어하기)·404 만료 판정 |
 | `db/recorder.py` | 핸드/액션 RL 기록(세션과 별개 관심사, 실패해도 게임 진행에 영향 없음) |
