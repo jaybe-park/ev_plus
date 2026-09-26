@@ -1,6 +1,6 @@
 # 0034. 에퀴티 캐시 폐기 — 프리플랍 상수 테이블 + 실시간 계산, 정밀도 목표 ±0.5%p
 
-- 상태: 유효
+- 상태: 일부 대체됨 → [0045](0045-equity-precision-1pp-adaptive-mc.md) (정밀도 목표 ±0.5%p·샘플 수. 캐시 폐기·계산 경로는 유효)
 - 날짜: 2026-09-26 · 결정자: jaybe-park
 - 대체: [0017](0017-equity-canonical-key-exact-protection.md), [0018](0018-equity-fast-paths.md)(캐시·DP 메모 부분), [0019](0019-equity-worker-priority.md), [0021](0021-equity-stats-incremental.md), [0022](0022-equity-cache-rebuildable-vsrandom-ui.md), [0032](0032-partial-index-only-for-pending-queues.md)
 

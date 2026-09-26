@@ -4,9 +4,10 @@
 계산 경로 (`smart_equity` / `equity_detail`):
 1. 프리플랍 — 상수 테이블(`ai/preflop_equity_table.py`, 169핸드 × 상대 1~5명, 각 100만 샘플).
 2. 리버 상대 1명 — 전수조사(990조합, 약 3ms). 모든 난이도.
-3. 그 밖 — 실시간 Monte Carlo. 기본은 적응형: 표준오차가 TARGET_SE(0.5%p)에
-   도달하면 멈추고, 최대 MC_MAX_SAMPLES(최악 p=0.5에서도 SE ≤ 0.5%p가 되는 수)까지.
+3. 그 밖 — 실시간 Monte Carlo. 기본은 적응형: 표준오차가 TARGET_SE(1%p)에
+   도달하면 멈추고, 최대 MC_MAX_SAMPLES(최악 p=0.5에서도 SE ≤ 1%p가 되는 수)까지.
    호출자가 샘플 수를 고정하면(easy 봇, ADR 0014) 그 수만큼만 돈다.
+레인지 반영 에퀴티(`ranged_equity`)도 같은 적응형 규칙을 쓴다.
 
 결과를 DB에 저장하지 않는다 — equity_cache는 폐기됐다(ADR 0034).
 """
@@ -25,14 +26,16 @@ _FULL_DECK = [Card(r, s) for r in Rank for s in Suit]
 _SUITS = [Suit.SPADES, Suit.HEARTS, Suit.DIAMONDS, Suit.CLUBS]
 _RANK_BY_VALUE = {r.rank_value: r for r in Rank}
 
-# 정밀도 목표: 봇·패널 vs 랜덤 에퀴티의 표준오차(1σ) ≤ 0.5%p (ADR 0034)
-TARGET_SE = 0.005
+# 정밀도 목표: 봇·패널 에퀴티(vs 랜덤·레인지 반영)의 표준오차(1σ) ≤ 1%p (ADR 0045)
+TARGET_SE = 0.01
 # 적응형 MC: MC_BATCH 단위로 돌며 MC_MIN_SAMPLES 이후 SE ≤ TARGET_SE면 멈춘다.
 # 샘플 1개의 지분 분산은 최대 0.25(p=0.5, 동률 없음)이므로
-# MC_MAX_SAMPLES = 0.25 / TARGET_SE² = 10,000이면 어떤 스팟도 목표를 만족한다.
-MC_MIN_SAMPLES = 1_000
-MC_BATCH = 500
-MC_MAX_SAMPLES = 10_000
+# MC_MAX_SAMPLES = 0.25 / TARGET_SE² = 2,500이면 어떤 스팟도 목표를 만족한다(상한 자체가 보장).
+# MC_MIN_SAMPLES = 500: 표본분산 추정의 상대오차가 약 1/sqrt(2n) ≈ 3%라 조기 종료 판정이
+# 믿을 만하고, 에퀴티가 극단적인 스팟(p=0.95 → 필요 n≈475)도 이 선에서 끝난다.
+MC_MIN_SAMPLES = 500
+MC_BATCH = 250
+MC_MAX_SAMPLES = 2_500
 
 _NOTE_CHAR = {2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8",
               9: "9", 10: "T", 11: "J", 12: "Q", 13: "K", 14: "A"}
@@ -124,29 +127,28 @@ def mc_counts(
     return w, t, num_simulations
 
 
-def mc_adaptive(
-    hole_cards: List[Card],
-    board: List[Card],
-    num_opponents: int,
+def _adaptive(
+    run,
     target_se: float = TARGET_SE,
     min_samples: int = MC_MIN_SAMPLES,
     max_samples: int = MC_MAX_SAMPLES,
     batch: int = MC_BATCH,
 ) -> Tuple[float, float, int, float]:
     """
-    적응형 MC: (wins, ties, total, 표준오차).
+    적응형 MC 공통 루프. run(n) → (wins, ties, 지분 제곱합).
     batch씩 돌며 min_samples 이후 표준오차 sqrt(표본분산/n)이 target_se 이하가 되면 멈춘다.
-    max_samples에서 끝나도 지분 분산 ≤ 0.25라 기본값(10,000)이면 SE ≤ 0.5%p다.
+    max_samples에서 끝나도 지분 분산 ≤ 0.25라 기본값(2,500)이면 SE ≤ 1%p다.
+    반환: (wins, ties, total, 표준오차)
     """
     wins = ties = sq = 0.0
     n = 0
     se = 0.5
     while n < max_samples:
         step = min(batch, max_samples - n)
-        w, t, s = _mc_run(hole_cards, board, num_opponents, step)
+        w, t, q = run(step)
         wins += w
         ties += t
-        sq += s
+        sq += q
         n += step
         mean = (wins + 0.5 * ties) / n
         var = max(0.0, sq / n - mean * mean)
@@ -154,6 +156,16 @@ def mc_adaptive(
         if n >= min_samples and se <= target_se:
             break
     return wins, ties, n, se
+
+
+def mc_adaptive(
+    hole_cards: List[Card],
+    board: List[Card],
+    num_opponents: int,
+    **kw,
+) -> Tuple[float, float, int, float]:
+    """vs 랜덤 적응형 MC: (wins, ties, total, 표준오차). kw는 _adaptive 인자."""
+    return _adaptive(lambda n: _mc_run(hole_cards, board, num_opponents, n), **kw)
 
 
 def calculate_equity(
@@ -444,15 +456,14 @@ class RangeSampler:
 _JOINT_MAX_TRIES = 200
 
 
-def mc_counts_ranged(
+def _ranged_runner(
     hole_cards: List[Card],
     board: List[Card],
     samplers: List[Optional[RangeSampler]],
-    num_simulations: int,
-) -> Tuple[float, float, int]:
+):
     """
-    상대별 레인지 샘플러를 적용한 MC. samplers의 None은 랜덤 핸드.
-    레인지 조건부 분포다.
+    상대별 레인지 샘플러를 적용한 MC 러너 run(n) → (wins, ties, 지분 제곱합).
+    samplers의 None은 랜덤 핸드. 레인지 조건부 분포다. 블로커 제거는 한 번만 한다.
 
     상대 홀카드는 결합분포 Π w_i(h_i)·[카드 비중복]에서 뽑는다(T-034):
     1) 각 레인지에서 내 홀·보드와 겹치는 콤보를 미리 뺀다(남는 게 없으면 랜덤 상대).
@@ -469,53 +480,85 @@ def mc_counts_ranged(
     ranged = [s for s in restricted if s is not None]
     n_random = len(restricted) - len(ranged)
 
-    wins = ties = 0.0
-    for _ in range(num_simulations):
-        opp_holes = None
-        for _try in range(_JOINT_MAX_TRIES):
-            holes = [s.draw() for s in ranged]
-            cards_used = {c for pair in holes for c in pair}
-            if len(cards_used) == 2 * len(holes):
-                opp_holes = holes
-                break
-        if opp_holes is None:  # 드문 폴백: 순차 샘플링
-            opp_holes = []
-            cards_used = set()
-            for s in ranged:
-                pair = s.sample(known | cards_used)
-                if pair is None:
-                    pair = tuple(random.sample(
-                        [c for c in deck if c not in cards_used], 2))
-                opp_holes.append(pair)
-                cards_used.update(pair)
+    def run(num_simulations: int) -> Tuple[float, float, float]:
+        wins = ties = sq = 0.0
+        for _ in range(num_simulations):
+            opp_holes = None
+            for _try in range(_JOINT_MAX_TRIES):
+                holes = [s.draw() for s in ranged]
+                cards_used = {c for pair in holes for c in pair}
+                if len(cards_used) == 2 * len(holes):
+                    opp_holes = holes
+                    break
+            if opp_holes is None:  # 드문 폴백: 순차 샘플링
+                opp_holes = []
+                cards_used = set()
+                for s in ranged:
+                    pair = s.sample(known | cards_used)
+                    if pair is None:
+                        pair = tuple(random.sample(
+                            [c for c in deck if c not in cards_used], 2))
+                    opp_holes.append(pair)
+                    cards_used.update(pair)
 
-        blocked = known | cards_used
-        avail = [c for c in deck if c not in blocked]
-        if n_random:
-            rnd = random.sample(avail, 2 * n_random)
-            opp_holes = opp_holes + [(rnd[2 * i], rnd[2 * i + 1]) for i in range(n_random)]
-            blocked = blocked | set(rnd)
-            avail = [c for c in avail if c not in blocked]
-        board_fill = random.sample(avail, need) if need else []
-        full = board + board_fill
+            blocked = known | cards_used
+            avail = [c for c in deck if c not in blocked]
+            if n_random:
+                rnd = random.sample(avail, 2 * n_random)
+                opp_holes = opp_holes + [(rnd[2 * i], rnd[2 * i + 1]) for i in range(n_random)]
+                blocked = blocked | set(rnd)
+                avail = [c for c in avail if c not in blocked]
+            board_fill = random.sample(avail, need) if need else []
+            full = board + board_fill
 
-        mine = evaluate_rank(hole_cards + full)
-        w, t = _showdown_share(mine, [evaluate_rank(list(pair) + full) for pair in opp_holes])
-        wins += w
-        ties += t
-    return wins, ties, num_simulations
+            mine = evaluate_rank(hole_cards + full)
+            w, t = _showdown_share(mine, [evaluate_rank(list(pair) + full) for pair in opp_holes])
+            wins += w
+            ties += t
+            share = w + 0.5 * t
+            sq += share * share
+        return wins, ties, sq
+
+    return run
+
+
+def mc_counts_ranged(
+    hole_cards: List[Card],
+    board: List[Card],
+    samplers: List[Optional[RangeSampler]],
+    num_simulations: int,
+) -> Tuple[float, float, int]:
+    """레인지 반영 고정 샘플 MC: (wins, ties, total)."""
+    w, t, _ = _ranged_runner(hole_cards, board, samplers)(num_simulations)
+    return w, t, num_simulations
+
+
+def mc_adaptive_ranged(
+    hole_cards: List[Card],
+    board: List[Card],
+    samplers: List[Optional[RangeSampler]],
+    **kw,
+) -> Tuple[float, float, int, float]:
+    """레인지 반영 적응형 MC: (wins, ties, total, 표준오차). kw는 _adaptive 인자."""
+    return _adaptive(_ranged_runner(hole_cards, board, samplers), **kw)
 
 
 def ranged_equity(
     hole_cards: List[Card],
     board: List[Card],
     samplers: List[Optional[RangeSampler]],
-    num_simulations: int = 300,
+    num_simulations: Optional[int] = None,
 ) -> float:
-    """레인지 반영 equity (조건부 분포, 고정 샘플 MC)."""
+    """
+    레인지 반영 equity (조건부 분포). num_simulations가 None이면 적응형 MC
+    (SE ≤ TARGET_SE, ADR 0045), 정수면 그 수만큼 고정 MC.
+    """
     if len(hole_cards) < 2 or not samplers:
         return 0.5
-    w, t, n = mc_counts_ranged(hole_cards, board, samplers, num_simulations)
+    if num_simulations is None:
+        w, t, n, _se = mc_adaptive_ranged(hole_cards, board, samplers)
+    else:
+        w, t, n = mc_counts_ranged(hole_cards, board, samplers, num_simulations)
     return _ratio(w, t, n)
 
 

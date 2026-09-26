@@ -56,6 +56,22 @@ def bench_equity(reps: int):
                   f"경로={res[0].source.split(':')[0]}  샘플≈{avg_n:,.0f}")
 
 
+_RANGE = {h: 1.0 for h in ("AA", "KK", "QQ", "JJ", "TT", "99", "88", "AKs", "AQs", "AJs", "ATs",
+                           "KQs", "KJs", "QJs", "JTs", "AKo", "AQo", "AJo", "KQo")}
+
+
+def bench_ranged(reps: int):
+    from ai.equity import RangeSampler, ranged_equity
+    print("\n[ranged_equity 적응형] 랜덤 스팟, 상위 약 10% 레인지, ms (중앙 / p90 / 최대)")
+    for street, blen in (("flop", 3), ("turn", 4), ("river", 5)):
+        for n_opp in (1, 2):
+            spots = [_spot(blen) for _ in range(reps)]
+            it = iter(spots)
+            samplers = [RangeSampler(_RANGE) for _ in range(n_opp)]
+            med, p90, mx, _ = _ms(lambda: ranged_equity(*next(it), samplers), reps)
+            print(f"  {street:7s} 레인지 {n_opp}명: {med:7.1f} / {p90:7.1f} / {mx:7.1f}")
+
+
 def bench_bot(reps: int):
     from core.player import Player
     from ai.bot import PokerBot, BotDifficulty
@@ -117,6 +133,7 @@ def main():
     random.seed(args.seed)
     print(f"python {sys.version.split()[0]} ({sys.implementation.name}), 반복 {args.reps}회")
     bench_equity(args.reps)
+    bench_ranged(args.reps)
     bench_bot(args.reps)
     bench_panel(args.reps)
 

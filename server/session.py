@@ -714,7 +714,6 @@ class WebGameSession:
         detail = equity_detail(hole, community, n_opps)
         vs_random = detail.equity
         source = detail.source
-        sims = 1000  # 레인지 반영 equity(ranged_equity)의 고정 샘플 수
 
         self._record_equity_history(vs_random)
 
@@ -725,7 +724,7 @@ class WebGameSession:
 
         samplers = [s for s, _ in samplers_with_roles]
         if any(samplers):
-            vs_range = ranged_equity(hole, community, samplers, sims)
+            vs_range = ranged_equity(hole, community, samplers)  # 적응형 MC (ADR 0045)
         else:
             vs_range = vs_random
 
@@ -734,7 +733,7 @@ class WebGameSession:
         random_1v1 = None  # 정보 없는 상대들은 모두 같은 값(랜덤 1:1) → 한 번만 계산
         for opp, (sampler, role) in zip(opponents, samplers_with_roles):
             if sampler is not None:
-                one_on_one = ranged_equity(hole, community, [sampler], sims)
+                one_on_one = ranged_equity(hole, community, [sampler])
             else:
                 # 정보 없음 → 랜덤 1:1로 근사 (n_opps 기준 vs_random과는 상대 수가 달라 별도 계산)
                 if random_1v1 is None:

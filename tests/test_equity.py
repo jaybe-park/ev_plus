@@ -61,7 +61,7 @@ def test_preflop_table():
           len(PREFLOP_EQUITY) == 169 and all(len(v) == 5 for v in PREFLOP_EQUITY.values()),
           f"={len(PREFLOP_EQUITY)}")
     check("값마다 100만 샘플", PREFLOP_SAMPLES >= 1_000_000, f"={PREFLOP_SAMPLES}")
-    # 알려진 기준값 (±0.5%p 목표보다 좁은 ±0.2%p로 검사) — T-036 완료 조건
+    # 알려진 기준값 (±1%p 목표보다 좁은 ±0.2%p로 검사) — T-036 완료 조건
     for hole, n_opp, expect in ((("As", "Ah"), 1, 0.852), (("Ah", "Kh"), 1, 0.670),
                                 (("7s", "2h"), 1, 0.346), (("Ad", "Ac"), 5, 0.492)):
         r = equity_detail(cards(*hole), [], n_opp)
@@ -81,7 +81,7 @@ def test_preflop_table():
     from ai.equity import mc_adaptive, _ratio
     random.seed(21)
     for hole, n_opp in ((("As", "Ah"), 2), (("Qh", "Jh"), 3), (("7s", "2h"), 1)):
-        w, t, n, se = mc_adaptive(cards(*hole), [], n_opp)
+        w, t, n, se = mc_adaptive(cards(*hole), [], n_opp, target_se=0.004, max_samples=20_000)
         est = _ratio(w, t, n)
         tab = PREFLOP_EQUITY[preflop_notation(cards(*hole))][n_opp - 1]
         check(f"{preflop_notation(cards(*hole))} vs{n_opp} 테이블 {tab:.4f} ≈ MC {est:.4f} (3σ+0.15%p)",
@@ -173,7 +173,7 @@ def test_multiway_tie_share():
         check("패널 vs_range 3인 스플릿 = 1/3", info is not None
               and abs(info["vs_range"] - 1 / 3) < 1e-3, f"={info and info['vs_range']}")
         check("패널 source = 실제 경로 mc:N", info is not None
-              and info["source"] == f"mc:{info['samples']}" and info["samples"] >= 1000,
+              and info["source"] == f"mc:{info['samples']}" and info["samples"] >= 500,
               f"={info and (info['source'], info['samples'])}")
     finally:
         if prev_env is None:
@@ -195,8 +195,8 @@ def test_equity_paths():
     r = equity_detail(*river, 1, 40)
     check("리버 1:1은 샘플 수를 고정해도(easy) 전수", r.source == "exact", f"={r}")
     r = equity_detail(*flop, 1)
-    check("플랍 → 적응형 MC (1,000~10,000 샘플)",
-          r.source == f"mc:{r.samples}" and 1000 <= r.samples <= 10_000, f"={r}")
+    check("플랍 → 적응형 MC (500~2,500 샘플)",
+          r.source == f"mc:{r.samples}" and 500 <= r.samples <= 2_500, f"={r}")
     r = equity_detail(*flop, 1, 40)
     check("샘플 수 고정(easy 40) → mc:40", r.source == "mc:40" and r.samples == 40, f"={r}")
     r = equity_detail(cards("Ah", "Kd"), [], 1, 40)
@@ -211,7 +211,7 @@ def test_equity_paths():
 
 
 def test_mc_precision():
-    print("\n[E-15] 적응형 MC 정밀도 — 같은 스팟 반복 시 표준오차 ≤ 0.5%p (ADR 0034)")
+    print("\n[E-15] 적응형 MC 정밀도 — 같은 스팟 반복 시 표준오차 ≤ 1%p (ADR 0045)")
     import statistics
     from ai.equity import TARGET_SE
     random.seed(15)
@@ -229,7 +229,7 @@ def test_mc_precision():
     check(f"턴 1:1 평균 {statistics.mean(ests):.4f} ≈ 전수 {truth:.4f} (±3·SE/√30)",
           abs(bias) <= 3 * TARGET_SE / 30 ** 0.5, f"차이={bias:+.4f}")
     within = sum(1 for e in ests if abs(e - truth) <= 2 * TARGET_SE)
-    check(f"개별 추정 {within}/30이 전수값 ±1.0%p(2σ) 안", within >= 25, f"={within}")
+    check(f"개별 추정 {within}/30이 전수값 ±2%p(2σ) 안", within >= 25, f"={within}")
     # 플랍 3인: 반복 표준편차만 검사(정답 전수는 비쌈)
     hole, board = cards("Jc", "Td"), cards("9s", "8h", "2c")
     ests = [smart_equity(hole, board, 2) for _ in range(20)]
@@ -240,6 +240,37 @@ def test_mc_precision():
     ests = [smart_equity(hole, board, 2, 40) for _ in range(30)]
     check("easy 40샘플은 표준편차가 목표보다 크다(해상도 차이 유지)",
           statistics.pstdev(ests) > TARGET_SE * 3, f"={statistics.pstdev(ests):.4f}")
+
+    # 레인지 반영 에퀴티(hard 봇·패널 vs_range)도 같은 목표 (ADR 0045)
+    from itertools import product
+    from ai.equity import ranged_equity, RangeSampler, _showdown_share, _notation_combos
+    from core.evaluator import evaluate_rank
+    hole, board = cards("Js", "Jh"), cards("2c", "3d", "4h", "Ks", "9c")
+    known = set(hole) | set(board)
+    ra = [p for n in ("AA", "55") for p in _notation_combos(n) if not (set(p) & known)]
+    rb = [p for n in ("AA", "66") for p in _notation_combos(n) if not (set(p) & known)]
+    mine = evaluate_rank(hole + board)
+    share = n_ok = 0
+    for a, b in product(ra, rb):
+        if set(a) & set(b):
+            continue
+        w, t = _showdown_share(mine, [evaluate_rank(list(a) + board), evaluate_rank(list(b) + board)])
+        share += w + 0.5 * t
+        n_ok += 1
+    truth = share / n_ok
+    samplers = [RangeSampler({"AA": 1, "55": 1}), RangeSampler({"AA": 1, "66": 1})]
+    ests = [ranged_equity(hole, board, samplers) for _ in range(30)]
+    sd = statistics.pstdev(ests)
+    check(f"레인지 2명 리버 반복 30회 표준편차 {sd:.4f} ≤ {TARGET_SE}×1.4", sd <= TARGET_SE * 1.4,
+          f"={sd:.4f}")
+    bias = statistics.mean(ests) - truth
+    check(f"레인지 2명 평균 {statistics.mean(ests):.4f} ≈ 전수 {truth:.4f} (±3·SE/√30)",
+          abs(bias) <= 3 * TARGET_SE / 30 ** 0.5, f"차이={bias:+.4f}")
+    ests = [ranged_equity(cards("Qh", "Qd"), cards("7c", "4d", "2s"),
+                          [RangeSampler({"AA": 1, "KK": 1, "AKs": 1})]) for _ in range(20)]
+    sd = statistics.pstdev(ests)
+    check(f"레인지 1명 플랍 반복 20회 표준편차 {sd:.4f} ≤ {TARGET_SE}×1.5", sd <= TARGET_SE * 1.5,
+          f"={sd:.4f}")
 
 
 def test_no_db_writes():
