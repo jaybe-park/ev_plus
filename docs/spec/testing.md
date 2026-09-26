@@ -14,6 +14,15 @@ exit code 1.
   `test_gto_tree.py`(로직 검증만, 수 초 이내). `--full`: `FULL_FILES` = 위에 `test_equity.py` +
   `test_grader.py` 추가. 신규 테스트 파일을 대표 명령에 포함하려면 이 두 상수에 등록해야
   한다 — 원본: `tests/run_all.py`
+- **`--full`은 파이썬 스위트 뒤에 프론트 품질 게이트도 돈다**: `run_all.py::WEB_STEPS` —
+  `npm run build`(tsc -b + vite build) → `npm run lint`(eslint .) → `npm run test`(vitest run,
+  `web/src/**/__tests__/*.test.ts`), `web/` 디렉터리에서 순차 실행하고 실패하면 다른 파이썬
+  테스트와 동일하게 통합 요약에 ❌로 반영되어 전체 exit code 1이 된다. `npm`이 PATH에 없으면
+  (`shutil.which("npm") is None`) 세 단계를 전부 건너뛰고 경고 한 줄만 낸다 — CI 없는 이
+  프로젝트에서 npm 미설치 환경(예: 최소 컨테이너)에서도 파이썬 테스트만은 항상 돌게 하기
+  위함. `--fast`는 프론트 게이트를 돌지 않는다 — 근거: 2026-09-26 리뷰 W9(프론트 lint 38
+  오류·테스트 0 방치) · 강제 장치: `tests/run_all.py::WEB_STEPS`, `web/package.json`의
+  `build`/`lint`/`test` 스크립트
 - `test_poker.py`는 `run_all.py`에 등록돼 있지 않다(독립 레거시 스위트, 개별 실행만).
 - 파일 역할: `test_poker_full.py` = 포커 로직(핸드 평가/베팅/팟 분배/게임 흐름/웹 세션/헤즈업·
   사이드팟/프리플랍 GTO 트리 라우팅) · `test_equity.py` = 에퀴티 엔진 + 봇 의사결정 ·

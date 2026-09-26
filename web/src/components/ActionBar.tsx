@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { GameState } from "../types";
 
 interface Props {
@@ -11,16 +11,23 @@ interface Props {
 export default function ActionBar({ state, onAction, loading, disabled }: Props) {
   const { call_amount, min_raise_to, players, big_blind, pot, current_bet } = state;
   const human = players.find((p) => p.is_human);
+
+  // 훅은 항상 같은 순서로 호출해야 하므로 (인간 부재 시) 조기 return보다 먼저 온다.
+  const [raiseAmount, setRaiseAmount] = useState<number>(min_raise_to || big_blind * 2);
+
+  // 내 차례가 될 때 슬라이더 초기화 — "disabled/min_raise_to가 바뀔 때"를 렌더 중
+  // 직전 값과 비교해 판단한다(useEffect의 setState는 rules-of-hooks의 set-state-in-effect
+  // 경고 대상이라 렌더 중 조정 패턴으로 대체 — 동작은 기존 useEffect와 동일).
+  const turnKey = `${disabled}:${min_raise_to}`;
+  const [prevTurnKey, setPrevTurnKey] = useState(turnKey);
+  if (turnKey !== prevTurnKey) {
+    setPrevTurnKey(turnKey);
+    if (!disabled && min_raise_to > 0) setRaiseAmount(min_raise_to);
+  }
+
   if (!human) return null;
 
   const maxRaise = human.chips + human.current_bet;
-  const [raiseAmount, setRaiseAmount] = useState<number>(min_raise_to || big_blind * 2);
-
-  // 내 차례가 될 때 슬라이더 초기화
-  useEffect(() => {
-    if (!disabled && min_raise_to > 0) setRaiseAmount(min_raise_to);
-  }, [disabled, min_raise_to]);
-
   const isDisabled = disabled || loading;
   const canCheck = call_amount === 0;
   const canRaise = human.chips > call_amount && min_raise_to > 0 && maxRaise >= min_raise_to;

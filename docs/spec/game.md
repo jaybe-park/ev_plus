@@ -63,6 +63,22 @@
   "생각 중"(THINKING_RATIO 구간) → 배지 표시 2단계이고, 나머지 이벤트는 단일 지연 후
   즉시 다음으로 넘어간다. `chips_after`가 실린 이벤트(`action`/`blind`/`winner`)만
   표시 칩을 갱신한다 — 원본: `web/src/hooks/useEventQueue.ts`
+- 이벤트 → 배지 텍스트/좌석 커밋 레이블 판단은 순수 함수로 분리돼 있다
+  (`web/src/hooks/eventQueueLogic.ts`: `formatBadge`, `makeCommitLabel`, `commitEffectFor`).
+  타이머 스케줄링(`useEventQueue.ts`)은 이 함수들의 결과를 언제 반영할지만 맡는다 —
+  이벤트 순서·텍스트 회귀는 vitest로 검증 — 강제 장치:
+  `web/src/hooks/__tests__/eventQueueLogic.test.ts`
+- `isReplaying`은 별도 state가 아니라 `queue.length > 0`으로 매 렌더 파생한다(전에는
+  `enqueue`/effect 두 곳에서 따로 동기화해 set-state-in-effect 린트 위반의 원인이었다).
+  큐가 이벤트 있음↔없음으로 전환될 때의 하이라이트 리셋(activePlayer/isThinking/badge/
+  bettingPlayer)도 `useEffect`가 아니라 렌더 중 조정 패턴(prevQueueEmpty 비교)으로 처리—
+  근거: 2026-09-26 리뷰 W9
+- API 오류: FastAPI 422의 `detail`은 배열이라 그대로 `Error`에 넘기면 배너에
+  "[object Object]"가 뜬다 — `web/src/api.ts::formatApiError`가 `loc`/`msg`를 사람이 읽는
+  한 줄 문장으로 평탄화한다 — 강제 장치: `web/src/__tests__/api.test.ts`
+- `GtoRange.raise_size`는 `number | null`이다(서버 `raise_size: Optional[float]`,
+  bb 단위 실측값). 패널은 값이 있을 때만 "(N bb)"로 표시 — 원본: `web/src/types.ts`,
+  `web/src/components/GtoPanel.tsx`
 
 ## 화면·경로·데이터
 
@@ -73,7 +89,9 @@
 | `server/session.py` | `WebGameSession` — 스텝 방식 진행, 이벤트 큐, 에퀴티/평가/GTO 연결, 사이드팟 승자 계산 |
 | `server/main.py` | FastAPI 라우터(게임 엔드포인트 + GTO 관리 API) |
 | `server/schemas.py` | 응답/이벤트 Pydantic 모델 |
-| `web/src/hooks/useEventQueue.ts` | 이벤트 큐 리플레이(지연·배지·칩 애니메이션) |
+| `web/src/hooks/useEventQueue.ts` | 이벤트 큐 리플레이(지연·배지·칩 애니메이션, 타이머 스케줄링) |
+| `web/src/hooks/eventQueueLogic.ts` | 이벤트 → 배지/커밋 레이블 판단(순수 함수, vitest 대상) |
+| `web/src/api.ts` | fetch 래퍼 + 422 detail 배열 평탄화(`formatApiError`) |
 | `db/recorder.py` | 핸드/액션 RL 기록(세션과 별개 관심사, 실패해도 게임 진행에 영향 없음) |
 
 엔드포인트(이름·용도 한 줄. 필드 원본: `server/schemas.py`, `https://localhost:8765/docs`):

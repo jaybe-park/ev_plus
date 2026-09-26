@@ -73,7 +73,9 @@ export default function GtoPanel({ gtoKey, gtoRange, myHand, isLoading }: Props)
       <div className="px-3 pt-2 pb-1.5 border-b border-gray-700 shrink-0">
         <div className="text-xs font-semibold text-green-400 truncate">
           {situation}
-          {raise_size && <span className="text-gray-500 ml-1">({raise_size})</span>}
+          {typeof raise_size === "number" && (
+            <span className="text-gray-500 ml-1">({raise_size}bb)</span>
+          )}
         </div>
       </div>
 

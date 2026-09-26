@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useState } from "react";
 import type { EquityInfo } from "../types";
 
 interface Props {
@@ -24,10 +24,14 @@ function pct(v: number): string {
 }
 
 export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
-  // 내 턴 아닐 때는 마지막 값 유지 (equity가 null이면 이전 값 재사용)
-  const lastRef = useRef<EquityInfo | null>(null);
-  if (equity) lastRef.current = equity;
-  const display = equity ?? lastRef.current;
+  // 내 턴 아닐 때는 마지막 값 유지 (equity가 null이면 이전 값 재사용).
+  // ref를 렌더 중 읽고/쓰는 대신, "직전 렌더에서 본 값"을 state로 들고 렌더 중
+  // 비교해 필요할 때만 갱신한다(React 공식 패턴 — 최대 1회 추가 렌더로 수렴, 무한 루프 없음).
+  const [lastEquity, setLastEquity] = useState<EquityInfo | null>(equity);
+  if (equity && equity !== lastEquity) {
+    setLastEquity(equity);
+  }
+  const display = equity ?? lastEquity;
 
   if (!display) {
     return (
