@@ -168,11 +168,11 @@ HandReviewEntry {
 ## GTO 데이터 관리 API (내부 도구용, 웹 게임 클라이언트는 사용 안 함)
 
 `scripts/collect_gto_tree.py`(④ 자동 워커)와 GTO Wizard 브라우저 수동 저장 스크립트가
-호출한다. 상세 배경: [`docs/gto-preflop-tree.md`](gto-preflop-tree.md).
+호출한다. 규칙: [`docs/spec/gto-preflop.md`](spec/gto-preflop.md).
 
 ### `POST /gto/preflop/save`
-프리플랍 레인지(169핸드 빈도)를 저장(덮어쓰기, position/vs_position/range_type
-또는 action_seq 기준 UPSERT).
+프리플랍 레인지(169핸드 빈도)를 저장(덮어쓰기). 기존 행은 **position/vs_position/range_type으로
+찾는다** — 이 3개가 같은 서로 다른 `action_seq` 노드는 한 행에 덮어써진다(DECISIONS D-01, TODO T-001).
 
 **요청**
 ```json

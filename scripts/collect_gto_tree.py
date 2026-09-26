@@ -2,12 +2,12 @@
 """
 ④ 데이터 기반 프리플랍 트리 워커 — Playwright(CDP) 자동화 드라이버.
 
-설계 근거: docs/gto-preflop-tree.md "데이터 기반 트리 수집 방식" + "확정 결정 D1~D3".
+설계 근거: docs/spec/gto-preflop.md "수집" 규칙, ADR 0009~0012.
 순수 로직(집계/분기/우선순위 큐/토큰화)은 scripts/gto_tree_worker.py를 **그대로 재사용**하고,
 이 파일은 그 로직에 브라우저(navigate/추출)와 저장(POST)을 붙인 얇은 드라이버다.
 
 핵심 원칙(전부 준수):
-  D1  저장 노드 키(action_seq)의 레이즈 토큰은 **화면 실측 사이즈** verbatim.
+  ADR 0009  저장 노드 키(action_seq)의 레이즈 토큰은 **화면 실측 사이즈** verbatim.
       깊이-캐노니컬/추측 테이블 사용 금지.
   ε   분기는 gto_tree_worker.branch_actions(ε=0.05%) — 레인지 콤보가중 합산 빈도가
       ε를 넘는 액션만 자식으로 확장. "버튼 존재"로 판단하지 않는다.
@@ -621,7 +621,7 @@ def save_node(server: str, node_key: str, meta: dict, hands: dict,
         "raise_size": raise_size,
         "situation_label": meta["situation_label"],
         "hands": hands,
-        "action_seq": node_key,  # D1: 실측 사이즈 키 verbatim
+        "action_seq": node_key,  # ADR 0009: 실측 사이즈 키 verbatim
     }
     resp = requests.post(
         f"{server}/gto/preflop/save", json=payload, verify=False, timeout=30

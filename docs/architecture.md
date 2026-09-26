@@ -64,7 +64,7 @@ scripts/       ← db/, ai/, core/ 사용
                         브라우저 독립적 — collect_gto_tree.py가 재사용)
   collect_gto_tree.py ← ④ Playwright(CDP) 자동 수집 드라이버. 사용자의 로그인된 크롬에
                         붙어 navigate→추출→저장→자식 확장을 반복(중단-재개, 크래시 자동
-                        복구/서킷브레이커 포함). 상세: docs/gto-preflop-tree.md
+                        복구/서킷브레이커 포함). 상세: docs/spec/gto-preflop.md
   gto_tree_report.py  ← 수집 현황 리포트 생성기 → docs/gto-preflop-progress.md(mermaid 트리)
   audit_gto_preflop.py ← 저장된 프리플랍 스팟 전수 검증(빈도합/포지션순서/이상 쏠림)
   show_missing_spots.py ← gto_missing_spots_preflop 큐 CLI 조회

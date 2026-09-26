@@ -153,7 +153,7 @@ CREATE INDEX IF NOT EXISTS idx_postflop_game_pos ON postflop_actions(game_uuid, 
 
 # v11: raise_size를 TEXT("3x" 플레이스홀더) → REAL(bb 단위 실측 raise-to 숫자,
 # 예: 8.0, 11.0, 13.5)로 변경. 사이징은 배수 공식으로 추론 불가 — GTO Wizard에서
-# 실측한 값만 저장한다 (docs/gto-data.md 2026-07-10 근본 원인 참고).
+# 실측한 값만 저장한다 (ADR 0004 참고).
 # v12: 프리플랍 전체 트리 커버리지(②)를 위해 캐노니컬 시퀀스 키 컬럼 추가.
 #   - action_seq: 히어로 결정 직전까지의 액션 시퀀스를 캐노니컬 사이즈로 스냅한
 #     노드 키(예: "R2.5-R8-F-F-F-F", RFI UTG는 ""). 임의 노드(스퀴즈/멀티웨이/4벳+)를

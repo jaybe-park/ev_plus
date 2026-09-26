@@ -154,7 +154,7 @@ AI 봇의 실제 판단력 검증(equity 정확도, GTO 준수, 페르소나별 
 | 6-17 | 미수집 브랜치 None+큐 등록 |
 | 6-18 | 형제 2개 bb 최소거리 스냅 |
 
-프리플랍 GTO 트리 커버리지(6-9~6-18) 관련 배경: [`docs/gto-preflop-tree.md`](gto-preflop-tree.md).
+프리플랍 GTO 트리 커버리지(6-9~6-18) 관련 규칙: [`docs/spec/gto-preflop.md`](spec/gto-preflop.md).
 
 ---
 

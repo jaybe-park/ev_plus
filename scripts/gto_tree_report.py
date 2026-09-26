@@ -5,7 +5,7 @@
 DB(gto_preflop_situations, 확정 수집)와 체크포인트(gto_tree_checkpoint.json, 발견됐지만
 미수집인 frontier + 실패 기록)를 읽어 마크다운 리포트를 생성한다.
 
-⚠️ "전체 대비 %"는 정의하지 않는다 — 데이터 기반 수집(docs/gto-preflop-tree.md) 원칙상
+⚠️ "전체 대비 %"는 정의하지 않는다 — 데이터 기반 수집(docs/spec/gto-preflop.md) 원칙상
 트리 전체 규모를 미리 알 수 없다(가정으로 열거하지 않음). 대신 "collected(확정 수집) /
 frontier(발견됐지만 미수집) / failed(검증 실패 재시도 대상)" 3분류로 지금까지 안 상태만 보여준다.
 
@@ -213,7 +213,7 @@ def build_report(collected: dict, frontier: dict, failed: set) -> str:
     lines.append("자동 생성됨 — `python3 scripts/gto_tree_report.py`로 재생성.")
     lines.append("")
     lines.append("⚠️ **\"전체 대비 %\"는 정의하지 않음** — 데이터 기반 수집 원칙상 트리 전체")
-    lines.append("규모를 미리 알 수 없다(`docs/gto-preflop-tree.md` 참고). 아래는 지금까지")
+    lines.append("규모를 미리 알 수 없다(`spec/gto-preflop.md` 참고). 아래는 지금까지")
     lines.append("**확정 수집(collected) / 발견됐지만 미수집(frontier) / 검증 실패(failed)**")
     lines.append("3분류 현황이다.")
     lines.append("")

@@ -1379,6 +1379,144 @@ def test_6_18_two_siblings_snap_to_nearest_bb():
 
 
 # ═════════════════════════════════════════════════════════════
+# 영역 7 — 프리플랍 GTO 원칙
+#   배경: /private/tmp/.../scratchpad/gto-findings.md "절대 규칙 중 장치 없는 것"
+#   G2/G4/G5/G6/G17 — 사람 결정 없이 현재 코드 동작을 그대로 핀(pin)하는 테스트.
+# ═════════════════════════════════════════════════════════════
+
+def test_7_1_save_invalidates_loader_cache():
+    """G2: /gto/preflop/save가 로더 캐시(enum+시퀀스)를 자동 무효화해, 호출부가
+    수동으로 gto_loader._cache/_loaded를 리셋하지 않아도 새로 저장한 노드가
+    즉시 조회된다."""
+    from server.main import save_gto_preflop, GtoPreflopSaveRequest
+    from gto.loader import get_open_range, get_range_by_seq
+    import gto.loader as gto_loader
+
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+    assert get_open_range("HJ") is None, "사전 상태: HJ RFI 미수집이어야 함"
+
+    req = GtoPreflopSaveRequest(
+        position="HJ", vs_position=None, range_type="open", raise_size=2.5,
+        situation_label="HJ RFI(테스트)", hands={"AKs": {"raise": 1.0}},
+        action_seq="F",
+    )
+    out = save_gto_preflop(req)
+    assert out["ok"] is True, out
+
+    # 저장 직후 — 수동 캐시 무효화 없이 바로 조회
+    data = get_open_range("HJ")
+    assert data is not None, "save 후 캐시가 자동 무효화되지 않음(G2 실패)"
+    assert get_range_by_seq("F") is not None, "시퀀스 캐시도 함께 무효화돼야 함"
+
+
+def test_7_2_corrupt_hand_skipped_not_folded():
+    """G4: 핸드별 빈도 합이 [0.9,1.1] 밖(손상)이면 로더가 그 핸드를 스킵하고
+    None으로 처리한다 — fold 등 특정 액션에 잔여를 몰아 채우지 않는다."""
+    from server.main import save_gto_preflop, GtoPreflopSaveRequest
+    from gto.loader import get_open_range, get_action_frequencies
+    import gto.loader as gto_loader
+
+    req = GtoPreflopSaveRequest(
+        position="CO", vs_position=None, range_type="open", raise_size=2.5,
+        situation_label="CO RFI(손상 핸드 테스트)",
+        hands={"AKs": {"fold": 0.2, "raise": 0.1}},  # 합 0.3 ∉ [0.9,1.1] → 손상
+        action_seq="F-F",
+    )
+    out = save_gto_preflop(req)
+    assert out["ok"] is True, out
+
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+    data = get_open_range("CO")
+    assert data is not None, "situation 자체는 존재해야 함(핸드 단위로만 스킵)"
+    freqs = get_action_frequencies(data, "AKs")
+    assert freqs is None, f"손상 핸드는 fold로 채워지지 않고 None이어야 함: {freqs}"
+
+
+def test_7_3_missing_hand_returns_none():
+    """G5: 노드에 아예 없는(미수집) 핸드는 None → 상위(advisor/봇)가 휴리스틱
+    폴백을 타야 한다(fold 100%로 채우지 않음)."""
+    from gto.loader import get_open_range, get_action_frequencies
+
+    _seed_situation("SB", None, "open", 3.0, "SB RFI(누락 핸드 테스트)",
+                    {"22": {"raise": 1.0}}, "")
+    data = get_open_range("SB")
+    assert data is not None
+    freqs = get_action_frequencies(data, "AKs")
+    assert freqs is None, f"미수집 핸드는 None(휴리스틱 폴백)이어야 함: {freqs}"
+
+
+def test_7_4_bb_never_rfi_and_no_queue():
+    """G6 (a): BB는 강제 베팅 상태라 RFI가 원천적으로 불가능하므로 enum 경로는
+    조회/기록 없이 None을 반환하고, 미수집 큐(gto_missing_spots_preflop)에
+    'open/BB' 행을 남기지 않는다."""
+    from gto.advisor import GTOAdvisor
+    from db.connection import get_connection
+
+    advisor = GTOAdvisor()
+    bb = 20
+    game_state = {"current_bet": bb, "street": "프리플랍", "preflop_seq": []}
+    rec = advisor._recommend_by_enum(
+        hole_cards=[c("A", "S"), c("K", "S")], my_position="BB",
+        positions={}, game_state=game_state, big_blind=bb,
+    )
+    assert rec is None, f"BB는 RFI 불가이므로 None이어야 함: {rec}"
+
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT id FROM gto_missing_spots_preflop WHERE position='BB' AND range_type='open'"
+    ).fetchone()
+    conn.close()
+    assert row is None, "BB RFI는 미수집 큐에 기록되면 안 됨"
+
+
+def test_7_5_vs_open_opener_after_hero_is_none():
+    """G6 (b): 오프너가 포지션 순서상 히어로보다 뒤 좌석이면(예: 림프 후
+    아이솔레이트 레이즈) 우리 데이터 모델 밖이므로 enum 경로는 조회/기록 없이
+    None을 반환해야 한다."""
+    from gto.advisor import GTOAdvisor
+
+    advisor = GTOAdvisor()
+    bb = 20
+    game_state = {
+        "current_bet": 8 * bb,
+        "street": "프리플랍",
+        "preflop_seq": [
+            {"position": "UTG", "action": "call", "amount_bb": 1.0},
+            {"position": "CO", "action": "raise", "amount_bb": 8.0},
+        ],
+    }
+    rec = advisor._recommend_by_enum(
+        hole_cards=[c("A", "S"), c("K", "S")], my_position="UTG",
+        positions={}, game_state=game_state, big_blind=bb,
+    )
+    assert rec is None, f"오프너(CO)가 히어로(UTG)보다 뒤 좌석 → 모델 밖 None이어야 함: {rec}"
+
+
+def test_7_6_save_normalizes_vs3bet_half_format():
+    """G17: /gto/preflop/save가 vs_3bet의 반쪽 포맷(three_bettor만 전달)을
+    'opener/three_bettor'로 정규화해 저장한다(backfill_v12와 동일 규칙)."""
+    from server.main import save_gto_preflop, GtoPreflopSaveRequest
+    from db.connection import get_connection
+
+    req = GtoPreflopSaveRequest(
+        position="BTN", vs_position="BB", range_type="vs_3bet", raise_size=28.5,
+        situation_label="BTN vs BB 3bet(테스트)", hands={"AKs": {"raise": 1.0}},
+    )
+    out = save_gto_preflop(req)
+    assert out["ok"] is True, out
+
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT vs_position FROM gto_preflop_situations WHERE position='BTN' AND range_type='vs_3bet'"
+    ).fetchone()
+    conn.close()
+    assert row is not None and row["vs_position"] == "BTN/BB", \
+        f"vs_3bet 반쪽 포맷 정규화 실패: {row['vs_position'] if row else None}"
+
+
+# ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
 
@@ -1452,6 +1590,13 @@ ALL_TESTS = [
     ("6-16 실측 사이즈 노드 형제 스냅",         test_6_16_realsize_node_snaps_to_collected_sibling),
     ("6-17 미수집 브랜치 None+큐 등록",         test_6_17_uncollected_branch_returns_none_and_queues),
     ("6-18 형제 2개 bb 최소거리 스냅",          test_6_18_two_siblings_snap_to_nearest_bb),
+    # 영역 7 — 프리플랍 GTO 원칙
+    ("7-1  save 후 로더 캐시 자동 무효화(G2)",   test_7_1_save_invalidates_loader_cache),
+    ("7-2  손상 핸드 스킵(fold 채움 아님)(G4)",  test_7_2_corrupt_hand_skipped_not_folded),
+    ("7-3  미수집 핸드 None(G5)",              test_7_3_missing_hand_returns_none),
+    ("7-4  BB RFI 불가+큐 미기록(G6)",          test_7_4_bb_never_rfi_and_no_queue),
+    ("7-5  오프너가 히어로보다 뒤 좌석→None(G6)", test_7_5_vs_open_opener_after_hero_is_none),
+    ("7-6  save의 vs_3bet 반쪽 포맷 정규화(G17)", test_7_6_save_normalizes_vs3bet_half_format),
 ]
 
 
@@ -1462,8 +1607,9 @@ AREA_LABELS = {
     "4": "영역 4 — 게임 흐름",
     "5": "영역 5 — 웹 세션",
     "6": "영역 6 — 버그 픽스",
+    "7": "영역 7 — 프리플랍 GTO 원칙",
 }
-AREA_ORDER = ["1", "2", "3", "4", "5", "6"]
+AREA_ORDER = ["1", "2", "3", "4", "5", "6", "7"]
 
 
 if __name__ == "__main__":

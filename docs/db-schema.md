@@ -81,13 +81,13 @@ v12부터 마이그레이션 스텝은 **SQL 문자열 또는 콜러블**(conn�
 
 ### gto_preflop_situations / gto_preflop_hands (v2)
 프리플랍 GTO 레인지 데이터. `situations`가 상황(포지션/상대/타입) 단위,
-`hands`가 상황별 169핸드 각각의 액션 빈도. 상세 데이터 현황은
-[GTO 데이터 문서](gto-data.md) 참고.
+`hands`가 상황별 169핸드 각각의 액션 빈도. 저장·조회 규칙은
+[프리플랍 GTO 사양](spec/gto-preflop.md).
 
 | 테이블 | 컬럼 | 설명 |
 |---|---|---|
-| `gto_preflop_situations` | `position` / `vs_position` / `range_type` | open / vs_open / vs_3bet, `vs_position` NULL=RFI |
-| | `raise_size` (REAL, v11) | bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5). v10까지는 TEXT("3x" 플레이스홀더)였으나 사이징이 배수 공식으로 추론 불가함이 확인돼(포지션마다 배수가 다름) 실측 숫자만 저장하도록 변경 — [GTO 데이터 문서](gto-data.md) 참고 |
+| `gto_preflop_situations` | `position` / `vs_position` / `range_type` | open / vs_open / vs_3bet / vs_{N}bet(워커가 4벳+ 노드에 사용), `vs_position` NULL=RFI |
+| | `raise_size` (REAL, v11) | bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5). 모르면 NULL — [ADR 0004](decisions/0004-raise-size-measured.md) |
 | | `situation_label` | 사람이 읽는 설명 |
 | | `action_seq` (TEXT, v12; ②'에서 실측 사이즈로 전환) | **노드 키** — 히어로 결정 직전까지의 액션 시퀀스(예: `"F-R2.5"` = CO vs HJ open, RFI UTG=`""`). 프리플랍 전체 트리 커버리지(④ 데이터 기반 워커)의 조회 키. `F`/`X`/`C`/`R{bb}` 토큰, 포지션 순서 UTG→…→BB. **레이즈 사이즈는 화면에서 읽은 실측값 verbatim**(②' 확정, 2026-07-16 — 깊이별 캐노니컬 사이즈로 뭉개던 ② 방식은 폐기). 저장: 워커(`scripts/collect_gto_tree.py`)가 실측 키를 그대로 저장, `/gto/preflop/save`의 `action_seq` 파라미터로 verbatim 우선(명시 안 하면 레거시 `gto/url_generator.situation_to_node_key`로 근사 파생). 런타임 조회: `gto/advisor.canonical_node_key`가 라이브 시퀀스를 **수집된 형제 노드의 실측 사이즈**로 스냅(하드코딩 테이블 아님, `gto/loader.get_children_by_prefix`로 데이터에서 읽음) — 매칭되는 형제가 없으면 추측하지 않고 `gto_missing_spots_preflop`(`range_type='seq'`)에 큐잉 후 None. nullable |
 | | `hero_position` (TEXT, v12) | 결정 주체(시퀀스 파생, 조회용) |
@@ -104,11 +104,9 @@ v12부터 마이그레이션 스텝은 **SQL 문자열 또는 콜러블**(conn�
 
 > v12 마이그레이션: 컬럼 3개 ADD + `backfill_v12`(결정론적 노드 키 백필, vs_3bet
 > `vs_position` 반쪽 포맷 `"BB"`→`"BTN/BB"` 정규화) + 유니크 인덱스 생성. 데이터 손실 0
-> (기존 11행/1778핸드 보존). `backfill_v12`가 그때 채운 노드 키는 **깊이 캐노니컬
-> 사이즈**(예: 3벳은 항상 `R8`) 방식이라 ②'(실측 사이즈) 원칙과 다르다 — 별도
-> 재마이그레이션 없이 ④ 워커가 실제로 재방문하며 실측 키로 자연히 덮어쓰는 방식으로
-> 처리(D2 결정). 상세: [프리플랍 트리 커버리지 문서](gto-preflop-tree.md) "② 구현 결정" /
-> "데이터 기반 트리 수집 방식" / "확정 결정 D1~D3".
+> (기존 11행/1778핸드 보존). `backfill_v12`가 채운 노드 키는 깊이 캐노니컬 사이즈
+> 방식이었고, 지금은 워커가 저장한 실측 키로 바뀌어 있다([ADR 0009](decisions/0009-measured-size-node-key.md)).
+> 레거시 파생 경로 제거 여부는 DECISIONS D-01.
 
 ### gto_postflop_situations / gto_postflop_hands (v2, 미사용)
 포스트플랍 GTO 데이터용으로 v2에 스키마만 선반영. 아직 데이터 수집 전이라

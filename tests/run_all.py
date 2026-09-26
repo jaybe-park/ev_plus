@@ -3,8 +3,9 @@
 
 사용법:
     python3 tests/run_all.py            # --fast와 동일 (기본값)
-    python3 tests/run_all.py --fast     # test_poker_full.py만 (로직 검증, 수초)
-    python3 tests/run_all.py --full     # test_poker_full.py + test_equity.py
+    python3 tests/run_all.py --fast     # test_poker_full.py + test_gto_tree.py (로직 검증, 수초)
+    python3 tests/run_all.py --full     # test_poker_full.py + test_equity.py + test_grader.py
+                                         # + test_gto_tree.py (프리플랍 GTO 트리 워커 순수 로직)
 
 각 파일은 subprocess로 실행하며, 표준출력을 실시간으로 그대로 릴레이한다
 (자식 프로세스의 print(flush=True) 덕분에 버퍼링 없이 즉시 보임).
@@ -19,8 +20,8 @@ import os
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-FAST_FILES = ["test_poker_full.py"]
-FULL_FILES = ["test_poker_full.py", "test_equity.py", "test_grader.py"]
+FAST_FILES = ["test_poker_full.py", "test_gto_tree.py"]
+FULL_FILES = ["test_poker_full.py", "test_equity.py", "test_grader.py", "test_gto_tree.py"]
 
 
 def run_file(filename: str) -> tuple[bool, float]:

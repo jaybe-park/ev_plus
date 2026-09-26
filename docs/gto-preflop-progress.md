@@ -3,7 +3,7 @@
 자동 생성됨 — `python3 scripts/gto_tree_report.py`로 재생성.
 
 ⚠️ **"전체 대비 %"는 정의하지 않음** — 데이터 기반 수집 원칙상 트리 전체
-규모를 미리 알 수 없다(`docs/gto-preflop-tree.md` 참고). 아래는 지금까지
+규모를 미리 알 수 없다(`spec/gto-preflop.md` 참고). 아래는 지금까지
 **확정 수집(collected) / 발견됐지만 미수집(frontier) / 검증 실패(failed)**
 3분류 현황이다.
 
@@ -297,131 +297,131 @@ graph TD
     n106 --> n125
 
     class n0 collected
-    class n19 frontier
-    class n120 frontier
-    class n123 frontier
-    class n107 frontier
-    class n34 collected
-    class n61 collected
-    class n87 frontier
-    class n35 frontier
-    class n73 frontier
-    class n28 collected
-    class n58 frontier
+    class n32 collected
+    class n82 collected
+    class n92 collected
+    class n83 frontier
+    class n49 frontier
+    class n63 collected
     class n9 collected
-    class n15 collected
-    class n22 unknown
-    class n40 collected
-    class n17 collected
-    class n25 collected
-    class n39 frontier
-    class n42 unknown
-    class n93 collected
-    class n119 frontier
-    class n23 unknown
-    class n52 collected
     class n20 collected
-    class n2 collected
-    class n77 frontier
-    class n46 frontier
-    class n79 collected
-    class n118 frontier
-    class n99 frontier
-    class n64 collected
-    class n5 collected
-    class n89 frontier
-    class n33 collected
-    class n14 frontier
-    class n109 frontier
-    class n36 collected
-    class n3 collected
+    class n39 frontier
     class n71 collected
-    class n54 collected
-    class n21 frontier
+    class n30 collected
+    class n7 collected
+    class n114 frontier
+    class n121 frontier
     class n103 frontier
+    class n91 collected
+    class n122 frontier
+    class n58 frontier
+    class n86 frontier
+    class n5 collected
+    class n55 frontier
+    class n22 unknown
+    class n31 frontier
+    class n47 collected
     class n115 frontier
-    class n59 collected
-    class n67 collected
-    class n51 frontier
+    class n15 collected
+    class n109 frontier
+    class n85 frontier
+    class n81 frontier
+    class n65 unknown
+    class n57 collected
+    class n3 collected
+    class n11 collected
+    class n46 frontier
     class n8 collected
+    class n38 collected
+    class n13 collected
+    class n12 frontier
+    class n17 collected
+    class n36 collected
+    class n74 frontier
+    class n53 frontier
+    class n48 collected
+    class n113 frontier
+    class n44 collected
+    class n23 unknown
     class n56 frontier
     class n66 collected
-    class n62 frontier
-    class n7 collected
-    class n91 collected
-    class n4 collected
-    class n31 frontier
-    class n41 unknown
-    class n84 collected
-    class n1 collected
-    class n18 collected
-    class n88 collected
-    class n60 frontier
-    class n102 collected
-    class n68 collected
-    class n48 collected
-    class n78 frontier
-    class n80 frontier
-    class n75 collected
-    class n104 frontier
-    class n98 collected
-    class n70 frontier
-    class n45 collected
-    class n97 frontier
-    class n117 collected
-    class n6 frontier
-    class n92 collected
-    class n63 collected
-    class n82 collected
-    class n38 collected
-    class n90 frontier
-    class n111 frontier
-    class n43 collected
-    class n13 collected
-    class n50 frontier
-    class n26 collected
-    class n44 collected
-    class n69 collected
-    class n96 collected
-    class n65 unknown
-    class n49 frontier
-    class n16 frontier
-    class n57 collected
+    class n54 collected
     class n116 frontier
-    class n122 frontier
-    class n37 frontier
-    class n105 frontier
-    class n86 frontier
-    class n85 frontier
-    class n101 frontier
-    class n24 collected
-    class n30 collected
-    class n125 frontier
-    class n110 frontier
-    class n94 collected
-    class n95 frontier
-    class n108 frontier
-    class n72 collected
-    class n114 frontier
-    class n29 frontier
-    class n55 frontier
-    class n100 frontier
-    class n27 frontier
-    class n11 collected
-    class n47 collected
-    class n121 frontier
-    class n113 frontier
+    class n87 frontier
+    class n61 collected
+    class n52 collected
     class n10 frontier
-    class n74 frontier
-    class n32 collected
+    class n50 frontier
+    class n64 collected
+    class n102 collected
+    class n108 frontier
+    class n41 unknown
     class n106 collected
-    class n76 frontier
+    class n117 collected
+    class n84 collected
+    class n24 collected
+    class n29 frontier
+    class n34 collected
+    class n60 frontier
+    class n95 frontier
+    class n42 unknown
+    class n21 frontier
     class n112 frontier
-    class n12 frontier
-    class n81 frontier
-    class n53 frontier
-    class n83 frontier
+    class n107 frontier
+    class n51 frontier
+    class n6 frontier
+    class n77 frontier
+    class n68 collected
+    class n35 frontier
+    class n37 frontier
+    class n89 frontier
+    class n43 collected
+    class n111 frontier
+    class n26 collected
+    class n2 collected
+    class n72 collected
+    class n110 frontier
+    class n104 frontier
+    class n14 frontier
     class n124 frontier
+    class n79 collected
+    class n16 frontier
+    class n40 collected
+    class n100 frontier
+    class n88 collected
+    class n120 frontier
+    class n73 frontier
+    class n93 collected
+    class n33 collected
+    class n76 frontier
+    class n90 frontier
+    class n78 frontier
+    class n45 collected
+    class n25 collected
+    class n18 collected
+    class n119 frontier
+    class n99 frontier
+    class n19 frontier
+    class n4 collected
+    class n80 frontier
+    class n118 frontier
+    class n94 collected
+    class n105 frontier
+    class n101 frontier
+    class n96 collected
+    class n75 collected
+    class n1 collected
+    class n59 collected
+    class n125 frontier
+    class n27 frontier
+    class n69 collected
+    class n98 collected
+    class n97 frontier
+    class n62 frontier
+    class n28 collected
+    class n70 frontier
+    class n123 frontier
+    class n67 collected
     classDef collected fill:#22c55e,color:#052e16,stroke:#166534,stroke-width:1px;
     classDef frontier fill:#fbbf24,color:#451a03,stroke:#92400e,stroke-width:1px;
     classDef failed fill:#ef4444,color:#450a0a,stroke:#7f1d1d,stroke-width:1px;
