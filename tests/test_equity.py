@@ -320,6 +320,27 @@ def test_bot_decisions():
         check("BTN 포지션 = 1.0", bot._position_score(st) == 1.0)
         st["positions"] = {"Bot": "SB", "V1": "BTN", "V2": "BB"}
         check("SB 포지션 = 0.0", bot._position_score(st) == 0.0)
+
+        # 숏스택 팟오즈 (T-033): 44 on K9532 리버 vs1 exact 0.562.
+        # 상대 1,000 올인(팟 150 → 1,150). 원값 팟오즈 46.5%+마진 → 폴드,
+        # 스택 100이면 유효 팟오즈 100/350=28.6%+마진 → 콜이어야 한다.
+        def _shove_state():
+            return _bot_state("리버", ["Ks", "9d", "5c", "3h", "2s"], 1150, 1000, players=[
+                {"name": "Bot", "chips": 0, "current_bet": 0,
+                 "is_folded": False, "is_all_in": False, "is_human": False},
+                {"name": "Villain", "chips": 0, "current_bet": 1000,
+                 "is_folded": False, "is_all_in": True, "is_human": True},
+            ])
+        for chips, expect, label in ((100, Action.CALL, "숏스택(100) 큰 올인 → 콜"),
+                                     (5000, Action.FOLD, "딥스택(5000) 같은 올인 → 폴드")):
+            bot = _make_bot(["4h", "4d"], BotDifficulty.HARD)
+            bot.player.chips = chips
+            action, _ = bot.decide_action(_shove_state())
+            check(f"봇 팟오즈 {label}", action == expect, f"={action}")
+        bot = _make_bot(["4h", "4d"], BotDifficulty.HARD)
+        bot.player.chips = 100
+        check("봇 유효 콜·팟 = (100, 250)", bot._effective_call_pot(_shove_state()) == (100, 250),
+              f"={bot._effective_call_pot(_shove_state())}")
     finally:
         if os.path.exists(eq.DB_PATH):
             os.remove(eq.DB_PATH)

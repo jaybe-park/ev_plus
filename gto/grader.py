@@ -7,12 +7,15 @@
   GTO 데이터 없는 스팟은 ⬜ "데이터 없음"
 - 포스트플랍: equity 기반 근사 EV
   · 콜: EV(콜) = equity×(팟+콜) − 콜 → 음수면 감점 + bb 손실 추정
+    (팟·콜은 숏스택이면 유효값 — core/pot_odds.effective_call_pot)
   · 폴드: equity > 팟오즈+마진이었으면 "놓친 EV" 감점
   · 벳/레이즈/체크: 폴드 에퀴티를 몰라 정확 평가 불가 → v1은 제한 판정만
 """
 
 from dataclasses import dataclass
-from typing import Optional, Dict
+from typing import Optional, Dict, Iterable, Tuple
+
+from core.pot_odds import effective_call_pot, call_ev, pot_odds as _pot_odds
 
 
 @dataclass
@@ -71,9 +74,24 @@ def grade_preflop_action(action: str, gto_recommendation: Optional[dict]) -> Gra
     return GradeResult(street="프리플랍", action=action, grade=grade, reason=reason, ev_loss_bb=None)
 
 
-def grade_postflop_call(equity: float, pot: int, call_amount: int, big_blind: int) -> GradeResult:
-    """콜 액션 평가. EV = equity*(pot+call) - call."""
-    ev = equity * (pot + call_amount) - call_amount
+def _effective(pot: int, call_amount: int, stack: Optional[Tuple[int, int, Iterable[int]]]):
+    """stack=(내 남은 칩, 내 기여, 상대 기여들)이면 유효 콜·유효 팟으로 캡, 없으면 원값."""
+    if stack is None:
+        return max(0, call_amount), pot
+    my_chips, my_bet, other_bets = stack
+    return effective_call_pot(pot, call_amount, my_chips, my_bet, other_bets)
+
+
+def grade_postflop_call(
+    equity: float, pot: int, call_amount: int, big_blind: int,
+    stack: Optional[Tuple[int, int, Iterable[int]]] = None,
+) -> GradeResult:
+    """
+    콜 액션 평가. EV = equity*(유효 팟+유효 콜) - 유효 콜.
+    stack=(내 남은 칩, 내 기여, 상대 기여들)을 주면 숏스택 캡을 적용한다(core/pot_odds).
+    """
+    call_amount, pot = _effective(pot, call_amount, stack)
+    ev = call_ev(equity, call_amount, pot)
     if ev < 0:
         ev_loss_bb = -ev / big_blind  # 손실 크기를 양수로 표현 (grade_postflop_fold와 부호 통일)
         reason = f"콜 EV={ev:.1f} (음수) — equity {equity*100:.1f}%로는 손해 콜"
@@ -84,13 +102,16 @@ def grade_postflop_call(equity: float, pot: int, call_amount: int, big_blind: in
 
 
 def grade_postflop_fold(
-    equity: float, pot: int, call_amount: int, big_blind: int, margin: float = 0.05
+    equity: float, pot: int, call_amount: int, big_blind: int, margin: float = 0.05,
+    stack: Optional[Tuple[int, int, Iterable[int]]] = None,
 ) -> GradeResult:
-    """폴드 액션 평가. 팟오즈보다 equity가 충분히 높은데 폴드했으면 놓친 EV."""
-    pot_odds = call_amount / (pot + call_amount) if call_amount > 0 else 0.0
+    """폴드 액션 평가. 팟오즈보다 equity가 충분히 높은데 폴드했으면 놓친 EV.
+    stack은 grade_postflop_call과 같다(숏스택 캡)."""
+    call_amount, pot = _effective(pot, call_amount, stack)
+    pot_odds = _pot_odds(call_amount, pot)
 
     if equity > pot_odds + margin:
-        ev = equity * (pot + call_amount) - call_amount
+        ev = call_ev(equity, call_amount, pot)
         ev_loss_bb = ev / big_blind  # 콜했다면 얻었을 EV = 폴드로 놓친 EV (양수)
         reason = f"equity {equity*100:.1f}%가 팟오즈 {pot_odds*100:.1f}%보다 충분히 높은데 폴드 — 놓친 EV"
         return GradeResult(street="", action="fold", grade="🔴", reason=reason, ev_loss_bb=ev_loss_bb)

@@ -12,6 +12,7 @@ from typing import List, Optional, Dict
 
 from core.game import TexasHoldem, Action, Street
 from core.player import Player
+from core.pot_odds import effective_call_pot, pot_odds as calc_pot_odds, call_ev as calc_call_ev
 from ai.bot import PokerBot, BotDifficulty, opponent_range_info
 from ai.equity import smart_equity, ranged_equity
 from gto.advisor import GTOAdvisor
@@ -666,6 +667,11 @@ class WebGameSession:
         gs["action_log"] = self.action_log
         return gs
 
+    def _human_stack(self) -> tuple:
+        """유효 콜·팟 계산용 (내 남은 칩, 내 핸드 기여, 다른 모두의 핸드 기여 — 폴드 포함)."""
+        others = [p.total_bet_this_round for p in self.game.players if p is not self.human]
+        return self.human.chips, self.human.total_bet_this_round, others
+
     def _record_equity_history(self, vs_random: float) -> None:
         """스트리트당 한 번만 vs_random 히스토리에 기록"""
         street_name = self.game.current_street.value
@@ -740,10 +746,12 @@ class WebGameSession:
             })
         opponents_out.sort(key=lambda o: o["equity"])
 
-        pot_odds = call_amount / (pot + call_amount) if call_amount > 0 else 0.0
+        # 숏스택 캡: 실제로 걸리는 칩(유효 콜)과 이길 수 있는 팟(유효 팟) 기준 (T-033)
+        eff_call, eff_pot = effective_call_pot(pot, call_amount, *self._human_stack())
+        pot_odds = calc_pot_odds(eff_call, eff_pot)
         call_ev_bb = None
-        if call_amount > 0 and big_blind:
-            call_ev_bb = (vs_random * (pot + call_amount) - call_amount) / big_blind
+        if eff_call > 0 and big_blind:
+            call_ev_bb = calc_call_ev(vs_random, eff_call, eff_pot) / big_blind
 
         info = {
             "vs_random": round(vs_random, 4),
@@ -792,10 +800,11 @@ class WebGameSession:
             elif vs_random is not None:
                 pot = self.game.pot
                 big_blind = self.game.big_blind
+                stack = self._human_stack()  # 숏스택 캡 (T-033)
                 if action == Action.CALL:
-                    grade = grade_postflop_call(vs_random, pot, call_amt, big_blind)
+                    grade = grade_postflop_call(vs_random, pot, call_amt, big_blind, stack=stack)
                 elif action == Action.FOLD:
-                    grade = grade_postflop_fold(vs_random, pot, call_amt, big_blind)
+                    grade = grade_postflop_fold(vs_random, pot, call_amt, big_blind, stack=stack)
                 else:
                     grade = grade_postflop_bet_or_raise(vs_random, action.value)
 

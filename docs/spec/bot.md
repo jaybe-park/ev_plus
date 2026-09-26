@@ -26,6 +26,7 @@
 - equity: hard는 상대 레인지 정보가 하나라도 있으면 `ranged_equity`, 없으면(모두 unknown) `smart_equity`(vs 랜덤, 캐시 활용). easy·medium은 항상 `smart_equity` — 근거: [0014](../decisions/0014-difficulty-is-mc-resolution.md) · 강제 장치: 장치 없음
 - 상대 레인지(hard·에퀴티 패널 공용, `opponent_range_info`): 프리플랍 레이저 → 그 포지션 RFI 레이즈 레인지, 오프너에게 콜한 사람 → 그 오프너 상대 콜 레인지, 그 외 → 랜덤. 레인지는 GTO 빈도가 가중치(빈도 ≤ 2%인 핸드 제외) — 강제 장치: `tests/test_equity.py::test_ranged_equity`(샘플러·콤보 수·블로커. 역할 판정은 장치 없음)
 - 벳을 받으면: equity가 레이즈 기준 이상이면 레이즈(트랩 빈도만큼 콜) → 드로우면 포지션 가중 세미블러프 레이즈 → 아니면 `equity ≥ 팟오즈 + 콜 마진 + 어그레션 마진 × min(벳/팟, 1.2)`이면 콜, 아니면 폴드. 드로우는 마진 −0.04(임플라이드 오즈) — 근거: [0015](../decisions/0015-aggression-margin.md) · 강제 장치: `tests/test_equity.py::test_bot_decisions`(넛 폴드 없음, 트래시 폴드, 좋은 오즈 드로우 폴드 없음)
+- 팟오즈(포스트플랍·프리플랍 휴리스틱)는 유효 콜·유효 팟 기준이다(`core/pot_odds.effective_call_pot`, 패널·Play Grader와 같은 함수). game_state에는 이번 스트리트 기여(`players[].current_bet`)만 있어 스트리트 기준으로 넘긴다 — 액션 중인 플레이어는 이전 스트리트를 모두 맞췄으므로 핸드 전체 기준과 같다. 어그레션 마진의 벳/팟은 캡하지 않은 원래 벳 크기(상대 레인지 신호)다 — 강제 장치: `tests/test_equity.py::test_bot_decisions`(스택 100이면 1,000 올인에 콜, 스택 5,000이면 폴드)
 - 벳이 없으면: equity ≥ 0.85 → 크게 벳(트랩 빈도만큼 체크) / 밸류 기준 이상 → 30% 체크 믹스, 드라이 보드 33% 팟·웻 보드 66~85% 팟 / 드로우 세미블러프 / equity < 0.30이면 포지션·상대 수로 나눈 순수 블러프(리버 ×1.2) / 나머지 체크 — 강제 장치: `tests/test_equity.py::test_bot_decisions`(트래시 대부분 체크, hard 세미블러프 발생)
 - 드로우 = 현재 하이카드인데 equity ≥ 0.30 (리버 제외). 멀티웨이는 상대 1명 추가마다 밸류·레이즈 기준 +4%p — 강제 장치: `tests/test_equity.py::test_made_hand_rank`
 - 포지션 점수 = 살아 있는 사람 중 포스트플랍 액션 순서(0.0 첫 ~ 1.0 마지막, 헤즈업은 BTN/SB가 마지막). 블러프·세미블러프 빈도에 곱한다 — 강제 장치: `tests/test_equity.py::test_bot_decisions`
@@ -36,6 +37,8 @@
 - 사람 액션만, 액션 적용 **전**의 팟·베팅으로 평가한다. 아레나처럼 `equity_enabled=False`인 세션은 평가·패널 계산을 건너뛴다 — 강제 장치: `tests/test_grader.py::test_session_equity_and_review`
 - 프리플랍: GTO 최빈 액션 = ✅, 선택 빈도 > 25% 🟡, 5~25% 🟠, < 5% 🔴, 데이터 없음 ⬜ — 강제 장치: `tests/test_grader.py::test_preflop_grading`, `tests/test_equity.py::test_grader`
 - 포스트플랍(vs_random equity 기준): 콜은 `EV = equity×(팟+콜) − 콜`이 음수면 🔴 + 손실 bb, 폴드는 equity > 팟오즈 + 0.05면 🔴 "놓친 EV", 벳/레이즈/체크는 폴드 에퀴티를 모르므로 제한 판정(equity > 0.7 체크 ⚠️, < 0.3 레이즈 🟡 블러프, 그 외 ⬜) — 강제 장치: `tests/test_grader.py::test_postflop_call_grading`, `::test_postflop_fold_grading`, `::test_postflop_bet_grading`
+- 콜·폴드 판정의 팟·콜은 유효값이다: 세션이 `stack=(내 남은 칩, 내 핸드 기여, 다른 모두의 핸드 기여)`를 넘기고 grader가 `core/pot_odds.effective_call_pot`으로 캡한다. 예: 팟 100, 상대 1,000 올인, 내 스택 100, 에퀴티 40% → 콜 EV +20 ✅ — 강제 장치: `tests/test_grader.py::test_short_stack_effective_call`(순수 함수 + 세션 `_get_equity_info`/`_grade_human_action` 경로)
+- 콜 판정 경계(콜 마진 0 vs 폴드 마진 0.05, MC 오차)는 D-29 대기
 
 ### 검증·튜닝
 - 봇 로직을 바꾸면 `scripts/ai_regression.py`로 legacy(개선 전 휴리스틱 봇) 대비 후퇴가 없는지 확인한다. ±10~20 bb/100은 노이즈 — 근거: [0016](../decisions/0016-bot-validation-arena-legacy.md) · 강제 장치: `scripts/ai_regression.py`(수동, exit 1) — `tests/run_all.py`에 없음
@@ -49,6 +52,7 @@
 |---|---|---|
 | `ai/bot.py` | `PokerBot`, `POSTFLOP_PROFILES`, `PERSONAS`, `opponent_range_info` | 수치 원본 |
 | `gto/grader.py` | 평가 순수 함수 | 호출: `server/session.py::_grade_human_action` |
+| `core/pot_odds.py` | 유효 콜·유효 팟·팟오즈·콜 EV | 봇·grader·패널 공용 |
 | 게임 상태 `hand_review` / `/session/review` | 핸드·세션 평가 결과 | 필드는 FastAPI `/docs` |
 | `players_state`/액션 기록의 `equity` | 봇은 직전 포스트플랍 결정 equity(프리플랍 None), 사람은 평가 시 vs_random | `db/recorder.py` |
 | `tuning_results.json` | 튜닝 이력(누적, gitignore) | 루트 |
