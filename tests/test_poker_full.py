@@ -1858,10 +1858,9 @@ def _scripted_session(num_bots, scripts=None, chips=None, dealer_index=0, sb=10)
     scripts = scripts or {}
     for name, bot in list(sess.bots.items()):
         sess.bots[name] = StubBot(bot.player, scripts.get(name))
-    sess.get_state()  # 생성자 이벤트 비우기
     sess.hand_over = True
-    sess.next_hand()
-    return sess, sess.get_state()["events"]
+    events = sess.next_hand()
+    return sess, events
 
 
 def _action_events(events):
@@ -1921,8 +1920,7 @@ def test_8_4_headsup_human_btnsb_acts_first():
     assert not _action_events(events), f"BTN/SB(사람)보다 먼저 행동한 사람이 있음: {events}"
     state = sess.get_state()
     assert state["waiting_for_action"] and state["call_amount"] == 10
-    sess.submit_action("call", 0)
-    acts = _action_events(sess.get_state()["events"])
+    acts = _action_events(sess.submit_action("call", 0))
     assert [a["position"] for a in acts[:2]] == ["BTN/SB", "BB"], \
         f"림프 뒤 BB가 행동해야 함: {[(a['position'], a['action']) for a in acts]}"
 
@@ -1969,16 +1967,15 @@ def _flop_bet_scenario(beta_stack):
     sess.submit_action("call", 0)
     state = sess.get_state()
     assert state["street"] == "플랍" and state["waiting_for_action"], state["street"]
-    sess.submit_action("raise", 100)
-    return sess
+    return sess, sess.submit_action("raise", 100)
 
 
 def test_8_6_short_allin_under_call_does_not_reopen():
     """T-020: 벳 100 → 콜 → 50 올인(콜도 못 채움) 뒤 처음 벳한 사람에게 액션이 다시
     오지 않는다(라운드 종료)."""
-    sess = _flop_bet_scenario(beta_stack=70)
+    sess, events = _flop_bet_scenario(beta_stack=70)
     state = sess.get_state()
-    flop_acts = [(a["player"], a["action"]) for a in _action_events(state["events"])
+    flop_acts = [(a["player"], a["action"]) for a in _action_events(events)
                  if a["street"] == "플랍"]
     assert flop_acts == [("Human", "raise"), ("🤖 Alpha", "call"), ("🤖 Beta", "allin")], \
         f"50 올인 뒤 재오픈되면 안 됨: {flop_acts}"
@@ -1988,7 +1985,7 @@ def test_8_6_short_allin_under_call_does_not_reopen():
 def test_8_7_incomplete_raise_allin_call_or_fold_only():
     """T-020: 벳 100 → 콜 → 150 올인(최소 레이즈 미만) 뒤 처음 벳한 사람은 콜/폴드만."""
     from core.game import IllegalActionError
-    sess = _flop_bet_scenario(beta_stack=170)
+    sess, _ = _flop_bet_scenario(beta_stack=170)
     state = sess.get_state()
     assert state["waiting_for_action"] and state["call_amount"] == 50, \
         f"사람이 50을 더 콜해야 함: call={state['call_amount']}"
@@ -2020,8 +2017,7 @@ def test_8_9_raise_over_stack_becomes_allin():
     """T-020: 칩 300으로 1000 레이즈를 보내면 300 올인이 되고, 유령 베팅이 생기지 않는다."""
     # 딜러=사람(3인이라 UTG 겸 BTN, 프리플랍 첫 행동). 봇은 콜 금액만큼 콜(스텁).
     sess, _ = _scripted_session(2, dealer_index=0, chips=[300, 1000, 1000])
-    sess.submit_action("raise", 1000)
-    events = _action_events(sess.get_state()["events"])
+    events = _action_events(sess.submit_action("raise", 1000))
     h_act = next(a for a in events if a["player"] == "Human")
     assert h_act["action"] == "allin", f"스택 초과 레이즈는 올인: {h_act}"
     assert sess.human.is_all_in and sess.human.total_bet_this_round == 300
@@ -2036,12 +2032,12 @@ def test_8_13_runout_when_one_player_can_act():
     (남은 봇·사람에게 스트리트마다 액션을 묻지 않음)."""
     # ① 사람(BTN/SB, 500) 프리플랍 올인 → 봇(1000) 콜 → 봇만 칩이 남아도 액션 없이 쇼다운
     sess, _ = _scripted_session(1, dealer_index=0, chips=[500, 1000])
-    sess.submit_action("allin", 0)
+    ev = sess.submit_action("allin", 0)
     st = sess.get_state()
-    post = [a for a in _action_events(st["events"]) if a["street"] != "프리플랍"]
+    post = [a for a in _action_events(ev) if a["street"] != "프리플랍"]
     assert not post, f"상대가 전부 올인인데 포스트플랍 액션을 물음: {[(a['player'], a['action']) for a in post]}"
     assert st["hand_over"] and len(st["community_cards"]) == 5
-    assert [e["street"] for e in st["events"] if e["type"] == "street_start"] == ["플랍", "턴", "리버"]
+    assert [e["street"] for e in ev if e["type"] == "street_start"] == ["플랍", "턴", "리버"]
 
     # ② 봇 올인 → 사람 콜 → 사람에게 자동 체크 이벤트 없이 런아웃
     sess, _ = _scripted_session(1, dealer_index=0, chips=[1000, 400],
@@ -2049,9 +2045,9 @@ def test_8_13_runout_when_one_player_can_act():
     sess.submit_action("raise", 60)   # BTN/SB 오픈 → BB 봇 올인 400
     st = sess.get_state()
     assert st["waiting_for_action"] and st["call_amount"] == 340, st["call_amount"]
-    sess.submit_action("call", 0)
+    ev = sess.submit_action("call", 0)
     st = sess.get_state()
-    post = [a for a in _action_events(st["events"]) if a["street"] != "프리플랍"]
+    post = [a for a in _action_events(ev) if a["street"] != "프리플랍"]
     assert not post, f"사람에게 무의미한 체크가 생김: {[(a['player'], a['action']) for a in post]}"
     assert st["hand_over"] and len(st["community_cards"]) == 5
 
@@ -2093,7 +2089,7 @@ def test_8_10_illegal_check_rejected_not_recorded():
     except IllegalActionError:
         pass
     state = sess.get_state()
-    assert state["events"] == [], f"거절된 액션이 이벤트를 남김: {state['events']}"
+    assert sess._events == [], f"거절된 액션이 이벤트를 남김: {sess._events}"
     assert sess.action_log == log_before, "거절된 체크가 액션 로그에 남음"
     assert len(sess.recorder._pending_preflop) == rec_before, "거절된 체크가 RL 기록에 남음"
     assert _total_chips(sess) == total and state["waiting_for_action"]
@@ -2130,8 +2126,7 @@ def test_8_11_bot_illegal_action_falls_back():
         # 딜러=사람(UTG). 사람 레이즈 60 → Alpha(SB)가 불법 체크 → 폴드로 대체
         sess, _ = _scripted_session(2, dealer_index=0,
                                     scripts={"🤖 Alpha": [(Action.CHECK, 0)]})
-        sess.submit_action("raise", 60)
-        acts = _action_events(sess.get_state()["events"])
+        acts = _action_events(sess.submit_action("raise", 60))
         alpha = next(a for a in acts if a["player"] == "🤖 Alpha")
         assert alpha["action"] == "fold", f"불법 체크는 폴드로 대체: {alpha}"
         assert any("Alpha" in m and "불법" in m for m in records), f"경고 로그 없음: {records}"
@@ -2231,7 +2226,7 @@ def test_8_12_session_fuzz_event_amounts_and_conservation():
                     guard += 1
                     assert guard < 60, "핸드가 끝나지 않음"
                     st = sess.get_state()
-                    _walk_events(st["events"], chips, bets)
+                    assert st["events"] == [], "get_state가 이벤트를 내보냄(순수 조회 위반)"
                     assert _total_chips(sess) == total, "칩 보존 위반"
                     if not st["waiting_for_action"]:
                         break
@@ -2239,18 +2234,16 @@ def test_8_12_session_fuzz_event_amounts_and_conservation():
                     amt = rng.randint(0, st["current_bet"] * 4 + 100)
                     log_len = len(sess.action_log)
                     try:
-                        sess.submit_action(act, amt)
+                        ev = sess.submit_action(act, amt)
                     except IllegalActionError:
                         assert len(sess.action_log) == log_len and _total_chips(sess) == total
-                        sess.submit_action("call" if st["call_amount"] > 0 else "check", 0)
-                st = sess.get_state()
-                _walk_events(st["events"], chips, bets)
+                        ev = sess.submit_action("call" if st["call_amount"] > 0 else "check", 0)
+                    _walk_events(ev, chips, bets)
                 assert _total_chips(sess) == total, "칩 보존 위반(핸드 종료)"
                 hands += 1
                 btn_label = "BTN/SB" if len(sess.game.players) == 2 else "BTN"
                 prev_btn = _labels(sess)[btn_label]
-                sess.next_hand()
-                events = sess.get_state()["events"]
+                events = sess.next_hand()
                 if not sess.game_over:
                     # ④ 무빙 버튼(ADR 0036): 파산 전환 포함, 버튼 = 직전 버튼 다음 생존자
                     alive = {p.name for p in sess.game.players}
@@ -2371,6 +2364,174 @@ def test_8_17_odd_chip_to_first_winner_left_of_button():
         f"홀수 칩은 버튼(Alpha) 왼쪽 Beta에게: {chips}"
 
 
+def _api_client():
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from fastapi.testclient import TestClient
+        from server.main import app, sessions
+    return TestClient(app), sessions
+
+
+class _SlowBot(StubBot):
+    """동시성 테스트용: 판단마다 잠깐 멈춰 요청이 겹칠 틈을 만든다(콜/체크)."""
+
+    def decide_action(self, game_state):
+        time.sleep(0.02)
+        return super().decide_action(game_state)
+
+
+def test_8_18_concurrent_requests_do_not_steal_or_duplicate_events():
+    """T-026: 같은 세션에 요청이 겹쳐도(탭 두 개·연타) 이벤트가 빠지거나 중복되지 않는다.
+    ① 액션 요청 진행 중 들어온 GET state는 그 액션의 이벤트를 가로채지 않는다(get_state 순수)
+    ② '다음 핸드' 동시 2회 → 핸드는 하나만 넘어가고 딜 이벤트도 한 벌만 나온다."""
+    import threading as _th
+    client, sessions = _api_client()
+    sess, _ = _scripted_session(4, dealer_index=1)   # 5인: BTN=Alpha, 사람=CO
+    for name, bot in list(sess.bots.items()):
+        sess.bots[name] = _SlowBot(bot.player)
+    sid = "api-t026-a"
+    sessions[sid] = sess
+    try:
+        # get_state는 순수: 두 번 불러도 같은 결과, 이벤트 없음
+        assert sess.get_state() == sess.get_state()
+        assert sess.get_state()["events"] == []
+
+        results = {}
+        log_before = len(sess.action_log)
+
+        def do_action():
+            results["action"] = client.post(f"/game/{sid}/action",
+                                            json={"action": "fold", "amount": 0}).json()
+
+        def do_gets():
+            results["gets"] = [client.get(f"/game/{sid}/state").json() for _ in range(8)]
+
+        t1 = _th.Thread(target=do_action)
+        t2 = _th.Thread(target=do_gets)
+        t1.start()
+        time.sleep(0.005)
+        t2.start()
+        t1.join()
+        t2.join()
+        acts = _action_events(results["action"]["events"])
+        n_log_actions = sum(1 for line in sess.action_log[log_before:]
+                            if ":" in line and "🏆" not in line)
+        assert len(acts) == n_log_actions and acts, \
+            f"액션 응답 이벤트 {len(acts)}개 ≠ 실제 액션 {n_log_actions}개"
+        stolen = [e for g in results["gets"] for e in g["events"]]
+        assert not stolen, f"GET state가 이벤트를 가로챔: {len(stolen)}개"
+        assert results["action"]["hand_over"]
+
+        # ② 다음 핸드 동시 2회
+        hand_no = sess.hand_number
+        res = []
+
+        def do_next():
+            res.append(client.post(f"/game/{sid}/next-hand").json())
+
+        ts = [_th.Thread(target=do_next) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        assert sess.hand_number == hand_no + 1, f"핸드가 한 번만 넘어가야 함: {hand_no} → {sess.hand_number}"
+        deals = [e for r in res for e in r["events"] if e["type"] == "deal_card"]
+        assert len(deals) == 2 * len(sess.game.players), \
+            f"딜 이벤트는 한 벌(2×{len(sess.game.players)})만: {len(deals)}"
+    finally:
+        sessions.pop(sid, None)
+
+
+class _BrokenBot(StubBot):
+    """판단 중 예외를 던지는 봇(예외 주입)."""
+
+    def decide_action(self, game_state):
+        raise RuntimeError("주입된 봇 오류")
+
+
+def test_8_19_bot_exception_logged_and_game_continues():
+    """T-026: 봇 판단에서 예외가 나도 게임이 멈추지 않는다 — 오류는 로그에 남고 그 봇은
+    안전 폴백(콜할 금액 있으면 폴드, 없으면 체크)으로 진행된다."""
+    import logging
+    records = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    lg = logging.getLogger("server.session")
+    h = _H(level=logging.ERROR)
+    lg.addHandler(h)
+    old_level = lg.level
+    lg.setLevel(logging.ERROR)
+    lg.propagate = False  # 콘솔 트레이스백은 숨기고 핸들러로만 수집
+    try:
+        # 딜러=사람(3인 UTG). 사람 레이즈 60 → Alpha(SB) 예외 → 폴드, Beta 콜
+        sess, _ = _scripted_session(2, dealer_index=0)
+        sess.bots["🤖 Alpha"] = _BrokenBot(sess.bots["🤖 Alpha"].player)
+        total = _total_chips(sess)
+        ev = sess.submit_action("raise", 60)
+        alpha = [a for a in _action_events(ev) if a["player"] == "🤖 Alpha"]
+        assert alpha and alpha[0]["action"] == "fold", f"예외 봇은 폴드로 대체돼야 함: {alpha}"
+        assert any("Alpha" in m and "오류" in m for m in records), f"오류 로그 없음: {records}"
+        st = sess.get_state()
+        assert st["waiting_for_action"] or st["hand_over"], "게임이 봇 차례에 멈춤"
+        assert _total_chips(sess) == total
+
+        # 체크 가능한 상황에서는 체크로: 헤즈업, 사람 BTN/SB 림프 → BB(예외) 체크 → 플랍
+        sess, _ = _scripted_session(1, dealer_index=0)
+        sess.bots["🤖 Alpha"] = _BrokenBot(sess.bots["🤖 Alpha"].player)
+        ev = sess.submit_action("call", 0)
+        alpha = [a for a in _action_events(ev) if a["player"] == "🤖 Alpha"]
+        assert alpha and alpha[0]["action"] == "check", f"콜할 금액 없으면 체크: {alpha}"
+        assert sess.get_state()["street"] == "플랍" and sess.get_state()["waiting_for_action"]
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(old_level)
+        lg.propagate = True
+
+
+def test_8_20_get_state_recovers_stuck_bot_turn():
+    """T-026: 요청 중간 오류로 세션이 봇 차례에 멈춰 있으면 GET state가 사람 차례(또는 핸드
+    종료)까지 진행해 복구하고, 실패한 요청의 이벤트를 다시 내보내지 않는다."""
+    import logging
+    client, sessions = _api_client()
+    sess, _ = _scripted_session(2, dealer_index=0)   # 사람 UTG
+    real = sess._run_until_human
+
+    def boom():
+        raise RuntimeError("주입된 진행 오류")
+
+    sess._run_until_human = boom
+    try:
+        sess.submit_action("raise", 60)
+        raise AssertionError("주입한 오류가 전파되지 않음")
+    except RuntimeError:
+        pass
+    sess._run_until_human = real
+    assert sess.needs_recovery(), "사람 액션 뒤 봇 차례에 멈춘 상태여야 함"
+
+    sid = "api-t026-c"
+    sessions[sid] = sess
+    lg = logging.getLogger("server.session")
+    old_level = lg.level
+    lg.setLevel(logging.ERROR)
+    try:
+        st = client.get(f"/game/{sid}/state").json()
+        assert st["waiting_for_action"] or st["hand_over"], "GET state가 복구하지 못함"
+        players = [e["player"] for e in _action_events(st["events"])]
+        assert "Human" not in players, f"실패한 요청의 사람 액션 이벤트가 다시 나옴: {players}"
+        assert players, "복구 진행의 봇 액션 이벤트가 실려야 함"
+        # 정상 상태에서 GET은 아무것도 바꾸지 않는다
+        log_before = list(sess.action_log)
+        st2 = client.get(f"/game/{sid}/state").json()
+        assert st2["events"] == [] and sess.action_log == log_before
+    finally:
+        lg.setLevel(old_level)
+        sessions.pop(sid, None)
+
+
 # ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
@@ -2480,6 +2641,9 @@ ALL_TESTS = [
     ("8-15 파산 전환 시 무빙 버튼(ADR 0036)",     test_8_15_moving_button_on_bust),
     ("8-16 핸드 종료 응답 포지션 = 방금 핸드",     test_8_16_hand_over_positions_are_played_hand),
     ("8-17 홀수 칩 → 버튼 왼쪽 첫 승자",          test_8_17_odd_chip_to_first_winner_left_of_button),
+    ("8-18 동시 요청: 이벤트 가로채기·중복 없음",  test_8_18_concurrent_requests_do_not_steal_or_duplicate_events),
+    ("8-19 봇 판단 예외 → 로그+안전 폴백",         test_8_19_bot_exception_logged_and_game_continues),
+    ("8-20 GET state가 멈춘 봇 차례 복구",          test_8_20_get_state_recovers_stuck_bot_turn),
 ]
 
 

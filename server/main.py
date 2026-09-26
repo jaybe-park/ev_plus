@@ -27,6 +27,16 @@ app.add_middleware(
 sessions: Dict[str, WebGameSession] = {}
 
 
+def _get_session(session_id: str) -> WebGameSession:
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    return session
+
+
+# 게임 엔드포인트는 동기 def라 FastAPI 스레드풀에서 동시에 돈다. 같은 세션에 대한 요청은
+# session.lock으로 직렬화하고, 이벤트는 그 요청이 만든 것만 응답에 싣는다(T-026).
+
 @app.post("/game/start", response_model=GameStateResponse)
 def start_game(req: StartGameRequest):
     session_id = str(uuid.uuid4())
@@ -39,47 +49,44 @@ def start_game(req: StartGameRequest):
         small_blind=req.big_blind // 2,  # BB 입력 → SB = BB / 2
     )
     sessions[session_id] = session
-    return session.get_state()
+    with session.lock:
+        return session.get_state(session.start_events)
 
 
 @app.get("/game/{session_id}/state", response_model=GameStateResponse)
 def get_state(session_id: str):
-    session = sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-    return session.get_state()
+    """현재 상태 조회. 봇 차례에 멈춘 세션(요청 중간 오류의 흔적)이면 사람 차례까지
+    진행해 복구하고 그 이벤트를 싣는다. 정상 세션이면 상태를 바꾸지 않는다(events=[])."""
+    session = _get_session(session_id)
+    with session.lock:
+        return session.get_state(session.recover())
 
 
 @app.post("/game/{session_id}/action", response_model=GameStateResponse)
 def submit_action(session_id: str, req: ActionRequest):
-    session = sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-    try:
-        session.submit_action(req.action, req.amount)
-    except IllegalActionError as e:
-        # 불법 액션은 상태를 바꾸지 않고 거절한다(기록·방송·평가 없음)
-        raise HTTPException(status_code=400, detail=str(e))
-    return session.get_state()
+    session = _get_session(session_id)
+    with session.lock:
+        try:
+            events = session.submit_action(req.action, req.amount)
+        except IllegalActionError as e:
+            # 불법 액션은 상태를 바꾸지 않고 거절한다(기록·방송·평가 없음)
+            raise HTTPException(status_code=400, detail=str(e))
+        return session.get_state(events)
 
 
 @app.post("/game/{session_id}/next-hand", response_model=GameStateResponse)
 def next_hand(session_id: str):
-    session = sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-    session.next_hand()
-    return session.get_state()
+    session = _get_session(session_id)
+    with session.lock:
+        return session.get_state(session.next_hand())
 
 
 @app.get("/session/{session_id}/review", response_model=SessionReviewResponse)
 def get_session_review(session_id: str):
     """세션 전체 누적 플레이 평가 요약."""
-    session = sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-
-    reviews = session.session_reviews
+    session = _get_session(session_id)
+    with session.lock:
+        reviews = list(session.session_reviews)
     total_actions = len(reviews)
 
     grade_counts: Dict[str, int] = {}

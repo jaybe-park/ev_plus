@@ -94,13 +94,33 @@
 - `POST /game/{id}/action`은 사람 액션을 적용한 뒤 `_run_until_human()`으로 봇을 자동
   처리한다: 각 봇은 `PokerBot.decide_action(game_state)`로 결정하고, 라운드가 끝나면
   스트리트를 전환한다.
+- 동시성: 게임 엔드포인트는 동기 `def`라 FastAPI 스레드풀에서 동시에 돈다. 같은 세션에 대한
+  요청(상태 조회·액션·다음 핸드·리뷰)은 세션별 `WebGameSession.lock`(RLock)으로 직렬화한다
+  — 탭 두 개·연타로 요청이 겹쳐도 이벤트가 빠지거나 중복되지 않고, "다음 핸드" 동시 요청도
+  한 핸드만 넘어간다 — 강제 장치:
+  `tests/test_poker_full.py::test_8_18_concurrent_requests_do_not_steal_or_duplicate_events`
+- 봇 판단 예외: `decide_action`이 예외를 던지거나 `Action`이 아닌 값을 돌려주면 세션이
+  잡아 `server.session` 로거에 오류(트레이스백 포함)를 남기고 core `fallback_action(봇,
+  CHECK)`(콜할 금액이 없으면 체크, 있으면 폴드)으로 대신해 게임을 계속한다 — 강제 장치:
+  `tests/test_poker_full.py::test_8_19_bot_exception_logged_and_game_continues`
+- 자가 복구: 요청 중간의 예상 못 한 오류로 세션이 "핸드 진행 중인데 사람 차례가 아님"에
+  멈춰 있으면(`needs_recovery()`), `GET /game/{id}/state`가 `recover()`로 사람 차례·핸드
+  종료까지 진행하고 그 이벤트를 싣는다(경고 로그). 정상 세션에서 GET은 상태를 바꾸지 않는다
+  (`events=[]`) — 강제 장치: `tests/test_poker_full.py::test_8_20_get_state_recovers_stuck_bot_turn`
 - 런아웃: 행동 가능한(폴드·올인 아닌) 플레이어가 1명뿐이고 그가 콜할 금액이 없으면 라운드가
   끝난 것으로 본다(core `_is_round_over`, 사람·봇 공통). 남은 스트리트는 액션 이벤트 없이
   `street_start`·`community_card`만 나오고 쇼다운으로 간다 — 무의미한 체크·"올인!" 이벤트,
   RL 기록, 봇 MC 계산이 생기지 않는다. 콜할 금액이 있으면(예: 상대가 더 큰 올인) 그 사람에게는
   묻는다 — 강제 장치: `tests/test_poker_full.py::test_8_13_runout_when_one_player_can_act`
-- 한 응답 안의 `events[]`는 그 요청에서 새로 발생한 것만 담고(`get_state()` 호출 시
-  큐가 비워짐), 순서는 실제 발생 순서와 같다. 이벤트 종류: `deal_card`(카드 딜, 라운드 1·2) →
+- 한 응답 안의 `events[]`는 그 요청에서 새로 발생한 것만 담고, 순서는 실제 발생 순서와
+  같다. 상태를 바꾸는 세션 메서드(`submit_action`/`next_hand`/`recover`)가 그 호출에서 생긴
+  이벤트 목록을 반환하고, 엔드포인트가 그것을 `get_state(events)`에 넘긴다. `get_state()`는
+  순수 조회라 이벤트 버퍼를 읽거나 비우지 않는다(첫 핸드 이벤트는 생성자가
+  `start_events`에 담아 `POST /game/start`가 싣는다). 중간에 실패한 요청의 이벤트는 다음
+  응답에 다시 나오지 않는다 — 강제 장치:
+  `tests/test_poker_full.py::test_8_18_concurrent_requests_do_not_steal_or_duplicate_events`,
+  `::test_8_12_session_fuzz_event_amounts_and_conservation`(매 조회 `events == []`) ·
+  이벤트 종류: `deal_card`(카드 딜, 라운드 1·2) →
   `blind`(SB/BB 포스팅) → `action`(폴드/체크/콜/레이즈/올인) → `street_start`(스트리트 전환) →
   `community_card`(커뮤니티 카드 1장씩) → `showdown`(봇 카드 공개) → `winner`(팟 지급) —
   강제 장치: 장치 없음(순서 불변식 자체를 검증하는 테스트 없음)
@@ -159,7 +179,7 @@
 | 엔드포인트 | 용도 |
 |---|---|
 | `POST /game/start` | 세션 생성, 첫 핸드 시작 후 사람 차례까지 자동 진행 |
-| `GET /game/{id}/state` | 현재 `GameState` 조회 |
+| `GET /game/{id}/state` | 현재 `GameState` 조회(봇 차례에 멈춘 세션이면 복구 진행) |
 | `POST /game/{id}/action` | 사람 액션 제출 → 봇 자동 처리 → 다음 상태. 불법 액션은 400(상태 무변경) |
 | `POST /game/{id}/next-hand` | `hand_over=true`일 때 다음 핸드 시작(핸드 중이면 무시하고 현재 상태 반환) |
 | `GET /session/{id}/review` | 세션 누적 플레이 평가 요약 |
@@ -180,6 +200,10 @@ GTO 관리 API(`/gto/preflop/*`)는 이 문서 담당이 아니다 — 규칙은
   버튼을 `can_raise`로 숨기는 것은 UI 변경이라 별도 확인 필요.
 - 이벤트 금액·칩 보존·버튼 이동은 세션 퍼저(`test_8_12`)가 검사하지만, 이벤트 종류 순서·카드
   공개 규칙 전체에 대한 전수 불변식 테스트는 없다(T-024 퍼저 확장 대상).
+- `get_state()`는 게임 상태·이벤트를 바꾸지 않지만, 에퀴티 패널 계산 결과를 결정 지점 단위
+  캐시(`_equity_cache`)와 스트리트별 history에 한 번 기록한다(같은 결정 지점 재조회는 같은
+  값). 에퀴티 모듈의 전역 캐시 기여 버퍼는 세션 락 밖이라 세션 간 동시 접근에 무락이다 —
+  에퀴티 캐시 폐기(T-036)에서 버퍼 자체가 사라질 예정이라 여기서 따로 잠그지 않았다.
 - CLI(`cli/main.py`)는 아직 core `showdown()`의 인덱스 기반 `_advance_dealer()` 후 파산자를
   지우는 옛 버튼 방식이다(무빙 버튼은 웹 세션만). core 단일화 T-024에서 함께 정리한다.
 - `GameState.gto_hint`/`gto_key`는 서로 다른 판정 경로(advisor vs `action_log` 문자열
