@@ -20,17 +20,18 @@
 | [0014](0014-difficulty-is-mc-resolution.md) | 봇 난이도 = MC 샘플 수(판단 해상도), 일부러 약하게 코딩하지 않는다 | 유효 | bot |
 | [0015](0015-aggression-margin.md) | 어그레션 마진 — 벳을 받으면 콜 기준을 벳 크기에 비례해 올린다 | 유효 | bot |
 | [0016](0016-bot-validation-arena-legacy.md) | 봇 검증 = 아레나 bb/100 + legacy 베이스라인, 튜닝 결과는 사람이 반영 | 유효 | bot |
-| [0017](0017-equity-canonical-key-exact-protection.md) | equity_cache 키 = 수트 정규화, exact 값은 보호, 레인지 조건부 equity는 저장하지 않는다 | 유효 | equity |
-| [0018](0018-equity-fast-paths.md) | 에퀴티 계산 고속화 경로 — 계산용 평가기, 스트리트 분해 DP, 보드 중심 리버 테이블, PyPy | 유효 | equity |
-| [0019](0019-equity-worker-priority.md) | 에퀴티 워커 우선순위 — 게임에서 만난 스팟 먼저, 싼 스트리트 먼저, 스윕은 마지막 | 유효 | equity |
+| [0017](0017-equity-canonical-key-exact-protection.md) | equity_cache 키 = 수트 정규화, exact 값은 보호, 레인지 조건부 equity는 저장하지 않는다 | 대체됨 → 0034 | equity |
+| [0018](0018-equity-fast-paths.md) | 에퀴티 계산 고속화 경로 — 계산용 평가기, 스트리트 분해 DP, 보드 중심 리버 테이블, PyPy | 일부 대체됨 → 0034 (캐시·DP 메모 부분. 고속 평가기·board table은 유효) | equity |
+| [0019](0019-equity-worker-priority.md) | 에퀴티 워커 우선순위 — 게임에서 만난 스팟 먼저, 싼 스트리트 먼저, 스윕은 마지막 | 대체됨 → 0034 | equity |
 | [0020](0020-sqlite-single-writer.md) | SQLite 쓰기 원칙 — 쓰기는 메인 프로세스, 계산만 Pool, 짧은 트랜잭션, 멱등 저장 | 유효 | equity |
-| [0021](0021-equity-stats-incremental.md) | `--status`는 증분 통계 테이블을 읽는다 — 모든 쓰기가 같은 트랜잭션에서 델타 반영 | 유효 | equity |
-| [0022](0022-equity-cache-rebuildable-vsrandom-ui.md) | equity_cache는 재계산 가능한 캐시로 유지, vs_random은 계산만 유지하고 UI에서는 뺀다 | 유효 | equity |
+| [0021](0021-equity-stats-incremental.md) | `--status`는 증분 통계 테이블을 읽는다 — 모든 쓰기가 같은 트랜잭션에서 델타 반영 | 대체됨 → 0034 | equity |
+| [0022](0022-equity-cache-rebuildable-vsrandom-ui.md) | equity_cache는 재계산 가능한 캐시로 유지, vs_random은 계산만 유지하고 UI에서는 뺀다 | 대체됨 → 0034 | equity |
 | [0023](0023-postflop-range-narrowing.md) | 포스트플랍 GTO 수집 폐기 → 프리플랍 GTO 기반 레인지 좁히기, Epic 설계 확정분 | 유효 | bot |
 | [0024](0024-hj-position-naming.md) | 포지션 네이밍은 GTO Wizard 기준(HJ, MP 아님) | 유효 | game |
 | [0025](0025-ports-and-https.md) | 포트 고정(8765/5766) + 백엔드 HTTPS 필수 | 유효 | game |
 | [0026](0026-stubbot-and-isolated-test-db.md) | 로직 테스트는 StubBot + 테스트별 임시 DB로 격리 | 유효 | testing |
 | [0030](0030-sqlite-over-server-db.md) | SQLite 유지, 서버형 DB(MySQL 등) 전환 반려 | 유효 | db |
 | [0031](0031-bot-hand-archive-human-hand-retain.md) | 봇 전용 핸드는 아카이브 후 삭제, 사람 참여 핸드는 영구 보존 | 유효 | db |
-| [0032](0032-partial-index-only-for-pending-queues.md) | 대기 큐 인덱스는 부분 인덱스로만, 인덱스 삭제 전 EXPLAIN QUERY PLAN 확인 | 유효 | db |
+| [0032](0032-partial-index-only-for-pending-queues.md) | 대기 큐 인덱스는 부분 인덱스로만, 인덱스 삭제 전 EXPLAIN QUERY PLAN 확인 | 대체됨 → 0034 | db |
 | [0033](0033-no-direct-writes-to-shared-db.md) | 공유 운영 DB에 직접 쓰지 않는다 — 스크립트 경유 | 유효 | db |
+| [0034](0034-abolish-equity-cache.md) | 에퀴티 캐시 폐기 — 프리플랍 상수 테이블 + 실시간 계산, 정밀도 목표 ±0.5%p | 유효 | equity |
