@@ -6,6 +6,7 @@
     python3 tests/run_all.py --fast     # test_poker_full.py + test_gto_tree.py (로직 검증, 수초)
     python3 tests/run_all.py --full     # test_poker_full.py + test_equity.py + test_grader.py
                                          # + test_gto_tree.py (프리플랍 GTO 트리 워커 순수 로직)
+                                         # + web/ build·lint·vitest (npm 없으면 경고만 내고 건너뜀)
 
 각 파일은 subprocess로 실행하며, 표준출력을 실시간으로 그대로 릴레이한다
 (자식 프로세스의 print(flush=True) 덕분에 버퍼링 없이 즉시 보임).
@@ -13,15 +14,25 @@
 하나라도 실패하면 exit code 1을 반환한다.
 """
 
+import shutil
 import subprocess
 import sys
 import time
 import os
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+WEB_DIR = os.path.join(TESTS_DIR, "..", "web")
 
 FAST_FILES = ["test_poker_full.py", "test_gto_tree.py"]
 FULL_FILES = ["test_poker_full.py", "test_equity.py", "test_grader.py", "test_gto_tree.py"]
+
+# --full에서만 도는 프론트 품질 게이트. npm run <script> 이름 그대로 사용한다
+# (web/package.json 참고) — 원본: docs/spec/testing.md
+WEB_STEPS = [
+    ("web build (tsc -b + vite build)", ["npm", "run", "build"]),
+    ("web lint (eslint .)", ["npm", "run", "lint"]),
+    ("web test (vitest run)", ["npm", "run", "test"]),
+]
 
 
 def run_file(filename: str) -> tuple[bool, float]:
@@ -34,6 +45,20 @@ def run_file(filename: str) -> tuple[bool, float]:
 
     start = time.perf_counter()
     proc = subprocess.run([sys.executable, path])
+    elapsed = time.perf_counter() - start
+
+    ok = proc.returncode == 0
+    return ok, elapsed
+
+
+def run_web_step(label: str, npm_args: list[str]) -> tuple[bool, float]:
+    """web/ 디렉터리에서 npm 스크립트 하나를 실행하고 (성공여부, 소요시간)을 반환."""
+    print(f"\n{'#' * 60}", flush=True)
+    print(f"# 실행: {label}", flush=True)
+    print(f"{'#' * 60}", flush=True)
+
+    start = time.perf_counter()
+    proc = subprocess.run(npm_args, cwd=WEB_DIR)
     elapsed = time.perf_counter() - start
 
     ok = proc.returncode == 0
@@ -59,6 +84,15 @@ def main():
     for filename in files:
         ok, elapsed = run_file(filename)
         results.append((filename, ok, elapsed))
+
+    if mode == "full":
+        if shutil.which("npm") is None:
+            print("\n  ⚠️ npm을 찾을 수 없어 web/ build·lint·vitest를 건너뜁니다.", flush=True)
+        else:
+            for label, npm_args in WEB_STEPS:
+                ok, elapsed = run_web_step(label, npm_args)
+                results.append((label, ok, elapsed))
+
     total_elapsed = time.perf_counter() - suite_start
 
     print("\n" + "═" * 60, flush=True)

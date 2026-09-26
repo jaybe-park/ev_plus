@@ -1,44 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { GameEvent, ActionBadge } from "../types";
 import { getEventDelay, THINKING_RATIO } from "../config/timing";
-
-const BET_ACTIONS = new Set(["call", "raise", "allin"]);
-
-function makeCommitLabel(event: GameEvent): string | null {
-  if (event.type === "blind") {
-    const isSmall = event.position === "SB" || event.position === "BTN/SB";
-    return `${isSmall ? "SB" : "BB"} ${event.amount}`;
-  }
-  if (event.type === "action") {
-    const { action, amount } = event as { action: string; amount: number };
-    switch (action) {
-      case "fold":  return "폴드";
-      case "check": return "체크";
-      case "call":  return `콜 ${amount}`;
-      case "raise": return `레이즈 → ${amount}`;
-      case "allin": return "올인";
-    }
-  }
-  return null;
-}
-
-function formatBadge(event: GameEvent): ActionBadge | null {
-  if (event.type === "blind") {
-    const isSmall = event.position === "SB" || event.position === "BTN/SB";
-    return { player: event.player, text: `${isSmall ? "SB" : "BB"} ${event.amount}`, variant: "blind" };
-  }
-  if (event.type === "action") {
-    const { player, action, amount } = event;
-    switch (action) {
-      case "fold":  return { player, text: "FOLD",              variant: "fold" };
-      case "check": return { player, text: "CHECK",             variant: "check" };
-      case "call":  return { player, text: `CALL ${amount}`,    variant: "call" };
-      case "raise": return { player, text: `RAISE → ${amount}`, variant: "raise" };
-      case "allin": return { player, text: "ALL IN",            variant: "allin" };
-    }
-  }
-  return null;
-}
+import { isBetAction, formatBadge, commitEffectFor } from "./eventQueueLogic";
 
 export interface EventQueueState {
   isReplaying: boolean;
@@ -67,7 +30,10 @@ export interface EventQueueState {
 
 export function useEventQueue(): EventQueueState {
   const [queue, setQueue]                           = useState<GameEvent[]>([]);
-  const [isReplaying, setIsReplaying]               = useState(false);
+  // isReplaying은 "큐에 아직 이벤트가 남았나"에서 100% 파생되는 값이라 별도 state로
+  // 안 두고 매 렌더 계산한다(예전엔 enqueue에서 true로, 큐가 비면 effect에서 false로
+  // 두 곳에서 동기화했는데 그 자체가 set-state-in-effect 위반의 원인이었다).
+  const isReplaying = queue.length > 0;
   const [activePlayer, setActivePlayer]             = useState<string | null>(null);
   const [isThinking, setIsThinking]                 = useState(false);
   const [badge, setBadge]                           = useState<ActionBadge | null>(null);
@@ -103,7 +69,6 @@ export function useEventQueue(): EventQueueState {
       if (isNewHand) { setDealtCards(new Map()); setCommittedActions(new Map()); }
       setShowdownRevealed(false);
       setQueue(events);
-      if (events.length > 0) setIsReplaying(true);
     },
     []
   );
@@ -115,20 +80,27 @@ export function useEventQueue(): EventQueueState {
     setIsThinking(false);
     setBadge(null);
     setBettingPlayer(null);
-    setIsReplaying(false);
     setShowdownRevealed(false);
     setCommittedActions(new Map()); // 스킵 시 초기화 → current_bet 폴백 표시
   }, []);
 
-  useEffect(() => {
-    if (queue.length === 0) {
-      setIsReplaying(false);
+  // 큐가 "이벤트 있음 ↔ 없음"으로 전환될 때 하이라이트류 상태를 정리한다.
+  // useEffect 대신 렌더 중 조정 패턴(React 공식 권장)을 쓴다 — 큐가 실제로
+  // 빈 상태로 "전환"된 시점에만 1회 실행되고 무한 루프로 번지지 않는다.
+  const queueEmpty = queue.length === 0;
+  const [prevQueueEmpty, setPrevQueueEmpty] = useState(true);
+  if (queueEmpty !== prevQueueEmpty) {
+    setPrevQueueEmpty(queueEmpty);
+    if (queueEmpty) {
       setActivePlayer(null);
       setIsThinking(false);
       setBadge(null);
       setBettingPlayer(null);
-      return;
     }
+  }
+
+  useEffect(() => {
+    if (queue.length === 0) return;
 
     const [current, ...rest] = queue;
     const delay = getEventDelay(
@@ -136,8 +108,13 @@ export function useEventQueue(): EventQueueState {
       "street" in current ? (current as { street?: string }).street : undefined
     );
 
-    // 커뮤니티 카드
+    // 커뮤니티 카드 — 이벤트 큐를 소비할 때마다 즉시 카운트를 올린다(다음 이벤트로
+    // 넘어가는 기준 지연은 아래 else 분기의 setTimeout이 담당). props/state를 따라
+    // 파생값을 리셋하는 패턴이 아니라 "큐에서 이벤트를 하나 소비"하는 처리라
+    // 이 규칙이 겨냥하는 antipattern은 아니지만, 같은 effect 안의 동기 setState라
+    // 규칙이 함께 잡는다.
     if (current.type === "community_card") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setVisibleCardCount((c) => c + 1);
     }
 
@@ -171,7 +148,7 @@ export function useEventQueue(): EventQueueState {
         setIsThinking(false);
         setBadge(formatBadge(current));
         if (current.log) setVisibleLogCount((n) => n + 1);
-        if (BET_ACTIONS.has((current as { action: string }).action)) {
+        if (isBetAction((current as { action: string }).action)) {
           setBettingPlayer((current as { player: string }).player);
         }
         // 칩 업데이트
@@ -184,11 +161,12 @@ export function useEventQueue(): EventQueueState {
           });
         }
         // 액션 레이블 커밋 (배지와 동시에)
-        const label = makeCommitLabel(current);
-        if (label && (current as { player?: string }).player) {
+        const commitEffect = commitEffectFor(current);
+        if (commitEffect.kind === "set") {
+          const { player: p, label } = commitEffect;
           setCommittedActions((prev) => {
             const next = new Map(prev);
-            next.set((current as { player: string }).player, label);
+            next.set(p, label);
             return next;
           });
         }
@@ -214,13 +192,12 @@ export function useEventQueue(): EventQueueState {
       if (current.log) setVisibleLogCount((n) => n + 1);
       if (current.type === "blind" && player) setBettingPlayer(player);
       if (current.type === "showdown") setShowdownRevealed(true);
-      // blind: 즉시 커밋 레이블 등록
-      if (current.type === "blind" && player) {
-        const label = makeCommitLabel(current);
-        if (label) setCommittedActions((prev) => { const m = new Map(prev); m.set(player, label); return m; });
-      }
-      // street_start: 커밋 레이블 초기화 (새 스트리트 시작)
-      if (current.type === "street_start") {
+      // blind: 즉시 커밋 레이블 등록 / street_start: 커밋 레이블 초기화(새 스트리트 시작)
+      const commitEffect = commitEffectFor(current);
+      if (commitEffect.kind === "set") {
+        const { player: p, label } = commitEffect;
+        setCommittedActions((prev) => { const m = new Map(prev); m.set(p, label); return m; });
+      } else if (commitEffect.kind === "reset") {
         setCommittedActions(new Map());
       }
 
