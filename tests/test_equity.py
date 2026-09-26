@@ -104,6 +104,75 @@ def test_mc_sanity():
     check("넛플러시드로우 ≈ 0.65", 0.55 <= e <= 0.75, f"={e:.3f}")
 
 
+def test_multiway_tie_share():
+    print("\n[E-13] 멀티웨이 동률 1/k (T-032)")
+    from ai.equity import mc_counts, mc_counts_ranged, RangeSampler, _ratio
+    royal = cards("As", "Ks", "Qs", "Js", "Ts")  # 모두 보드를 플레이 → 전원 스플릿
+    hole = cards("2c", "3d")
+    for n_opp, expect in ((1, 1 / 2), (2, 1 / 3), (5, 1 / 6)):
+        e = _ratio(*mc_counts(hole, royal, n_opp, 200))
+        check(f"로열 보드 vs{n_opp} = 1/{n_opp + 1}", abs(e - expect) < 1e-9, f"={e:.4f}")
+        e = calculate_equity(hole, royal, n_opp, 200)
+        check(f"calculate_equity 로열 보드 vs{n_opp} = 1/{n_opp + 1}",
+              abs(e - expect) < 1e-9, f"={e:.4f}")
+    # 레인지 경로도 같은 공식
+    e = _ratio(*mc_counts_ranged(hole, royal, [RangeSampler({"88": 1.0}), None], 200))
+    check("ranged 로열 보드 vs2 = 1/3", abs(e - 1 / 3) < 1e-9, f"={e:.4f}")
+    # 일부만 동률: 나·상대A 동률, 상대B 패 → 1/2 (리버, 레인지로 고정)
+    board = cards("Ah", "Kd", "8c", "5s", "2h")
+    e = _ratio(*mc_counts_ranged(
+        cards("Qc", "Jd"), board,
+        [RangeSampler({"QJo": 1.0}), RangeSampler({"43s": 1.0})], 300))
+    # QJo 콤보 중 Qc/Jd 블록 제외 나머지 전부 같은 하이카드 → 동률, 43s는 5-high 스트레이트(A-5)로 승
+    check("43s(휠) 상대 포함 시 0", e == 0.0, f"={e:.4f}")
+    e = _ratio(*mc_counts_ranged(
+        cards("Qc", "Jd"), board,
+        [RangeSampler({"QJo": 1.0}), RangeSampler({"76s": 1.0})], 300))
+    check("나·상대A 동률 + 상대B 패 = 1/2", abs(e - 0.5) < 1e-9, f"={e:.4f}")
+
+    # 멀티웨이 캐시 행은 읽지 않는다 (과거 1/2 공식 오염값)
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    eq.DB_PATH = tmp
+    prev_env = os.environ.get("EV_PLUS_DB")
+    os.environ["EV_PLUS_DB"] = tmp  # 세션 기록(recorder)도 임시 DB로
+    try:
+        key = canonical_key(hole, royal)
+        eq.cache_contribute("river", key, 2, 0.0, 1_000_000.0, 1_000_000, exact=True)  # 오염값 0.5
+        # 헤즈업 행에는 식별용 가짜 값(1.0)을 심어 "읽었는지"를 구분한다
+        eq.cache_contribute("river", key, 1, 990.0, 0.0, 990, exact=True)
+        e2 = smart_equity(hole, royal, 2, 300, use_cache=True, contribute=False)
+        check("멀티웨이 캐시 오염값(0.5) 무시 → 1/3", abs(e2 - 1 / 3) < 1e-9, f"={e2:.4f}")
+        e1 = smart_equity(hole, royal, 1, 300, use_cache=True, contribute=False)
+        check("헤즈업 캐시는 그대로 사용", e1 == 1.0, f"={e1:.4f}")
+
+        # 실제 패널 경로(세션 _get_equity_info): 3인 스플릿 → vs_random·vs_range 모두 1/3
+        from server.session import WebGameSession
+        from core.game import Street
+        random.seed(3)
+        s = WebGameSession(session_id="t032", human_name="Hero", chips=2000,
+                           num_bots=2, difficulty="easy", small_blind=10)
+        for p in s.game.players:
+            p.is_folded = False
+        s.human.hole_cards = list(hole)
+        s.game.community_cards = list(royal)
+        s.game.current_street = Street.RIVER
+        s._equity_cache = {}
+        info = s._get_equity_info()
+        check("패널 vs_random 3인 스플릿 = 1/3", info is not None
+              and abs(info["vs_random"] - 1 / 3) < 1e-3, f"={info and info['vs_random']}")
+        check("패널 vs_range 3인 스플릿 = 1/3", info is not None
+              and abs(info["vs_range"] - 1 / 3) < 1e-3, f"={info and info['vs_range']}")
+    finally:
+        eq._flush_contributions()
+        eq.DB_PATH = None
+        if prev_env is None:
+            os.environ.pop("EV_PLUS_DB", None)
+        else:
+            os.environ["EV_PLUS_DB"] = prev_env
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def test_cache():
     print("\n[E-4] equity_cache DB 누적")
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
@@ -443,6 +512,7 @@ if __name__ == "__main__":
     test_canonical_key()
     test_exact_river()
     test_mc_sanity()
+    test_multiway_tie_share()
     test_cache()
     test_board_wetness()
     test_bot_decisions()

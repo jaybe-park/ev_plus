@@ -12,6 +12,8 @@
 
 ### 계산
 - `smart_equity` 순서: 캐시에 exact 또는 고정밀(total ≥ 20,000) 값이 있으면 그것 → 리버 1:1이고 `exact_river`면 전수조사(990조합) → 아니면 MC. 부분 누적이 있으면 MC와 합산해 반환 — 강제 장치: `tests/test_equity.py::test_cache`, `::test_exact_river`, `::test_mc_sanity`
+- 캐시 값은 **상대 1명일 때만 읽는다**. 멀티웨이(`num_opponents>1`) 행에는 동률을 1/2로 세던 시절 값이 섞여 있어 `use_cache=True`여도 무시하고 MC로 계산한다(기여는 계속 쌓임). 행의 처분은 D-23 — 강제 장치: `tests/test_equity.py::test_multiway_tie_share`
+- 동률은 나눈 인원으로 나눈다: 나를 포함해 k명이 팟을 나누면 지분 1/k. 카운트 스키마 `(wins, ties, total)`와 `(wins + 0.5·ties)/total`을 그대로 쓰려고 ties에 `2/k`를 더한다(헤즈업은 기존대로 +1). `mc_counts`·`mc_counts_ranged`(→ 워커 MC도) 공통 — 강제 장치: `tests/test_equity.py::test_multiway_tie_share`(로열 보드 vs2 = 1/3, vs5 = 1/6, 일부만 동률 = 1/2)
 - 캐시 키는 수트 정규화(24개 수트 치환 중 최소 키) + `num_opponents`. A♥K♥와 A♠K♠는 같은 키 — 근거: [0017](../decisions/0017-equity-canonical-key-exact-protection.md) · 강제 장치: `tests/test_equity.py::test_canonical_key`
 - `exact=1` 행에는 MC를 누적하지 않는다(저장 SQL `WHERE ... exact=0`) — 근거: [0017](../decisions/0017-equity-canonical-key-exact-protection.md) · 강제 장치: `tests/test_equity.py::test_cache`(exact 보호)
 - 레인지 조건부 equity(`ranged_equity`)는 캐시에 쓰지 않는다(분포가 매번 다름) — 근거: [0017](../decisions/0017-equity-canonical-key-exact-protection.md) · 강제 장치: 장치 없음
@@ -60,5 +62,6 @@ python3 scripts/equity_worker.py --rebuild-stats # 통계 백필·복구
 ## 알려진 한계
 
 - equity_cache가 DB 15GB 중 12.7GB. 행의 97%가 재사용 안 되는 리버 DP 부산물이고(게임 재방문 0.06%), 키가 턴/리버 순서를 보존해 같은 값이 중복 저장된다. 그라인드를 켜면 시간당 0.4~1.8GB 증가 — D-23, T-036 (2026-09-26 리뷰 RC5)
+- 기존 멀티웨이 캐시 행(프리플랍 상대 2~5명 포함)은 동률 과대값이 섞여 있어 런타임이 읽지 않는다. 그래서 멀티웨이는 항상 실시간 MC(패널 1000, medium 300) 해상도다. 무효화·재계산·캐시 폐기는 D-23
 - vs_random은 상대가 아무 핸드나 든다는 가정이라 3벳팟 등에서 과대평가 — 봇은 어그레션 마진으로 보정(ADR 0015), 근본 해결은 E-2
 - 병렬/순차 결과 일치, 증분 통계 드리프트 없음은 1회 수동 검증뿐 — 테스트 없음

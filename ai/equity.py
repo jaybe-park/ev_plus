@@ -91,6 +91,23 @@ def decode_key(spot_key: str) -> Tuple[List[Card], List[Card]]:
 # Monte Carlo 샘플링
 # ──────────────────────────────────────────
 
+def _showdown_share(mine: tuple, opp_ranks: List[tuple]) -> Tuple[float, float]:
+    """
+    한 번의 쇼다운 결과를 (wins, ties) 증분으로 환산한다.
+
+    카운트 스키마 (wins, ties, total)와 `_ratio` = (wins + 0.5*ties)/total을 그대로
+    쓰기 위해, 나를 포함해 k명이 팟을 나누면 ties에 2/k를 더한다 → 지분 1/k.
+    헤즈업(k=2)이면 기존과 같은 ties += 1.
+    """
+    best_opp = max(opp_ranks)
+    if mine > best_opp:
+        return 1.0, 0.0
+    if mine < best_opp:
+        return 0.0, 0.0
+    k = 1 + sum(1 for r in opp_ranks if r == best_opp)
+    return 0.0, 2.0 / k
+
+
 def mc_counts(
     hole_cards: List[Card],
     board: List[Card],
@@ -110,17 +127,13 @@ def mc_counts(
         full = board + drawn[:need]
         mine = evaluate_rank(hole_cards + full)
 
-        best_opp = None
-        for i in range(num_opponents):
-            start = need + 2 * i
-            opp = evaluate_rank(list(drawn[start:start + 2]) + full)
-            if best_opp is None or opp > best_opp:
-                best_opp = opp
-
-        if mine > best_opp:
-            wins += 1.0
-        elif mine == best_opp:
-            ties += 1.0
+        opp_ranks = [
+            evaluate_rank(list(drawn[need + 2 * i:need + 2 * i + 2]) + full)
+            for i in range(num_opponents)
+        ]
+        w, t = _showdown_share(mine, opp_ranks)
+        wins += w
+        ties += t
     return wins, ties, num_simulations
 
 
@@ -459,7 +472,8 @@ def smart_equity(
     """
     캐시 → 전수조사 → MC 순으로 최선의 equity 반환.
 
-    - use_cache: 정확값/고정밀 누적값이 있으면 그대로 사용 (hard 봇용)
+    - use_cache: 정확값/고정밀 누적값이 있으면 그대로 사용 (hard 봇용).
+      상대 1명일 때만 적용 — 멀티웨이 캐시 행은 읽지 않는다(T-032, D-23 대기)
     - contribute: MC 결과를 캐시에 누적 → 봇이 칠수록 DB가 똑똑해짐.
       처음 만난 스팟은 자동으로 워커 큐에 등록되는 효과.
     - exact_river: 리버 1:1이면 전수조사(990조합, <1초)로 정확값 계산
@@ -474,7 +488,11 @@ def smart_equity(
         key = canonical_key(hole_cards, board)
         row = cache_lookup(key, num_opponents)
 
-    if use_cache and row:
+    # 멀티웨이(num_opponents>1) 캐시 행은 과거 동률을 1/2로 센 값이 섞여 있어(T-032)
+    # 읽지 않는다. 처분(무효화/캐시 폐기)은 D-23 결정 대기.
+    read_cache = use_cache and num_opponents == 1
+
+    if read_cache and row:
         if row["exact"] or row["total"] >= HIGH_PRECISION_SAMPLES:
             return _ratio(row["wins"], row["ties"], row["total"])
 
@@ -489,7 +507,7 @@ def smart_equity(
         cache_contribute(street, key, num_opponents, w, t, n)
 
     # 캐시에 부분 누적이 있으면 합쳐서 더 정확한 추정치 사용
-    if use_cache and row and not row["exact"] and row["total"] > 0:
+    if read_cache and row and not row["exact"] and row["total"] > 0:
         return _ratio(row["wins"] + w, row["ties"] + t, row["total"] + n)
     return _ratio(w, t, n)
 
@@ -592,16 +610,9 @@ def mc_counts_ranged(
         full = board + board_fill
 
         mine = evaluate_rank(hole_cards + full)
-        best_opp = None
-        for pair in opp_holes:
-            opp = evaluate_rank(list(pair) + full)
-            if best_opp is None or opp > best_opp:
-                best_opp = opp
-
-        if mine > best_opp:
-            wins += 1.0
-        elif mine == best_opp:
-            ties += 1.0
+        w, t = _showdown_share(mine, [evaluate_rank(list(pair) + full) for pair in opp_holes])
+        wins += w
+        ties += t
     return wins, ties, num_simulations
 
 
