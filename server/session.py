@@ -262,16 +262,13 @@ class WebGameSession:
                     "street": "프리플랍",
                 })
 
-        # 2. 블라인드 이벤트 + 로그 (딜링 이후). 금액은 실제로 낸 칩(숏스택이면 블라인드보다 적음)
-        for p in self.game.players:
-            pos = positions.get(p.name, "")
-            posted = p.current_bet  # 핸드 시작 직후 current_bet = 포스팅한 칩
-            if pos in ("SB", "BTN/SB") and posted > 0:
-                log_text = f"[{pos}] {p.name}: 스몰 블라인드 ({posted})"
-            elif pos == "BB" and posted > 0:
-                log_text = f"[{pos}] {p.name}: 빅 블라인드 ({posted})"
-            else:
+        # 2. 블라인드 이벤트 + 로그 (딜링 이후). core가 포스팅한 순서(SB → BB) 그대로 발행하고,
+        #    금액은 실제로 낸 칩(숏스택이면 블라인드보다 적음)
+        for (p, posted), kind in zip(self.game.blind_posts, ("스몰", "빅")):
+            if posted <= 0:
                 continue
+            pos = positions.get(p.name, "")
+            log_text = f"[{pos}] {p.name}: {kind} 블라인드 ({posted})"
             self.action_log.append(log_text)
             self._emit({
                 "type": "blind", "player": p.name, "position": pos,

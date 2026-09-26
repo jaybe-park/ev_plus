@@ -68,6 +68,7 @@ class TexasHoldem:
         self.current_bet: int = 0          # 현재 라운드 최고 베팅액
         self.min_raise: int = big_blind
         self.event_log: List[GameEvent] = []
+        self.blind_posts: List[tuple] = []  # [(SB 플레이어, 낸 칩), (BB 플레이어, 낸 칩)]
 
         # 액션 콜백 (웹앱 전환 시 override)
         self._action_callback: Optional[Callable] = None
@@ -320,6 +321,8 @@ class TexasHoldem:
         bb_actual = bb_player.place_bet(self.big_blind)
         self.pot += bb_actual
         self.current_bet = self.big_blind
+        # 포스팅 순서(SB → BB)와 실제로 낸 칩. 웹 세션이 blind 이벤트를 이 순서로 발행한다.
+        self.blind_posts = [(sb_player, sb_actual), (bb_player, bb_actual)]
 
         self._emit("blinds", {
             "small_blind": {"player": sb_player.name, "amount": sb_actual},

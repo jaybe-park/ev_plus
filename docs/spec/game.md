@@ -85,6 +85,9 @@
   `blind`(SB/BB 포스팅) → `action`(폴드/체크/콜/레이즈/올인) → `street_start`(스트리트 전환) →
   `community_card`(커뮤니티 카드 1장씩) → `showdown`(봇 카드 공개) → `winner`(팟 지급) —
   강제 장치: 장치 없음(순서 불변식 자체를 검증하는 테스트 없음)
+- `blind` 이벤트는 좌석 순서와 무관하게 항상 SB(헤즈업은 BTN/SB) → BB 순서로 나온다 — core
+  `_post_blinds`가 기록한 `blind_posts`(포스팅 순서·실제 금액)를 세션이 그대로 발행 — 강제 장치:
+  `tests/test_poker_full.py::test_8_14_blind_events_sb_then_bb_when_human_bb`(사람 BB, 2~6인)
 - 카드 공개: 사람 홀카드는 항상 공개. 봇 홀카드는 핸드 진행 중 비공개이고, **쇼다운(2명
   이상 대결)이 실제로 있었을 때만** 공개된다 — 전원 폴드로 1명만 남는 경우는 비공개 유지
   — 강제 장치: `tests/test_poker_full.py::test_5_7_human_cards_always_visible`,

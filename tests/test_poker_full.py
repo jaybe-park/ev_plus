@@ -1761,6 +1761,20 @@ def test_8_13_runout_when_one_player_can_act():
         f"콜할 금액이 있으면 사람에게 물어야 함: street={st['street']} call={st['call_amount']}"
 
 
+def test_8_14_blind_events_sb_then_bb_when_human_bb():
+    """T-002: 내가 BB일 때(인원 2~6) blind 이벤트는 항상 [SB, BB] 순서다."""
+    for n_bots in range(1, 6):
+        n = n_bots + 1
+        # 사람(좌석 0)이 BB가 되는 딜러: 헤즈업은 상대가 딜러, 3인 이상은 딜러+2 = 0
+        dealer = 1 if n == 2 else (n - 2) % n
+        sess, events = _scripted_session(n_bots, dealer_index=dealer)
+        assert sess.game.get_positions()["Human"] == "BB", sess.game.get_positions()
+        blinds = [(e["position"], e["player"]) for e in events if e["type"] == "blind"]
+        sb_label = "BTN/SB" if n == 2 else "SB"
+        assert [b[0] for b in blinds] == [sb_label, "BB"], f"{n}인: blind 순서 {blinds}"
+        assert blinds[1][1] == "Human"
+
+
 def test_8_10_illegal_check_rejected_not_recorded():
     """T-021: 벳을 마주한 체크 요청은 거절되고(API 400) 로그·이벤트·RL 기록에 남지 않는다."""
     from core.game import IllegalActionError
@@ -2030,6 +2044,7 @@ ALL_TESTS = [
     ("8-11 봇 불법 액션 → 로그+안전 폴백",        test_8_11_bot_illegal_action_falls_back),
     ("8-12 세션 퍼저: 이벤트 금액=칩 이동·보존",  test_8_12_session_fuzz_event_amounts_and_conservation),
     ("8-13 행동 가능 1명 + 콜 없음 → 런아웃",     test_8_13_runout_when_one_player_can_act),
+    ("8-14 사람 BB일 때 blind 이벤트 SB→BB",      test_8_14_blind_events_sb_then_bb_when_human_bb),
 ]
 
 
