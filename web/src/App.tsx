@@ -9,6 +9,10 @@ import ActionLog from "./components/ActionLog";
 import HandResult from "./components/HandResult";
 import GtoPanel from "./components/GtoPanel";
 import EquityPanel from "./components/EquityPanel";
+import {
+  readStoredSessionId, storeSessionId, clearStoredSessionId, isSessionGone,
+  SESSION_EXPIRED_MESSAGE,
+} from "./sessionStore";
 
 const HINT_STORAGE_KEY = "ev_plus_hint_enabled";
 
@@ -16,6 +20,13 @@ export default function App() {
   const [state, setState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 서버가 세션을 모름(404: 서버 재시작·오래돼 정리됨) — 액션 잠금 + "세션 만료 — 새 게임" 안내 (T-028)
+  const [sessionExpired, setSessionExpired] = useState(false);
+  // 설정 화면 안내(새로고침했는데 이전 세션이 사라진 경우)
+  const [setupNotice, setSetupNotice] = useState<string | null>(null);
+  // 새로고침 후 이어하기(ADR 0043): 보관된 세션이 있으면 첫 화면에서 서버에 확인하는 중
+  const [restoring, setRestoring] = useState<boolean>(() => readStoredSessionId() !== null);
+  const restoreTried = useRef(false);
   const [myCardsRevealed, setMyCardsRevealed] = useState(false);
   const [rightTab, setRightTab] = useState<"log" | "hint">("log");
   const [gtoRange, setGtoRange] = useState<GtoRange | null>(null);
@@ -65,6 +76,7 @@ export default function App() {
         : Object.fromEntries((state?.players ?? next.players).map((p) => [p.name, p.chips]));
 
       setState(next);
+      storeSessionId(next.session_id);
 
       if (next.events.length > 0) {
         enqueue(next.events, initialCardCount, initialFolded, initialLogCount, isNewHand, initialChips);
@@ -83,13 +95,37 @@ export default function App() {
         const next = await fn();
         applyNewState(next);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "오류가 발생했습니다.");
+        if (isSessionGone(e)) {
+          setSessionExpired(true);
+          clearStoredSessionId();
+        } else {
+          setError(e instanceof Error ? e.message : "오류가 발생했습니다.");
+        }
       } finally {
         setLoading(false);
       }
     },
     [applyNewState]
   );
+
+  // 새로고침·탭 다시 열기: 보관된 세션이 서버에 살아 있으면 이어간다(ADR 0043).
+  // 없으면(404) 설정 화면에 "세션 만료 — 새 게임" 안내. 마운트 시 1회만.
+  useEffect(() => {
+    if (restoreTried.current) return;
+    restoreTried.current = true;
+    const id = readStoredSessionId();
+    if (!id) return;
+    api.getState(id)
+      .then((next) => applyNewState(next))
+      .catch((e) => {
+        clearStoredSessionId();
+        if (isSessionGone(e)) setSetupNotice(`${SESSION_EXPIRED_MESSAGE} — 이전 게임을 이어갈 수 없습니다.`);
+        else setError(e instanceof Error ? e.message : "오류가 발생했습니다.");
+      })
+      .finally(() => setRestoring(false));
+    // 첫 렌더(state=null)의 applyNewState로 충분하다 — 의도적으로 마운트 1회만 실행
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // GTO 레인지 페치 — gto_key가 바뀔 때마다.
   // key가 없을 때는 fetch 자체를 하지 않고 렌더 시점에 gtoRange를 무시한다
@@ -145,7 +181,17 @@ export default function App() {
     run(() => api.submitAction(state.session_id, action, amount));
   };
   const handleNextHand = () => { if (!state) return; run(() => api.nextHand(state.session_id)); };
-  const handleNewGame  = () => { skip(); setState(null); setMyCardsRevealed(false); setError(null); };
+  const handleNewGame  = () => {
+    skip();
+    setState(null);
+    setMyCardsRevealed(false);
+    setError(null);
+    setSessionExpired(false);
+    setSetupNotice(null);
+    setSessionReview(null);          // 새 게임 헤더에 이전 게임 요약이 남지 않게 (T-028)
+    prevHandNumber.current = 0;      // 새 게임 첫 핸드도 "새 핸드"로 처리
+    clearStoredSessionId();
+  };
 
   // 홀카드 → GTO 핸드 표기 변환
   function toGtoHand(cards: string[] | null): string | null {
@@ -168,12 +214,23 @@ export default function App() {
     return hi.gto + lo.gto + (hi.suit === lo.suit ? "s" : "o");
   }
 
-  if (!state) return <SetupForm onStart={handleStart} error={error} loading={loading} />;
+  if (!state) {
+    if (restoring) {
+      return (
+        <div className="min-h-screen bg-gray-900 flex items-center justify-center text-gray-400 text-sm">
+          진행 중인 게임을 불러오는 중…
+        </div>
+      );
+    }
+    return (
+      <SetupForm onStart={handleStart} error={error} loading={loading} notice={setupNotice} />
+    );
+  }
 
   const human = state.players.find((p) => p.is_human);
 
-  // 액션 버튼: 재생 중이거나 로딩 중이면 비활성
-  const actionDisabled = isReplaying || loading;
+  // 액션 버튼: 재생 중·로딩 중·세션 만료면 비활성
+  const actionDisabled = isReplaying || loading || sessionExpired;
 
   return (
     <div className="min-h-screen bg-gray-950 flex flex-col lg:flex-row">
@@ -246,7 +303,7 @@ export default function App() {
                 state={state}
                 onNextHand={handleNextHand}
                 onNewGame={handleNewGame}
-                loading={loading}
+                loading={loading || sessionExpired}
               />
             )}
           </div>
@@ -261,6 +318,22 @@ export default function App() {
               loading={loading}
               disabled={actionDisabled || !state.waiting_for_action || state.hand_over}
             />
+          </div>
+        )}
+
+        {/* 세션 만료 — 서버가 세션을 모름(재시작·정리). 액션은 잠기고 새 게임만 가능 */}
+        {sessionExpired && (
+          <div
+            role="alert"
+            className="shrink-0 bg-amber-900/80 text-amber-200 text-sm flex items-center justify-center gap-3 py-2 px-4"
+          >
+            <span>{SESSION_EXPIRED_MESSAGE}: 서버에서 이 게임을 찾을 수 없습니다.</span>
+            <button
+              onClick={handleNewGame}
+              className="rounded border border-amber-500 px-2 py-0.5 text-xs font-medium hover:bg-amber-800"
+            >
+              새 게임
+            </button>
           </div>
         )}
 

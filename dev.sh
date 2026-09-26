@@ -30,10 +30,11 @@ if [ ! -f "$SSL_CERT" ] || [ ! -f "$SSL_KEY" ]; then
 fi
 
 cd "$SCRIPT_DIR"
+# 서버 코드 디렉터리만 감시한다 — tests/·scripts/·docs 수정으로 재시작되면 메모리의 게임이 사라진다
 $PYTHON -m uvicorn server.main:app \
   --host 0.0.0.0 --port 8765 \
   --ssl-keyfile "$SSL_KEY" --ssl-certfile "$SSL_CERT" \
-  --reload &
+  --reload --reload-dir server --reload-dir core --reload-dir ai --reload-dir gto --reload-dir db &
 BACKEND_PID=$!
 
 cd "$SCRIPT_DIR/web"

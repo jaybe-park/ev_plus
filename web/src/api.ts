@@ -30,6 +30,16 @@ export function formatApiError(detail: unknown): string {
   return "요청을 처리할 수 없습니다.";
 }
 
+// HTTP 상태 코드를 함께 싣는 오류 — 404(세션 없음)를 다른 오류와 구분한다(T-028)
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -37,7 +47,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(formatApiError(err.detail));
+    throw new ApiError(formatApiError(err.detail), res.status);
   }
   return res.json() as Promise<T>;
 }

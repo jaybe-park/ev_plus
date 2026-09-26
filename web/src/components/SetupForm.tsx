@@ -6,9 +6,11 @@ interface Props {
   // 서버가 설정을 거절한 이유(422 detail을 formatApiError로 평탄화한 문장) — T-027
   error?: string | null;
   loading?: boolean;
+  // 새로고침했는데 이전 세션이 서버에서 사라진 경우의 안내(T-028, ADR 0043)
+  notice?: string | null;
 }
 
-export default function SetupForm({ onStart, error = null, loading = false }: Props) {
+export default function SetupForm({ onStart, error = null, loading = false, notice = null }: Props) {
   const [form, setForm] = useState<SetupConfig>({
     player_name: "Player",
     chips: 1000,
@@ -27,6 +29,15 @@ export default function SetupForm({ onStart, error = null, loading = false }: Pr
           ♠ Texas Hold'em
         </h1>
         <p className="text-gray-400 text-center mb-8 text-sm">게임 설정</p>
+
+        {notice && (
+          <div
+            role="status"
+            className="mb-6 rounded-lg border border-amber-700 bg-amber-900/50 px-3 py-2 text-sm text-amber-200"
+          >
+            {notice}
+          </div>
+        )}
 
         <div className="space-y-5">
           <Field label="플레이어 이름">

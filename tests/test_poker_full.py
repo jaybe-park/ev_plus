@@ -2593,6 +2593,80 @@ def test_8_22_session_registered_only_after_successful_start():
     assert set(sessions) == before, "생성에 실패한 세션이 등록돼 남음"
 
 
+def test_8_23_dev_server_reload_watches_server_code_only():
+    """T-028: tests/·scripts/·docs를 고쳐도 dev 서버가 재시작되지 않는다 — dev.sh의 uvicorn은
+    서버 코드 디렉터리(server·core·ai·gto·db)만 감시한다(uvicorn 설정 해석으로 확인)."""
+    import re
+    import shlex
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    text = open(os.path.join(root, "dev.sh"), encoding="utf-8").read()
+    cmd = re.search(r"-m uvicorn server\.main:app(.*?)&\s*$", text, re.S | re.M)
+    assert cmd, "dev.sh에서 uvicorn 실행 줄을 찾지 못함"
+    args = shlex.split(cmd.group(1).replace("\\\n", " "))
+    assert "--reload" in args, "dev 모드는 자동 재시작을 유지해야 함"
+    dirs = [args[i + 1] for i, a in enumerate(args) if a == "--reload-dir"]
+    assert sorted(dirs) == ["ai", "core", "db", "gto", "server"], f"감시 디렉터리: {dirs}"
+
+    from uvicorn.config import Config
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        cfg = Config("server.main:app", reload=True, reload_dirs=dirs, log_level="warning")
+        watched = [str(p) for p in cfg.reload_dirs]
+    finally:
+        os.chdir(cwd)
+    for untouched in ("tests", "scripts", "docs", "web", "tools", "cli"):
+        path = os.path.join(root, untouched)
+        assert not any(path == w or path.startswith(w + os.sep) for w in watched), \
+            f"{untouched}/ 수정이 서버를 재시작시킴: {watched}"
+    for needed in ("server", "core", "ai", "gto", "db"):
+        assert os.path.join(root, needed) in watched, f"{needed}/ 가 감시 대상이 아님: {watched}"
+
+
+def test_8_24_old_sessions_pruned_and_return_404():
+    """T-028: 오래 안 쓴 세션(24시간)과 개수 상한(20개) 초과분은 서버에서 정리되고, 정리된
+    세션에 대한 요청은 404(프론트는 '세션 만료 — 새 게임' 안내)다. 최근에 쓴 세션은 남는다."""
+    import server.main as m
+    client, sessions = _api_client()
+    saved = dict(sessions), dict(m._last_seen)
+    real_now = m._now
+    clock = [1_000_000.0]
+    m._now = lambda: clock[0]
+    try:
+        sessions.clear()
+        m._last_seen.clear()
+        sess, _ = _scripted_session(1)
+        sessions["old"] = sess
+        m._last_seen["old"] = clock[0] - m.SESSION_TTL_SEC - 1
+        sessions["fresh"] = sess
+        m._last_seen["fresh"] = clock[0] - 60
+        assert client.get("/game/old/state").status_code == 404, "만료 세션은 404여야 함"
+        assert "old" not in sessions
+        assert client.get("/game/fresh/state").status_code == 200
+        assert client.post("/game/old/action", json={"action": "fold"}).status_code == 404
+        assert client.post("/game/old/next-hand").status_code == 404
+
+        # 개수 상한: 새 게임을 만들면 가장 오래 안 쓴 것부터 지워 MAX_SESSIONS 이하로
+        for i in range(m.MAX_SESSIONS + 3):
+            clock[0] += 1
+            sessions[f"s{i}"] = sess
+            m._last_seen[f"s{i}"] = clock[0]
+        clock[0] += 1
+        m._last_seen["fresh"] = clock[0]   # 방금 쓴 세션
+        res = client.post("/game/start", json={"player_name": "P", "chips": 1000, "num_bots": 1,
+                                               "difficulty": "easy", "big_blind": 10})
+        new_id = res.json()["session_id"]
+        assert len(sessions) == m.MAX_SESSIONS, f"세션 수 {len(sessions)} > 상한 {m.MAX_SESSIONS}"
+        assert new_id in sessions and "fresh" in sessions, "새 세션·최근 세션은 남아야 함"
+        assert "s0" not in sessions and "s1" not in sessions, "가장 오래된 세션부터 정리돼야 함"
+    finally:
+        m._now = real_now
+        sessions.clear()
+        sessions.update(saved[0])
+        m._last_seen.clear()
+        m._last_seen.update(saved[1])
+
+
 # ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
@@ -2707,6 +2781,8 @@ ALL_TESTS = [
     ("8-20 GET state가 멈춘 봇 차례 복구",          test_8_20_get_state_recovers_stuck_bot_turn),
     ("8-21 잘못된 게임 설정 → 422 한국어 안내",     test_8_21_start_game_rejects_invalid_settings),
     ("8-22 생성 성공 후에만 세션 등록",             test_8_22_session_registered_only_after_successful_start),
+    ("8-23 dev 서버는 서버 코드만 감시",            test_8_23_dev_server_reload_watches_server_code_only),
+    ("8-24 오래된 세션 정리 → 404",                 test_8_24_old_sessions_pruned_and_return_404),
 ]
 
 

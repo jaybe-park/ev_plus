@@ -1,6 +1,6 @@
 # 게임 엔진 / 웹 게임 흐름 — 현재 사양
 
-> 최종 갱신: 2026-09-26 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md), [0036](../decisions/0036-moving-button.md), [0038](../decisions/0038-action-validation-and-real-amounts.md)
+> 최종 갱신: 2026-09-26 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md), [0036](../decisions/0036-moving-button.md), [0038](../decisions/0038-action-validation-and-real-amounts.md), [0043](../decisions/0043-restore-session-on-reload.md)
 
 ## 무엇을 하는가
 
@@ -153,6 +153,30 @@
   큐가 이벤트 있음↔없음으로 전환될 때의 하이라이트 리셋(activePlayer/isThinking/badge/
   bettingPlayer)도 `useEffect`가 아니라 렌더 중 조정 패턴(prevQueueEmpty 비교)으로 처리—
   근거: 2026-09-26 리뷰 W9
+- 세션 수명: 세션은 서버 메모리(`server/main.py::sessions`)에만 있다. 마지막 요청 후
+  `SESSION_TTL_SEC`(24시간)이 지나거나 세션 수가 `MAX_SESSIONS`(20)를 넘으면 가장 오래 안 쓴
+  세션부터 정리한다(요청마다·새 게임 등록 시 `_prune_sessions`). 정리됐거나 서버가 재시작돼
+  없는 세션에 대한 요청은 404다. 서버 재시작 뒤 게임 복구는 하지 않는다 — 근거:
+  [0043](../decisions/0043-restore-session-on-reload.md) · 강제 장치:
+  `tests/test_poker_full.py::test_8_24_old_sessions_pruned_and_return_404`
+- dev 서버 재시작 범위: `dev.sh`의 uvicorn `--reload`는 `--reload-dir server core ai gto db`만
+  감시한다(`python3 server/main.py` 직접 실행도 같은 목록). `tests/`·`scripts/`·`docs/`·`web/`을
+  고쳐도 서버가 재시작되지 않아 진행 중인 게임이 유지된다 — 강제 장치:
+  `tests/test_poker_full.py::test_8_23_dev_server_reload_watches_server_code_only`
+- 새로고침 후 이어하기: 프론트는 받은 `session_id`를 `sessionStorage`(`ev_plus_session_id`)에
+  보관하고, 페이지를 열 때 보관된 번호가 있으면 `GET /game/{id}/state`로 확인해 살아 있으면
+  그 게임을 이어서 보여준다(확인하는 동안 "진행 중인 게임을 불러오는 중…"). 404면 번호를
+  지우고 설정 화면에 "세션 만료 — 새 게임 — 이전 게임을 이어갈 수 없습니다." 안내를 띄운다
+  — 근거: [0043](../decisions/0043-restore-session-on-reload.md) · 원본: `web/src/sessionStore.ts`,
+  `web/src/App.tsx` · 강제 장치: `web/src/__tests__/sessionStore.test.ts`(보관·삭제·저장소 예외·
+  404 판정), 화면 흐름은 장치 없음
+- 세션 만료 표시: 게임 중 요청이 404를 받으면(`ApiError.status === 404`) 오류 문구 대신
+  "세션 만료 — 새 게임: 서버에서 이 게임을 찾을 수 없습니다." 배너와 "새 게임" 버튼을 띄우고,
+  액션 바와 결과 창 "다음 핸드" 버튼을 잠근다. 400 등 다른 오류는 기존 오류 배너 — 원본:
+  `web/src/App.tsx` · 강제 장치: `web/src/__tests__/sessionStore.test.ts::세션 만료 판정`(판정만)
+- 새 게임: "새 게임"을 누르면 이전 게임의 세션 요약(헤더 GTO%·EV), 오류·만료 표시, 보관된
+  세션 번호, 핸드 번호 비교 기준을 모두 초기화한다 — 원본: `web/src/App.tsx::handleNewGame`
+  (장치 없음)
 - 게임 설정 검증(`POST /game/start`, `server/schemas.py::StartGameRequest`): 빅 블라인드
   2 이상 짝수(SB = BB/2), 시작 칩 1~10,000,000 이면서 BB×10 이상, AI 봇 1~5명, 난이도
   easy/medium/hard, 플레이어 이름 1~20자(앞뒤 공백 제거)이고 봇 이름 접두사 "🤖"로 시작
@@ -182,7 +206,8 @@
 | `server/schemas.py` | 응답/이벤트 Pydantic 모델 |
 | `web/src/hooks/useEventQueue.ts` | 이벤트 큐 리플레이(지연·배지·칩 애니메이션, 타이머 스케줄링) |
 | `web/src/hooks/eventQueueLogic.ts` | 이벤트 → 배지/커밋 레이블 판단(순수 함수, vitest 대상) |
-| `web/src/api.ts` | fetch 래퍼 + 422 detail 배열 평탄화(`formatApiError`) |
+| `web/src/api.ts` | fetch 래퍼 + 422 detail 배열 평탄화(`formatApiError`) + 상태 코드 실은 `ApiError` |
+| `web/src/sessionStore.ts` | 세션 번호 `sessionStorage` 보관(새로고침 후 이어하기)·404 만료 판정 |
 | `db/recorder.py` | 핸드/액션 RL 기록(세션과 별개 관심사, 실패해도 게임 진행에 영향 없음) |
 
 엔드포인트(이름·용도 한 줄. 필드 원본: `server/schemas.py`, `https://localhost:8765/docs`):
