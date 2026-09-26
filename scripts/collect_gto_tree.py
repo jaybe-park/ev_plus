@@ -81,7 +81,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import gto_tree_worker as tw  # 순수 로직 재사용 (집계/분기/토큰/큐)
 from gto.url_generator import url_from_node_key
 
-POSITIONS = ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
+from gto.node_key import POSITIONS  # noqa: E402
 
 DEFAULT_CHECKPOINT = ROOT / "gto_tree_checkpoint.json"
 DEFAULT_SERVER = "https://localhost:8765"
@@ -133,100 +133,10 @@ def recreate_page(ctx, old_page):
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# 프리플랍 베팅 순서 시뮬레이터 (순수 포커 규칙 — GTO 가정 아님)
-#   노드 키(F/C/X/R{bb} 토큰)를 좌석 순서로 재생해:
-#     - 각 토큰을 실행한 좌석
-#     - 다음에 행동할 좌석(=히어로, 없으면 None=베팅 종료 → 프리플랍 결정 노드 아님)
-#   을 구한다. 저장 라벨(hero/vs_position/range_type) 유도 + 자식 유효성 필터에 쓴다.
+# 프리플랍 베팅 순서 시뮬레이터 / 노드 메타 유도 — gto/node_key.py로 이동(서버 저장 API·
+# 로더·감사 스크립트와 단일 소스 공유, T-001). 기존 호출부 호환을 위해 여기서 재노출한다.
 # ──────────────────────────────────────────────────────────────────────────
-def _replay(tokens: list):
-    """토큰 리스트 재생 → (좌석_per_토큰: list, 다음_행동_좌석: Optional[int]).
-
-    좌석 순서 UTG(0)…BB(5). 블라인드는 committed로만 반영(자발 액션 아님).
-    레이즈가 나오면 그 뒤 활성 좌석들이 다시 행동 대상이 된다(라운드 재개).
-    """
-    folded = set()
-    committed = [0.0] * 6
-    committed[4] = 0.5   # SB
-    committed[5] = 1.0   # BB
-    current_bet = 1.0
-    queue = deque(range(6))  # 프리플랍 첫 순회: UTG→BB
-    actor_per_token = []
-
-    for tok in tokens:
-        while queue and queue[0] in folded:
-            queue.popleft()
-        if not queue:
-            actor_per_token.append(None)
-            continue
-        actor = queue.popleft()
-        actor_per_token.append(actor)
-
-        if tok == "F":
-            folded.add(actor)
-        elif tok in ("C", "X"):
-            committed[actor] = max(committed[actor], current_bet)
-        elif tok.startswith("R"):
-            try:
-                size = float(tok[1:])
-            except ValueError:
-                size = current_bet
-            committed[actor] = size
-            current_bet = size
-            # 레이즈 후: 폴드 안 한 나머지 좌석이 레이저 다음 순번부터 다시 행동
-            active = [s for s in range(6) if s not in folded and s != actor]
-            active.sort(key=lambda s: (s - actor) % 6)
-            queue = deque(active)
-        # 알 수 없는 토큰은 무시(방어)
-
-    while queue and queue[0] in folded:
-        queue.popleft()
-    next_actor = queue[0] if queue else None
-    # 활성(폴드 안 한) 플레이어가 1명 이하면 핸드 종료(예: 모두 BB에게 폴드 →
-    # BB가 블라인드로 무혈 승리, 결정 노드 아님). 순수 포커 규칙(가정 아님).
-    active = [s for s in range(6) if s not in folded]
-    if len(active) <= 1:
-        return actor_per_token, None
-    return actor_per_token, next_actor
-
-
-def derive_node_meta(node_key: str) -> Optional[dict]:
-    """노드 키 → 저장용 메타(hero_position/vs_position/range_type/situation_label).
-
-    베팅 순서로 히어로(다음 행동 좌석)와 레이저 포지션들을 유도한다.
-    결정 노드가 아니면(베팅 종료) None. 라벨 규칙은 기존 DB 표기와 일치:
-      open      → "{H} RFI"                       (vs_position=None)
-      vs_open   → "{H} vs {opener} open"          (vs_position="opener")
-      vs_3bet   → "{H} vs {3bettor} 3bet"         (vs_position="opener/3bettor")
-      vs_Nbet   → "{H} vs {last} Nbet"            (vs_position="opener/…/last")
-    """
-    tokens = node_key.split("-") if node_key else []
-    actor_per_token, hero_seat = _replay(tokens)
-    if hero_seat is None:
-        return None
-    hero = POSITIONS[hero_seat]
-
-    raisers = [
-        POSITIONS[actor_per_token[i]]
-        for i, t in enumerate(tokens)
-        if t.startswith("R") and actor_per_token[i] is not None
-    ]
-    n = len(raisers)
-
-    if n == 0:
-        return {"hero_position": hero, "vs_position": None, "range_type": "open",
-                "situation_label": f"{hero} RFI"}
-    if n == 1:
-        return {"hero_position": hero, "vs_position": raisers[0], "range_type": "vs_open",
-                "situation_label": f"{hero} vs {raisers[0]} open"}
-    bet_num = n + 1  # 2레이즈=3bet, 3레이즈=4bet …
-    range_type = "vs_3bet" if n == 2 else f"vs_{bet_num}bet"
-    return {
-        "hero_position": hero,
-        "vs_position": "/".join(raisers),
-        "range_type": range_type,
-        "situation_label": f"{hero} vs {raisers[-1]} {bet_num}bet",
-    }
+from gto.node_key import _replay, derive_node_meta  # noqa: E402,F401
 
 
 # ──────────────────────────────────────────────────────────────────────────

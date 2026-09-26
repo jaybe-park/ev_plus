@@ -4,7 +4,7 @@ poker_simulator DB 스키마 정의 및 마이그레이션
 
 import sqlite3
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -161,18 +161,21 @@ CREATE INDEX IF NOT EXISTS idx_postflop_game_pos ON postflop_actions(game_uuid, 
 #     레거시/파생으로 nullable 유지(제거하지 않음 — 봇/조회/테스트 하위 호환).
 #   - hero_position/num_active: 시퀀스에서 파생한 조회/디버깅용 컬럼.
 #   UNIQUE(action_seq)는 별도 부분 유니크 인덱스(idx_gto_pre_seq)로 강제(NULL 다수 허용).
+# v13 (T-001, ADR 0038): 노드의 유일 키는 action_seq 하나다. UNIQUE(position, vs_position,
+#   range_type)를 제거하고(서로 다른 노드 — 예 R2.5-F와 R2.5-C — 가 같은 3종 키를 가질 수
+#   있음) action_seq를 NOT NULL로 바꾼다. 3종 키는 action_seq에서 유도한 조회용 라벨이다.
+#   SQLite는 제약 삭제 ALTER가 없어 테이블 재생성으로 옮긴다(rebuild_gto_preflop_situations_v13).
 CREATE_GTO_PREFLOP_SITUATIONS = """
 CREATE TABLE IF NOT EXISTS gto_preflop_situations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    position        TEXT    NOT NULL,   -- BTN, CO, MP, UTG, SB, BB
-    vs_position     TEXT,               -- NULL = RFI, 오프너 포지션 = vs_open/vs_3bet
-    range_type      TEXT    NOT NULL,   -- open | vs_open | vs_3bet
+    position        TEXT    NOT NULL,   -- 히어로 포지션(action_seq에서 유도): UTG, HJ, CO, BTN, SB, BB
+    vs_position     TEXT,               -- NULL = RFI, 레이저 좌석을 '/'로 연결(action_seq에서 유도)
+    range_type      TEXT    NOT NULL,   -- open | vs_open | vs_3bet | vs_4bet ... (action_seq에서 유도)
     raise_size      REAL,               -- bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5)
     situation_label TEXT    NOT NULL,   -- "BTN RFI", "BB vs BTN open"
-    action_seq      TEXT,               -- v12: 캐노니컬 노드 키(히어로 결정 직전 시퀀스). NULL 허용
+    action_seq      TEXT    NOT NULL,   -- 노드 키(히어로 결정 직전 시퀀스). 유일(idx_gto_pre_seq)
     hero_position   TEXT,               -- v12: 결정 주체(시퀀스 파생, 조회용)
-    num_active      INTEGER,            -- v12: 히어로 결정 시점 미폴드 인원(6 - 폴드수, 파생)
-    UNIQUE(position, vs_position, range_type)
+    num_active      INTEGER             -- v12: 히어로 결정 시점 미폴드 인원(6 - 폴드수, 파생)
 );
 """
 
@@ -363,6 +366,65 @@ def backfill_v12(conn):
         )
 
 
+def rebuild_gto_preflop_situations_v13(conn):
+    """v13: gto_preflop_situations 테이블 재생성 — UNIQUE(position, vs_position, range_type)
+    제거 + action_seq NOT NULL. 모든 행(id 포함)과 gto_preflop_hands는 그대로 보존한다.
+
+    SQLite 공식 "테이블 스키마 변경" 절차(새 테이블 생성 → 복사 → 옛 테이블 삭제 → 이름 변경)를
+    따른다. gto_preflop_hands가 ON DELETE CASCADE FK로 이 테이블을 참조하므로, 옛 테이블 DROP이
+    핸드를 지우지 않도록 foreign_keys를 잠시 끈다(PRAGMA는 트랜잭션 밖에서만 바뀌므로 먼저
+    커밋). 복사 뒤 foreign_key_check로 고아 핸드가 없는지 확인한 다음 다시 켠다.
+
+    action_seq가 NULL인 행이 있으면 노드 키를 알 수 없어 옮길 수 없다 — 추측으로 채우거나
+    조용히 버리지 않고 예외를 낸다(2026-09-26 운영 DB는 58행 모두 action_seq 있음).
+    """
+    conn.commit()
+    nulls = conn.execute(
+        "SELECT COUNT(*) FROM gto_preflop_situations WHERE action_seq IS NULL"
+    ).fetchone()[0]
+    if nulls:
+        raise RuntimeError(
+            f"v13 마이그레이션 중단: action_seq가 NULL인 gto_preflop_situations {nulls}행 — "
+            "노드 키를 먼저 채우거나 지운 뒤 다시 실행하세요(추측으로 채우지 않음)."
+        )
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript(
+            """
+            BEGIN;
+            CREATE TABLE gto_preflop_situations_v13 (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                position        TEXT    NOT NULL,
+                vs_position     TEXT,
+                range_type      TEXT    NOT NULL,
+                raise_size      REAL,
+                situation_label TEXT    NOT NULL,
+                action_seq      TEXT    NOT NULL,
+                hero_position   TEXT,
+                num_active      INTEGER
+            );
+            INSERT INTO gto_preflop_situations_v13
+                (id, position, vs_position, range_type, raise_size, situation_label,
+                 action_seq, hero_position, num_active)
+            SELECT id, position, vs_position, range_type, raise_size, situation_label,
+                   action_seq, hero_position, num_active
+            FROM gto_preflop_situations;
+            DROP TABLE gto_preflop_situations;
+            ALTER TABLE gto_preflop_situations_v13 RENAME TO gto_preflop_situations;
+            CREATE INDEX IF NOT EXISTS idx_gto_pre_sit
+                ON gto_preflop_situations(position, vs_position, range_type);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_gto_pre_seq
+                ON gto_preflop_situations(action_seq);
+            COMMIT;
+            """
+        )
+        orphans = conn.execute("PRAGMA foreign_key_check(gto_preflop_hands)").fetchall()
+        if orphans:
+            raise RuntimeError(f"v13 마이그레이션 후 고아 핸드 {len(orphans)}행 — FK 확인 필요")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 # 버전별 1회성 마이그레이션 (connection._migrate가 현재버전 초과분만 실행)
 # 각 스텝은 SQL 문자열(executescript) 또는 콜러블(conn을 받는 파이썬 함수)일 수 있다.
 MIGRATIONS = {
@@ -410,6 +472,10 @@ MIGRATIONS = {
         backfill_v12,
         # 백필로 채워진 action_seq가 서로 distinct임을 유니크 인덱스로 강제.
         CREATE_GTO_PREFLOP_SEQ_INDEX,
+    ],
+    13: [
+        # T-001/ADR 0038: 노드 유일 키 = action_seq. enum 3종 UNIQUE 제거(테이블 재생성).
+        rebuild_gto_preflop_situations_v13,
     ],
 }
 

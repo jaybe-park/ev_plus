@@ -1,6 +1,6 @@
 # 0008. 노드 키 = GTO Wizard preflop_actions 문자열, 스키마 안 A, DB가 source of truth
 
-- 상태: 유효
+- 상태: 일부 대체됨 → 0038 (enum 3종 UNIQUE 유지 부분. 노드 키 포맷·DB source of truth는 유효)
 - 날짜: 2026-06-14, 2026-07-15 · 결정자: jaybe-park
 
 ## 맥락

@@ -11,7 +11,7 @@
 | [0005](0005-100bb-and-headsup-sb.md) | 100bb 고정 근사, 헤즈업은 6-max SB 재사용, 3~5인은 제외 | 유효 | gto-preflop |
 | [0006](0006-enum-first-and-model-guards.md) | enum 경로 우선·시퀀스 폴백 병렬 공존 + 데이터 모델 밖 가드 | 일부 대체됨 → 0035 (조회 순서. 데이터 모델 밖 가드는 유효) | gto-preflop |
 | [0007](0007-structured-preflop-seq.md) | advisor 입력은 구조화 프리플랍 시퀀스(한글 로그 파싱 금지) | 유효 | gto-preflop |
-| [0008](0008-node-key-action-seq.md) | 노드 키 = GTO Wizard preflop_actions 문자열, 스키마 안 A, DB가 source of truth | 유효 | gto-preflop |
+| [0008](0008-node-key-action-seq.md) | 노드 키 = GTO Wizard preflop_actions 문자열, 스키마 안 A, DB가 source of truth | 일부 대체됨 → 0038 (enum UNIQUE 유지 부분) | gto-preflop |
 | [0009](0009-measured-size-node-key.md) | 저장 노드 키는 실측 사이즈 verbatim(깊이-캐노니컬 스냅 폐기) | 유효 | gto-preflop |
 | [0010](0010-runtime-sibling-snap.md) | 런타임 스냅 = 수집된 레이즈 형제, 없으면 큐+휴리스틱 | 유효 | gto-preflop |
 | [0011](0011-data-driven-tree-collection.md) | 데이터 기반 트리 수집(가정 금지, ε 분기, 도달확률 best-first) | 유효 | gto-preflop |
@@ -38,3 +38,4 @@
 | [0035](0035-gto-lookup-sequence-first.md) | GTO 조회는 액션 순서 키 먼저, 간단 라벨은 "근사" 예비 | 유효 | gto-preflop |
 | [0036](0036-moving-button.md) | 파산으로 좌석이 빠질 때는 무빙 버튼 | 유효 | game |
 | [0037](0037-allin-only-snaps-to-allin-sibling.md) | 라이브 올인은 올인 형제에만 스냅한다(레이즈 형제와 구분) | 유효 | gto-preflop |
+| [0038](0038-node-row-key-is-action-seq.md) | 노드 행의 유일 키는 action_seq 하나, 3종 키는 action_seq에서 유도 | 유효 | gto-preflop |

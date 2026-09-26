@@ -105,65 +105,101 @@ def get_session_review(session_id: str):
 # ──────────────────────────────────────────
 
 class GtoPreflopSaveRequest(BaseModel):
-    position: str                          # BTN, CO, MP, UTG, SB, BB
-    vs_position: Optional[str] = None     # None=RFI, "BTN"=vs_open, "BTN/BB"=vs_3bet(opener/three_bettor)
-    range_type: str                        # open | vs_open | vs_3bet
-    raise_size: Optional[float] = None    # bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5)
-    situation_label: str                   # "BTN RFI"
+    # 노드 키(필수, ADR 0008/0009/0038): GTO Wizard URL의 preflop_actions 문자열 그대로
+    # (실측 사이즈, 예 "F-F-F-R2.5-F"). UTG RFI는 "". 저장 행은 이 값으로만 찾는다.
+    action_seq: str
     hands: Dict[str, Dict[str, float]]    # {"AA": {"raise": 1.0}, ...}
-    action_seq: Optional[str] = None      # ② 캐노니컬 노드 키(미지정 시 enum에서 파생)
+    raise_size: Optional[float] = None    # bb 단위 실측 raise-to 값 (예: 2.5, 8.0, 13.5)
+    # 아래 3종 키·라벨은 action_seq에서 서버가 유도한다. 보내면 유도값과 대조해 다르면 거부.
+    position: Optional[str] = None         # 히어로 포지션
+    vs_position: Optional[str] = None      # None=RFI, "BTN"=vs_open, "BTN/BB"=vs_3bet(opener/three_bettor)
+    range_type: Optional[str] = None       # open | vs_open | vs_3bet | vs_4bet ...
+    situation_label: Optional[str] = None  # "BTN RFI" (없으면 유도 라벨)
+
+
+# 핸드별 fold+call+raise+allin 합 허용 범위(ADR 0002 — 수집기·로더와 같은 기준)
+_SAVE_FREQ_SUM_MIN = 0.9
+_SAVE_FREQ_SUM_MAX = 1.1
 
 
 @app.post("/gto/preflop/save")
 def save_gto_preflop(req: GtoPreflopSaveRequest):
-    """GTO Wizard에서 추출한 프리플랍 레인지를 DB에 저장 (덮어쓰기)."""
+    """GTO Wizard에서 추출한 프리플랍 노드 1개를 DB에 저장 (같은 action_seq면 덮어쓰기).
+
+    거부(422): action_seq가 결정 노드가 아님 / 보낸 3종 키가 action_seq 유도값과 다름 /
+    핸드 0개 / 어떤 핸드든 빈도합이 [0.9, 1.1] 밖(ADR 0002 — 손상 스팟은 저장하지 않는다).
+    """
     from db.connection import get_connection
-    from gto.url_generator import situation_to_node_key, node_key_active_count
+    from gto.url_generator import node_key_active_count
+    from gto.node_key import derive_node_meta
+
+    action_seq = req.action_seq.strip()
+    meta = derive_node_meta(action_seq)
+    if meta is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"action_seq {action_seq!r}는 프리플랍 결정 노드가 아닙니다(베팅 종료).",
+        )
+
+    # 보낸 3종 키 대조. vs_3bet 반쪽 포맷(three_bettor만)은 'opener/three_bettor'로 정규화한
+    # 뒤 비교한다(우리 모델은 opener==hero, backfill_v12와 같은 규칙).
+    sent_vs = req.vs_position
+    if req.range_type == "vs_3bet" and sent_vs and "/" not in sent_vs and req.position:
+        sent_vs = f"{req.position}/{sent_vs}"
+    mismatches = []
+    if req.position is not None and req.position != meta["hero_position"]:
+        mismatches.append(f"position {req.position!r}≠{meta['hero_position']!r}")
+    if req.range_type is not None and req.range_type != meta["range_type"]:
+        mismatches.append(f"range_type {req.range_type!r}≠{meta['range_type']!r}")
+    if (req.position is not None or req.range_type is not None) and sent_vs != meta["vs_position"]:
+        mismatches.append(f"vs_position {sent_vs!r}≠{meta['vs_position']!r}")
+    if mismatches:
+        raise HTTPException(
+            status_code=422,
+            detail=f"action_seq {action_seq!r}와 3종 키가 다릅니다: " + ", ".join(mismatches),
+        )
+
+    if not req.hands:
+        raise HTTPException(status_code=422, detail="핸드가 0개입니다 — 저장하지 않습니다.")
+    bad = []
+    for hand, freqs in req.hands.items():
+        total = sum(freqs.get(a, 0.0) for a in ("fold", "call", "raise", "allin"))
+        if not (_SAVE_FREQ_SUM_MIN <= total <= _SAVE_FREQ_SUM_MAX):
+            bad.append((hand, round(total, 3)))
+    if bad:
+        raise HTTPException(
+            status_code=422,
+            detail=f"빈도합이 [0.9, 1.1] 밖인 핸드 {len(bad)}개 — 저장하지 않습니다: {bad[:10]}",
+        )
+
+    position = meta["hero_position"]
+    vs_position = meta["vs_position"]
+    range_type = meta["range_type"]
+    label = req.situation_label or meta["situation_label"]
+    num_active = node_key_active_count(action_seq)
+
     conn = get_connection()
     cur = conn.cursor()
-
-    # ② vs_3bet vs_position 정규화(마이그레이션 backfill_v12와 동일 규칙): 우리 모델은
-    # opener==hero이므로 three_bettor만 온 경우 'opener/three_bettor'로 정규화해 저장.
-    vs_position = req.vs_position
-    if req.range_type == "vs_3bet" and vs_position and "/" not in vs_position:
-        vs_position = f"{req.position}/{vs_position}"
-
-    # ②' 노드 키: 명시 action_seq(④ 워커의 **실측 사이즈** 키)가 오면 **verbatim 우선**
-    # 저장(사이즈 뭉개지 않음). 없을 때만 레거시 enum 파생(깊이-캐노니컬, 임시)으로 폴백.
-    action_seq = req.action_seq
-    if action_seq is None:
-        action_seq = situation_to_node_key(req.position, vs_position, req.range_type)
-    hero_position = req.position
-    num_active = node_key_active_count(action_seq) if action_seq is not None else None
-
-    # SQLite에서 NULL=NULL이 성립하지 않아 ON CONFLICT가 작동 안 함
-    # → IS NULL 비교로 직접 존재 여부 확인 후 update or insert
-    if vs_position is None:
-        row = cur.execute(
-            "SELECT id FROM gto_preflop_situations WHERE position=? AND range_type=? AND vs_position IS NULL",
-            (req.position, req.range_type)
-        ).fetchone()
-    else:
-        row = cur.execute(
-            "SELECT id FROM gto_preflop_situations WHERE position=? AND range_type=? AND vs_position=?",
-            (req.position, req.range_type, vs_position)
-        ).fetchone()
+    row = cur.execute(
+        "SELECT id FROM gto_preflop_situations WHERE action_seq=?", (action_seq,)
+    ).fetchone()
 
     if row:
         sit_id = row["id"]
         cur.execute(
             "UPDATE gto_preflop_situations "
-            "SET raise_size=?, situation_label=?, action_seq=?, hero_position=?, num_active=? "
-            "WHERE id=?",
-            (req.raise_size, req.situation_label, action_seq, hero_position, num_active, sit_id)
+            "SET position=?, vs_position=?, range_type=?, raise_size=?, situation_label=?, "
+            "hero_position=?, num_active=? WHERE id=?",
+            (position, vs_position, range_type, req.raise_size, label,
+             position, num_active, sit_id)
         )
     else:
         cur.execute(
             "INSERT INTO gto_preflop_situations "
             "(position, vs_position, range_type, raise_size, situation_label, action_seq, hero_position, num_active) "
             "VALUES (?,?,?,?,?,?,?,?)",
-            (req.position, vs_position, req.range_type, req.raise_size,
-             req.situation_label, action_seq, hero_position, num_active)
+            (position, vs_position, range_type, req.raise_size,
+             label, action_seq, position, num_active)
         )
         sit_id = cur.lastrowid
 
@@ -192,7 +228,7 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
     loader._loaded = False
 
     return {
-        "ok": True, "situation": req.situation_label,
+        "ok": True, "situation": label,
         "hands": len(req.hands), "action_seq": action_seq,
     }
 

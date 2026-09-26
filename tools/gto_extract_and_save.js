@@ -4,14 +4,28 @@
 // 특정 스팟 하나를 눈으로 확인하며 수동으로 재추출·재검증·재저장할 때 쓴다
 // (Chrome DevTools 콘솔 또는 Chrome MCP javascript_tool에서 실행).
 //
-// 사용법:
-//   extractAndSave(position, label, raiseSize, vsPosition, rangeType)
-//   예) extractAndSave('HJ', 'HJ RFI', 2.5).then(console.log);
-//       extractAndSave('BB', 'BB vs BTN open', 2.5, 'BTN', 'vs_open').then(console.log);
+// 사용법 (GTO Wizard에서 저장할 스팟으로 이동한 상태에서):
+//   extractAndSave(raiseSize)
+//   예) extractAndSave(2.5).then(console.log);     // 화면 Actions 패널의 레이즈 사이즈(bb)
+//       extractAndSave(null).then(console.log);    // 레이즈 사이즈를 모르면 null(추측 금지)
 //
-// 주의: 이 스크립트는 action_seq를 보내지 않으므로 서버가 레거시 파생 키로 저장한다
-// (TODO T-001에서 action_seq 전송 추가 예정).
-async function extractAndSave(position, label, raiseSize, vsPosition = null, rangeType = 'open') {
+// 노드 키(action_seq)는 현재 URL의 preflop_actions(앞에서 history_spot개 토큰)를 그대로
+// 보낸다(ADR 0008/0009). 포지션·상황 종류·라벨은 서버가 action_seq에서 유도한다(ADR 0038).
+// 서버도 빈도합 [0.9, 1.1]을 검증해 불량이면 422로 거부한다(ADR 0002).
+function currentActionSeq() {
+  const params = new URL(location.href).searchParams;
+  const raw = params.get('preflop_actions') || '';
+  const tokens = raw ? raw.split('-') : [];
+  const spotParam = params.get('history_spot');
+  if (spotParam === null) return tokens.join('-');
+  const spot = parseInt(spotParam, 10);
+  if (Number.isNaN(spot) || spot < 0 || spot > tokens.length) {
+    throw new Error(`history_spot=${spotParam}가 preflop_actions 토큰 수(${tokens.length})와 맞지 않음`);
+  }
+  return tokens.slice(0, spot).join('-');
+}
+
+async function extractAndSave(raiseSize = null) {
   function colorToAction(rgb) {
     const m = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
     if (!m) return null;
@@ -22,6 +36,7 @@ async function extractAndSave(position, label, raiseSize, vsPosition = null, ran
     if (r < 100 && g > 100 && g < 160 && b > 150) return 'fold';
     return null;
   }
+  const actionSeq = currentActionSeq();
   const cells = document.querySelectorAll('[data-tst^="range_table_cell_0_"]');
   const hands = {};
   let badSum = 0;
@@ -53,8 +68,7 @@ async function extractAndSave(position, label, raiseSize, vsPosition = null, ran
   const r = await fetch('https://localhost:8765/gto/preflop/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ position, vs_position: vsPosition, range_type: rangeType,
-                           raise_size: raiseSize, situation_label: label, hands })
+    body: JSON.stringify({ action_seq: actionSeq, raise_size: raiseSize, hands })
   });
   return r.json();
 }

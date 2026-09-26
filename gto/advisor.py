@@ -10,40 +10,20 @@ from .loader import (
     get_action_frequencies, sample_action, find_opener_position,
     get_range_by_seq, get_children_by_prefix,
 )
-from .url_generator import get_url, POS_INDEX
+from .url_generator import POS_INDEX
+from .node_key import HEADSUP_PREFIX, derive_node_meta
 from core.card import Card
 
 
-def _save_missing_spot(
-    range_type: str, position: str, vs_position: str, situation_label: str
-) -> None:
-    """미수집 GTO 스팟을 DB에 저장 (중복 무시)."""
-    try:
-        from db.connection import get_connection
-        url = get_url(range_type, position, vs_position)
-        conn = get_connection()
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO gto_missing_spots_preflop
-                (street, position, vs_position, range_type, situation_label, gto_wizard_url)
-            VALUES ('preflop', ?, ?, ?, ?, ?)
-            """,
-            (position, vs_position, range_type, situation_label, url),
-        )
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass  # DB 없거나 오류 시 조용히 무시
-
-
 def _save_missing_seq(node_key_live: str, hero_position: str) -> None:
-    """②' 트리 밖(미수집) 프리플랍 노드를 큐에 기록(중복 무시).
+    """미수집 프리플랍 노드를 큐에 기록(중복 무시).
 
-    node_key_live = 히어로 결정 직전까지의 **실측 사이즈** 캐노니컬 문자열
-    (canonical_preflop_actions). ④ 데이터 기반 워커가 이 실측 키로 GTO Wizard에
-    정확히 이동(url_from_node_key)해 수집한다. gto_missing_spots_preflop 테이블을
-    재사용하되 range_type='seq'로 구분하고, 실측 노드 키를 vs_position에 저장해
+    node_key_live = 히어로 결정 직전까지의 노드 키(스냅에 성공한 토큰은 수집된 형제
+    사이즈, 실패하면 라이브 실측 사이즈). 수집 워커가 이 키로 GTO Wizard에 정확히
+    이동(url_from_node_key)해 수집한다. gto_missing_spots_preflop 테이블을 재사용하되
+    range_type='seq'로 구분하고, 노드 키를 vs_position에 저장해
     UNIQUE(street, position, vs_position, range_type)로 자연 dedupe.
+    (간단 라벨 enum 행 큐 기록은 ADR 0035 이후 하지 않는다 — 정확한 노드 키가 수집 단위.)
     """
     try:
         from db.connection import get_connection
@@ -127,7 +107,7 @@ def _parse_raise_bb(token: str) -> Optional[float]:
         return None
 
 
-def canonical_node_key(preflop_seq: list) -> Optional[str]:
+def canonical_node_key(preflop_seq: list, prefix_tokens: Optional[list] = None) -> Optional[str]:
     """구조화 라이브 시퀀스 → 캐노니컬 노드 키(②' 데이터 기반 트리-인지 스냅).
 
     (②의 깊이-캐노니컬 하드코딩 스냅을 대체) 라이브 시퀀스를 앞에서부터 훑으며 키를
@@ -152,8 +132,11 @@ def canonical_node_key(preflop_seq: list) -> Optional[str]:
     예(수집분에 "R2.5-R8-F-F-F-F"만 있을 때):
       [UTG raise 2.3, HJ raise 7.5, CO~BB fold] → "R2.5-R8-F-F-F-F"
       (2.3→형제 R2.5, 7.5→형제 R8로 스냅). 미수집 브랜치면 None.
+
+    prefix_tokens: 라이브 시퀀스 앞에 붙일 토큰. 헤즈업은 HEADSUP_PREFIX(F-F-F-F)를 넘겨
+    6-max SB vs BB 트리로 옮긴다(ADR 0005).
     """
-    toks = []
+    toks = list(prefix_tokens or [])
     for a in preflop_seq:
         act = a.get("action")
         if act == "fold":
@@ -201,6 +184,11 @@ def canonical_node_key(preflop_seq: list) -> Optional[str]:
     return "-".join(toks)
 
 
+def _gto_position(position: str) -> str:
+    """헤즈업 딜러 라벨 "BTN/SB"는 GTO 조회에서만 6-max "SB"로 본다(ADR 0005)."""
+    return "SB" if position == "BTN/SB" else position
+
+
 class GTOAdvisor:
 
     def get_recommendation(
@@ -211,55 +199,91 @@ class GTOAdvisor:
         game_state: dict,
         big_blind: int = 20,
     ) -> Optional[dict]:
-        """현재 상황에 맞는 GTO 추천 반환.
+        """현재 상황에 맞는 GTO 추천 반환 (조회 순서: ADR 0035).
 
-        ② 이후: 기존 enum(RFI/vs_open/vs_3bet) 경로를 **먼저** 시도해 완전히 동일하게
-        동작시키고(모든 quirk/큐 기록/봇 행동 보존), enum이 못 담는 스팟(스퀴즈/멀티웨이/
-        4벳+ 등)에 한해 **시퀀스 키 경로**를 폴백으로 추가한다(순수 additive). 현재는
-        시퀀스 키로만 조회되는 노드 데이터가 없어 폴백은 항상 None → 동작 불변.
-        ④ 수집으로 롱테일 노드가 채워지면 자동으로 커버가 확장된다.
+        1. 액션 순서 키로 **정확한 노드**를 찾는다(사이즈는 수집된 형제로 스냅, ADR 0010).
+           결과 `approx=False`.
+        2. 없을 때만 **간단 라벨**(포지션·상대·상황 종류)로 찾는다. 라벨은 콜러 없는 노드만
+           대표한다(loader). 데이터 모델 밖 가드(ADR 0006)는 이 경로에 그대로 있다.
+           결과 `approx=True` → 힌트 문자열·플레이 평가에 "(근사)" 표시.
+        3. 둘 다 없으면 None(힌트 없음, 봇 휴리스틱)이고, 정확한 노드 키를 미수집 큐에 넣는다.
         """
+        rec, queue_key = self._seq_lookup(
+            hole_cards, my_position, positions, game_state
+        )
+        if rec is not None:
+            rec["approx"] = False
+            return rec
         rec = self._recommend_by_enum(
             hole_cards, my_position, positions, game_state, big_blind
         )
         if rec is not None:
+            rec["approx"] = True
             return rec
-        return self._recommend_by_seq(hole_cards, my_position, game_state, big_blind)
+        if queue_key is not None:
+            _save_missing_seq(queue_key, _gto_position(my_position))
+        return None
 
-    def _recommend_by_seq(
+    @staticmethod
+    def _seq_prefix(my_position: str, positions: Optional[dict], preflop_seq: list):
+        """라이브 시퀀스를 6-max 트리 노드 키로 옮길 때 앞에 붙일 토큰.
+
+        - 헤즈업(딜러 라벨 "BTN/SB")이면 F-F-F-F — 6-max SB vs BB 트리(ADR 0005).
+        - 3~5인 테이블이면 None — 포지션 구성이 달라 트리에 대응시키지 않는다(ADR 0005).
+          (간단 라벨 경로는 기존대로 동작하고 결과는 근사로 표시된다.)
+        - 그 외(6인, 또는 positions를 모르는 호출)는 빈 프리픽스.
+        """
+        labels = set((positions or {}).values())
+        if (
+            my_position == "BTN/SB"
+            or "BTN/SB" in labels
+            or any(a.get("position") == "BTN/SB" for a in preflop_seq)
+        ):
+            return list(HEADSUP_PREFIX)
+        if 3 <= len(positions or {}) <= 5:
+            return None
+        return []
+
+    def _seq_lookup(
         self,
         hole_cards: list,
         my_position: str,
+        positions: Optional[dict],
         game_state: dict,
-        big_blind: int = 20,
-    ) -> Optional[dict]:
-        """② 시퀀스 키 기반 조회(캐노니컬 노드 키로 스냅 후 loader 조회).
+    ):
+        """정확한 노드 조회. 반환 (추천 dict 또는 None, 미수집 큐에 넣을 노드 키 또는 None).
 
-        런타임 preflop_seq(히어로 결정 직전까지의 액션)를 트리-인지 스냅으로 캐노니컬
-        노드 키로 변환해 조회한다(canonical_node_key). 스냅이 미수집 브랜치라 None을
-        내면 억지 매칭 대신 **실측 키로 큐 등록** 후 None(상위 봇이 휴리스틱 폴백).
-        키는 나왔지만 데이터 없음이면 그대로 None. enum 경로가 이미 커버하는 스팟은
-        get_recommendation에서 여기 도달하지 않는다.
+        큐 키는 "이 상황의 정확한 노드가 DB에 없다"가 확실할 때만 준다:
+        - 스냅 실패(미수집 브랜치) → 라이브 실측 키
+        - 스냅은 됐지만 그 노드가 미수집 → 스냅된 키(수집된 형제 사이즈라 GTO Wizard에 그대로 있음)
+        노드 키가 가리키는 히어로가 실제 히어로와 다르면(시퀀스 오염, 지원 밖 테이블) 조회도
+        큐 기록도 하지 않는다 — 다른 사람의 노드를 내주지 않기 위함.
         """
         if len(hole_cards) < 2:
-            return None
+            return None, None
         if game_state.get("street", "프리플랍") != "프리플랍":
-            return None
+            return None, None
         preflop_seq = game_state.get("preflop_seq") or []
-        node_key = canonical_node_key(preflop_seq)
+        prefix = self._seq_prefix(my_position, positions, preflop_seq)
+        if prefix is None:
+            return None, None
+
+        node_key = canonical_node_key(preflop_seq, prefix)
+        live = canonical_preflop_actions(preflop_seq)
+        live_key = "-".join(prefix + (live.split("-") if live else []))
+        meta = derive_node_meta(node_key if node_key is not None else live_key)
+        if meta is None or meta["hero_position"] != _gto_position(my_position):
+            return None, None
         if node_key is None:
-            # 미수집 브랜치 — 실측 사이즈 키로 큐에 남기고(④ 워커가 수집) 폴백.
-            live_key = canonical_preflop_actions(preflop_seq)
-            if live_key:  # 자발 액션이 하나라도 있을 때만(빈 키=RFI는 enum이 커버)
-                _save_missing_seq(live_key, my_position)
-            return None
+            return None, live_key  # 미수집 브랜치 — 억지 매칭 금지
+
         data = get_range_by_seq(node_key)
         if data is None:
-            return None
+            return None, node_key
         hand = hand_to_notation(hole_cards[0], hole_cards[1])
         freqs = get_action_frequencies(data, hand)
         if freqs is None:
-            return None
+            return None, None  # 노드는 있고 그 핸드만 없음/손상(ADR 0002) — 수집 대상 아님
         return {
             "hand": hand,
             "frequencies": freqs,
@@ -267,7 +291,19 @@ class GTOAdvisor:
             "raise_size": data.get("raise_size") or None,
             "raise_count": _count_raises(preflop_seq),
             "node_key": node_key,
-        }
+        }, None
+
+    def _recommend_by_seq(
+        self,
+        hole_cards: list,
+        my_position: str,
+        game_state: dict,
+        big_blind: int = 20,
+        positions: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """정확한 노드 조회만(라벨 예비·큐 기록 없음). 조회 순서 전체는 get_recommendation."""
+        rec, _ = self._seq_lookup(hole_cards, my_position, positions, game_state)
+        return rec
 
     def _recommend_by_enum(
         self,
@@ -277,9 +313,11 @@ class GTOAdvisor:
         game_state: dict,
         big_blind: int = 20,
     ) -> Optional[dict]:
-        """
-        현재 상황에 맞는 GTO 추천 반환.
-        RFI / vs_open / vs_3bet 세 가지 상황 지원.
+        """간단 라벨 조회(ADR 0035 2순위 — 호출부가 결과를 근사로 표시한다).
+
+        RFI / vs_open / vs_3bet 세 가지 상황 지원. 라벨이 가리키는 노드는 콜러 없는
+        노드뿐이다(loader). 데이터 모델 밖 가드(ADR 0006)에 걸리면 None.
+        미수집 큐 기록은 하지 않는다(get_recommendation이 정확한 노드 키로 기록).
         """
         if len(hole_cards) < 2:
             return None
@@ -288,9 +326,7 @@ class GTOAdvisor:
         # 히스토리 표시용 원본이므로 여기서 건드리지 않는다. GTO 조회 시점
         # 에서만 6-max "SB"로 국소 치환해 기존 SB RFI/vs_open/vs_3bet 데이터를
         # 재사용한다(헤즈업 트리는 SB(딜러) vs BB 단둘로 6-max SB 스팟과
-        # 게임 트리가 구조적으로 동일하다고 판단, 2026-07-12 결정).
-        # 조회 실패 시 큐(gto_missing_spots_preflop) 기록도 이 치환된 값
-        # 기준으로 남도록 치환은 아래 조회/기록 로직보다 앞에서 수행한다.
+        # 게임 트리가 구조적으로 동일하다고 판단, ADR 0005).
         if my_position == "BTN/SB":
             my_position = "SB"
 
@@ -315,7 +351,6 @@ class GTOAdvisor:
         if is_rfi and my_position != "BB":
             range_data = get_open_range(my_position)
             if range_data is None:
-                _save_missing_spot("open", my_position, "", f"{my_position} RFI")
                 return None
             freqs = get_action_frequencies(range_data, hand)
             if freqs is None:
@@ -329,6 +364,7 @@ class GTOAdvisor:
                 # 실측 bb 값만 사용 — 없으면 None (추측/플레이스홀더 금지, 상위에서 폴백 처리)
                 "raise_size": range_data.get("raise_size") or None,
                 "raise_count": 0,
+                "node_key": range_data.get("node_key"),
             }
 
         # vs_open (레이즈 1번)
@@ -354,10 +390,6 @@ class GTOAdvisor:
                     return None
             range_data = get_vs_open_range(my_position, opener_pos)
             if range_data is None:
-                _save_missing_spot(
-                    "vs_open", my_position, opener_pos,
-                    f"{my_position} vs {opener_pos} open"
-                )
                 return None
             freqs = get_action_frequencies(range_data, hand)
             if freqs is None:
@@ -368,6 +400,7 @@ class GTOAdvisor:
                 "situation": range_data.get("situation", f"{my_position} vs {opener_pos}"),
                 "raise_size": range_data.get("raise_size") or None,
                 "raise_count": 1,
+                "node_key": range_data.get("node_key"),
             }
 
         # vs_3bet (레이즈 2번)
@@ -386,11 +419,6 @@ class GTOAdvisor:
                     return None
                 range_data = get_vs_3bet_range(my_position, opener_pos, three_bettor_pos)
                 if range_data is None:
-                    _save_missing_spot(
-                        "vs_3bet", my_position,
-                        f"{opener_pos}/{three_bettor_pos}",
-                        f"{my_position} vs {three_bettor_pos} 3bet (over {opener_pos})"
-                    )
                     return None
                 freqs = get_action_frequencies(range_data, hand)
                 if freqs is None:
@@ -401,6 +429,7 @@ class GTOAdvisor:
                     "situation": range_data.get("situation", f"{my_position} vs 3bet"),
                     "raise_size": range_data.get("raise_size") or None,
                     "raise_count": 2,
+                    "node_key": range_data.get("node_key"),
                 }
 
         # 4벳+ 이상: GTO 데이터 없음 → None 반환 (봇이 별도 처리)
@@ -425,7 +454,8 @@ class GTOAdvisor:
         if not parts:
             return None
 
-        return f"📊 GTO [{hand}] {situation}: {' / '.join(parts)}"
+        approx = " (근사)" if recommendation.get("approx") else ""
+        return f"📊 GTO [{hand}] {situation}{approx}: {' / '.join(parts)}"
 
     def get_bot_action(
         self,

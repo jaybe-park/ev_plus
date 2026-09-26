@@ -9,21 +9,77 @@ gto_preflop_situations / gto_preflop_hands 전수 검사 스크립트.
 3. 특정 액션이 부자연스럽게 100%/0%로 쏠린 스팟이 있는지
    (한 situation의 169핸드 전부가 fold=100%이거나, 전부 raise=100%인 경우 등)
 
-결과를 사람이 읽을 수 있는 리포트로 출력한다. TODO.md "HJ RFI 데이터 오염 확인 +
-전체 프리플랍 GTO 스팟 전수 검사" 항목 참고.
+4. 행의 3종 키(position/vs_position/range_type)와 hero_position이 action_seq에서
+   유도한 값(gto.node_key.derive_node_meta)과 같은지 (T-001 — 덮어쓰기·라벨 불일치 탐지)
+5. 수집 체크포인트 visited 중 결정 노드인데 DB에도 failed에도 없는 키 = 0 인지
+   (덮어써져 사라진 노드 — scripts/requeue_lost_gto_nodes.py로 frontier에 되돌린다)
+
+결과를 사람이 읽을 수 있는 리포트로 출력한다. DB는 읽기 전용으로 연다
+(`EV_PLUS_DB` → 기본 poker.db, `--db`로 지정 가능).
 """
+import argparse
+import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "poker.db"
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from gto.node_key import derive_node_meta  # noqa: E402
+
+DEFAULT_CHECKPOINT = ROOT / "gto_tree_checkpoint.json"
 
 POSITIONS = ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
 POS_INDEX = {p: i for i, p in enumerate(POSITIONS)}
 
 
-def main():
-    conn = sqlite3.connect(DB_PATH)
+def default_db_path() -> str:
+    return os.environ.get("EV_PLUS_DB", str(ROOT / "poker.db"))
+
+
+def key_mismatches(situations) -> list:
+    """[(action_seq, 설명)] — 저장 행의 3종 키·hero_position ≠ derive_node_meta(action_seq)."""
+    out = []
+    for s in situations:
+        seq = s["action_seq"]
+        if seq is None:
+            out.append((seq, f"id={s['id']} action_seq 없음"))
+            continue
+        meta = derive_node_meta(seq)
+        if meta is None:
+            out.append((seq, f"id={s['id']} 결정 노드가 아님"))
+            continue
+        row = (s["position"], s["vs_position"], s["range_type"], s["hero_position"])
+        want = (meta["hero_position"], meta["vs_position"], meta["range_type"],
+                meta["hero_position"])
+        if row != want:
+            out.append((seq, f"id={s['id']} 저장={row} 유도={want}"))
+    return out
+
+
+def lost_visited(checkpoint_path, collected_keys: set):
+    """체크포인트 visited 중 결정 노드인데 DB·failed에 없는 키. 체크포인트 없으면 None."""
+    p = Path(checkpoint_path)
+    if not p.exists():
+        return None
+    data = json.loads(p.read_text())
+    failed = set(data.get("failed", []))
+    return sorted(
+        k for k in data.get("visited", [])
+        if k not in collected_keys and k not in failed and derive_node_meta(k) is not None
+    )
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="프리플랍 GTO DB 전수 검사(읽기 전용)")
+    ap.add_argument("--db", default=None, help="기본: EV_PLUS_DB → poker.db")
+    ap.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
+    args = ap.parse_args(argv)
+    db_path = args.db or default_db_path()
+
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
@@ -87,11 +143,36 @@ def main():
                 f"— {p2}가 {p1}보다 좁게 열려 순서 역전"
             )
 
+    # 4) 3종 키 = derive_node_meta(action_seq)
+    mismatches = key_mismatches(situations)
+    # 5) visited인데 DB·failed에 없음
+    collected_keys = {s["action_seq"] for s in situations if s["action_seq"] is not None}
+    lost = lost_visited(args.checkpoint, collected_keys)
+    conn.close()
+
     # --- 리포트 출력 ---
     print("=" * 70)
     print("gto_preflop_situations 전수 검사 리포트")
     print("=" * 70)
+    print(f"DB: {db_path}")
     print(f"총 situations: {len(situations)}")
+    print()
+
+    print(f"-- 3종 키 = derive_node_meta(action_seq) 불일치 ({len(mismatches)}건) --")
+    for seq, why in mismatches:
+        print(f"  [FAIL] {seq!r}: {why}")
+    if not mismatches:
+        print("  없음")
+    print()
+
+    if lost is None:
+        print(f"-- visited인데 DB·failed에 없음: 체크포인트 없음({args.checkpoint}), 검사 생략 --")
+    else:
+        print(f"-- visited인데 DB·failed에 없음 ({len(lost)}건) --")
+        for k in lost:
+            print(f"  [FAIL] {k!r} — scripts/requeue_lost_gto_nodes.py로 frontier에 되돌리세요")
+        if not lost:
+            print("  없음")
     print()
 
     print("-- RFI 오픈 비율 (fold100 카운트, 작을수록 넓게 오픈) --")
@@ -113,7 +194,7 @@ def main():
             print(f"  [FAIL] {label}: {reason}")
     print()
 
-    total_bad = len(problems) + len(order_problems)
+    total_bad = len(problems) + len(order_problems) + len(mismatches) + len(lost or [])
     print(f"검사 결과: {'통과' if total_bad == 0 else f'{total_bad}건 이상 발견'}")
     return 0 if total_bad == 0 else 1
 

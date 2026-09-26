@@ -986,37 +986,11 @@ def test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi():
     변경되지 않음 — advisor 내부 조회 시점에서만 국소 치환).
     이 테스트는 격리된 임시 DB(EV_PLUS_DB)를 쓰므로 외부 수집 데이터에
     의존하지 않고 최소 SB RFI 시추에이션을 직접 시딩한다."""
-    from db.connection import get_connection
     from gto.advisor import GTOAdvisor
-    import gto.loader as gto_loader
 
-    conn = get_connection()
-    cur = conn.execute(
-        """
-        INSERT OR IGNORE INTO gto_preflop_situations
-            (position, vs_position, range_type, raise_size, situation_label)
-        VALUES ('SB', NULL, 'open', 3.0, 'SB RFI')
-        """
-    )
-    conn.commit()
-    situation_id = conn.execute(
-        "SELECT id FROM gto_preflop_situations WHERE position='SB' AND range_type='open'"
-    ).fetchone()[0]
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO gto_preflop_hands
-            (situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin)
-        VALUES (?, 'AKs', 0.0, 0.0, 1.0, 0.0)
-        """,
-        (situation_id,),
-    )
-    conn.commit()
-    conn.close()
-
-    # gto/loader._load_all()은 프로세스당 1회만 DB를 읽는 메모리 캐시라
-    # 방금 시딩한 데이터가 반영되도록 캐시를 무효화한다(테스트 격리).
-    gto_loader._cache = {}
-    gto_loader._loaded = False
+    # SB RFI 노드 키 = "F-F-F-F"(UTG~BTN 폴드). 헤즈업 BTN/SB 첫 결정은 이 노드다(ADR 0005).
+    _seed_situation("SB", None, "open", 3.0, "SB RFI",
+                    {"AKs": {"raise": 1.0}}, "F-F-F-F")
 
     game, players = make_game(2, chips=1000, sb=10)
     game.start_hand()
@@ -1042,6 +1016,7 @@ def test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi():
     )
     assert rec is not None, "헤즈업 BTN/SB RFI는 SB 데이터로 매핑되어 응답해야 함"
     assert "SB" in rec["situation"], f"situation에 SB 매핑 흔적이 있어야 함: {rec['situation']}"
+    assert rec["node_key"] == "F-F-F-F" and rec["approx"] is False, rec
 
 
 def test_6_10_squeeze_seq_includes_call():
@@ -1113,31 +1088,10 @@ def test_6_11_headsup_seq_labels_btnSB():
 def test_6_12_vs_open_routing_via_seq():
     """리팩터 후에도 vs_open 스팟(HJ vs UTG open)이 구조화 시퀀스 기반 라우팅으로
     동일 데이터를 반환하는지 스팟체크(격리 DB에 최소 데이터 시딩)."""
-    from db.connection import get_connection
     from gto.advisor import GTOAdvisor
-    import gto.loader as gto_loader
 
-    conn = get_connection()
-    conn.execute(
-        """INSERT OR IGNORE INTO gto_preflop_situations
-           (position, vs_position, range_type, raise_size, situation_label)
-           VALUES ('HJ', 'UTG', 'vs_open', 8.0, 'HJ vs UTG open')"""
-    )
-    conn.commit()
-    sid = conn.execute(
-        "SELECT id FROM gto_preflop_situations "
-        "WHERE position='HJ' AND vs_position='UTG' AND range_type='vs_open'"
-    ).fetchone()[0]
-    conn.execute(
-        """INSERT OR IGNORE INTO gto_preflop_hands
-           (situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin)
-           VALUES (?, 'AKs', 0.0, 0.5, 0.5, 0.0)""",
-        (sid,),
-    )
-    conn.commit()
-    conn.close()
-    gto_loader._cache = {}
-    gto_loader._loaded = False
+    _seed_situation("HJ", "UTG", "vs_open", 8.0, "HJ vs UTG open",
+                    {"AKs": {"call": 0.5, "raise": 0.5}}, "R2.5")
 
     game, players = make_game(6, chips=1000, sb=10)  # bb=20
     game.start_hand()
@@ -1159,9 +1113,25 @@ def test_6_12_vs_open_routing_via_seq():
     assert "HJ" in rec["situation"] and "UTG" in rec["situation"], rec
 
 
+# v12 운영 DB의 gto_preflop_situations DDL 그대로(2026-09-26 `.schema`로 확인) —
+# 백필(v12)·v13 마이그레이션 테스트가 "옛 DB"를 재현하는 데 쓴다.
+_V12_GTO_SITUATIONS_DDL = """
+CREATE TABLE gto_preflop_situations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    position        TEXT    NOT NULL,
+    vs_position     TEXT,
+    range_type      TEXT    NOT NULL,
+    raise_size      REAL,
+    situation_label TEXT    NOT NULL, action_seq TEXT, hero_position TEXT, num_active INTEGER,
+    UNIQUE(position, vs_position, range_type)
+)
+"""
+
+
 def _seed_situation(position, vs_position, range_type, raise_size, label,
                     hands, action_seq):
-    """② 테스트용: (선택적) action_seq 포함 시추에이션 + 핸드 시딩 후 로더 캐시 무효화."""
+    """테스트용: 노드(action_seq 필수 — 유일 키) + 핸드 시딩 후 로더 캐시 무효화.
+    같은 action_seq가 이미 있으면 기존 행에 핸드만 보탠다(INSERT OR IGNORE)."""
     from db.connection import get_connection
     import gto.loader as gto_loader
     conn = get_connection()
@@ -1172,18 +1142,9 @@ def _seed_situation(position, vs_position, range_type, raise_size, label,
         (position, vs_position, range_type, raise_size, label, action_seq),
     )
     conn.commit()
-    if vs_position is None:
-        sid = conn.execute(
-            "SELECT id FROM gto_preflop_situations "
-            "WHERE position=? AND range_type=? AND vs_position IS NULL",
-            (position, range_type),
-        ).fetchone()[0]
-    else:
-        sid = conn.execute(
-            "SELECT id FROM gto_preflop_situations "
-            "WHERE position=? AND range_type=? AND vs_position=?",
-            (position, range_type, vs_position),
-        ).fetchone()[0]
+    sid = conn.execute(
+        "SELECT id FROM gto_preflop_situations WHERE action_seq=?", (action_seq,),
+    ).fetchone()[0]
     for hand, fr in hands.items():
         conn.execute(
             "INSERT OR IGNORE INTO gto_preflop_hands "
@@ -1257,10 +1218,13 @@ def test_6_14_runtime_snap_maps_near_size_to_node():
 def test_6_15_migration_normalizes_vs3bet_format():
     """② (c): 마이그레이션 백필(backfill_v12)이 vs_3bet의 반쪽 포맷(three_bettor만
     저장)을 'opener/three_bettor'로 정규화하고 캐노니컬 노드 키를 채우는지 검증."""
-    from db.connection import get_connection
+    import sqlite3
     from db.schema import backfill_v12
 
-    conn = get_connection()  # 격리 임시 DB(v12), 컬럼 이미 존재
+    # v12 시점 테이블(action_seq nullable, v13 이전)을 별도 임시 DB에 만들어 백필만 검사한다.
+    conn = sqlite3.connect(tempfile.NamedTemporaryFile(suffix=".db", delete=False).name)
+    conn.row_factory = sqlite3.Row
+    conn.execute(_V12_GTO_SITUATIONS_DDL)
     # 인계된 불일치 재현: BTN 오프너가 BB 3벳에 대응하는데 vs_position='BB'(반쪽)로 저장
     conn.execute(
         "INSERT OR IGNORE INTO gto_preflop_situations "
@@ -1324,27 +1288,29 @@ def test_6_17_uncollected_branch_returns_none_and_queues():
     _seed_situation("UTG", "UTG/HJ", "vs_3bet", 21.5, "UTG vs HJ 3bet",
                     {"AKs": {"fold": 0.3, "raise": 0.7}}, "R2.5-R8-F-F-F-F")
 
-    # UTG open → HJ 3bet → CO fold → BTN 콜드-4벳 20 → 히어로 UTG가 4벳에 직면.
+    # UTG open → HJ 3bet → CO fold → BTN 콜드-4벳 20 → SB·BB fold → 히어로 UTG가 4벳에 직면.
     # 프리픽스 "R2.5-R8-F"에 수집된 레이즈-형제 없음(수집분 token[3]="F") → None.
     seq = [
         {"position": "UTG", "action": "raise", "amount_bb": 2.5},
         {"position": "HJ", "action": "raise", "amount_bb": 8.0},
         {"position": "CO", "action": "fold"},
         {"position": "BTN", "action": "raise", "amount_bb": 20.0},
+        {"position": "SB", "action": "fold"},
+        {"position": "BB", "action": "fold"},
     ]
     assert canonical_node_key(seq) is None, canonical_node_key(seq)
 
     advisor = GTOAdvisor()
     gs = {"street": "프리플랍", "current_bet": 400, "preflop_seq": seq}
-    rec = advisor._recommend_by_seq([c("A", "S"), c("K", "S")], "UTG", gs, big_blind=20)
+    rec = advisor.get_recommendation([c("A", "S"), c("K", "S")], "UTG", {}, gs, big_blind=20)
     assert rec is None, rec
 
-    # 실측 사이즈 키로 큐 등록 확인
+    # 실측 사이즈 키로 큐 등록 확인(정확한 노드·라벨 둘 다 없을 때만 — ADR 0035)
     conn = get_connection()
     row = conn.execute(
         "SELECT position, vs_position, range_type FROM gto_missing_spots_preflop "
         "WHERE range_type='seq' AND vs_position=?",
-        ("R2.5-R8-F-R20",),
+        ("R2.5-R8-F-R20-F-F",),
     ).fetchone()
     conn.close()
     assert row is not None, "미수집 seq 노드가 큐에 등록되지 않음"
@@ -1457,23 +1423,14 @@ def test_7_1_save_invalidates_loader_cache():
 
 def test_7_2_corrupt_hand_skipped_not_folded():
     """G4: 핸드별 빈도 합이 [0.9,1.1] 밖(손상)이면 로더가 그 핸드를 스킵하고
-    None으로 처리한다 — fold 등 특정 액션에 잔여를 몰아 채우지 않는다."""
-    from server.main import save_gto_preflop, GtoPreflopSaveRequest
+    None으로 처리한다 — fold 등 특정 액션에 잔여를 몰아 채우지 않는다.
+    (저장 API는 이런 핸드를 거부하므로 — test_7_9 — DB에 직접 시딩해 로더 방어만 검사)"""
     from gto.loader import get_open_range, get_action_frequencies
-    import gto.loader as gto_loader
 
-    req = GtoPreflopSaveRequest(
-        position="CO", vs_position=None, range_type="open", raise_size=2.5,
-        situation_label="CO RFI(손상 핸드 테스트)",
-        hands={"AKs": {"fold": 0.2, "raise": 0.1}},  # 합 0.3 ∉ [0.9,1.1] → 손상
-        action_seq="F-F",
-    )
-    out = save_gto_preflop(req)
-    assert out["ok"] is True, out
-
-    gto_loader._cache = {}
-    gto_loader._loaded = False
-    data = get_open_range("CO")
+    _seed_situation("BTN", None, "open", 2.5, "BTN RFI(손상 핸드 테스트)",
+                    {"AKs": {"fold": 0.2, "raise": 0.1}},  # 합 0.3 ∉ [0.9,1.1] → 손상
+                    "F-F-F")
+    data = get_open_range("BTN")
     assert data is not None, "situation 자체는 존재해야 함(핸드 단위로만 스킵)"
     freqs = get_action_frequencies(data, "AKs")
     assert freqs is None, f"손상 핸드는 fold로 채워지지 않고 None이어야 함: {freqs}"
@@ -1484,9 +1441,9 @@ def test_7_3_missing_hand_returns_none():
     폴백을 타야 한다(fold 100%로 채우지 않음)."""
     from gto.loader import get_open_range, get_action_frequencies
 
-    _seed_situation("SB", None, "open", 3.0, "SB RFI(누락 핸드 테스트)",
-                    {"22": {"raise": 1.0}}, "")
-    data = get_open_range("SB")
+    _seed_situation("CO", None, "open", 2.5, "CO RFI(누락 핸드 테스트)",
+                    {"22": {"raise": 1.0}}, "F-F")
+    data = get_open_range("CO")
     assert data is not None
     freqs = get_action_frequencies(data, "AKs")
     assert freqs is None, f"미수집 핸드는 None(휴리스틱 폴백)이어야 함: {freqs}"
@@ -1548,6 +1505,7 @@ def test_7_6_save_normalizes_vs3bet_half_format():
     req = GtoPreflopSaveRequest(
         position="BTN", vs_position="BB", range_type="vs_3bet", raise_size=28.5,
         situation_label="BTN vs BB 3bet(테스트)", hands={"AKs": {"raise": 1.0}},
+        action_seq="F-F-F-R2.5-F-R8",
     )
     out = save_gto_preflop(req)
     assert out["ok"] is True, out
@@ -1559,6 +1517,299 @@ def test_7_6_save_normalizes_vs3bet_half_format():
     conn.close()
     assert row is not None and row["vs_position"] == "BTN/BB", \
         f"vs_3bet 반쪽 포맷 정규화 실패: {row['vs_position'] if row else None}"
+
+
+# ── T-001: 노드 저장 키 = action_seq, 조회 순서 ADR 0035 ─────────────────
+# 아래 테스트는 서로의 시딩이 섞이지 않도록 각자 새 임시 DB를 쓴다.
+
+import contextlib
+
+
+@contextlib.contextmanager
+def _fresh_gto_db():
+    """새 임시 DB로 EV_PLUS_DB를 잠시 바꾸고 로더 캐시를 비운다(끝나면 원복)."""
+    import gto.loader as gto_loader
+    prev = os.environ.get("EV_PLUS_DB")
+    path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    os.environ["EV_PLUS_DB"] = path
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+    try:
+        yield path
+    finally:
+        if prev is None:
+            os.environ.pop("EV_PLUS_DB", None)
+        else:
+            os.environ["EV_PLUS_DB"] = prev
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+
+
+def _save_client():
+    from fastapi.testclient import TestClient
+    from server.main import app
+    return TestClient(app)
+
+
+def _queued_seq_keys():
+    from db.connection import get_connection
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT position, vs_position FROM gto_missing_spots_preflop WHERE range_type='seq'"
+    ).fetchall()
+    conn.close()
+    return {(r["position"], r["vs_position"]) for r in rows}
+
+
+def test_7_7_distinct_action_seq_distinct_rows():
+    """T-001: 3종 키(BB vs BTN open)가 같아도 action_seq가 다르면 다른 행이다.
+    다시 저장해도 다른 노드가 사라지지 않고, 같은 action_seq만 덮어쓴다."""
+    from db.connection import get_connection
+    with _fresh_gto_db():
+        client = _save_client()
+        for seq, hands in (("F-F-F-R2.5-F", {"AKs": {"raise": 1.0}}),
+                           ("F-F-F-R2.5-C", {"AKs": {"call": 1.0}})):
+            r = client.post("/gto/preflop/save", json={
+                "action_seq": seq, "hands": hands, "raise_size": 11.0,
+                "position": "BB", "vs_position": "BTN", "range_type": "vs_open",
+                "situation_label": "BB vs BTN open",
+            })
+            assert r.status_code == 200, r.text
+        # 첫 노드를 다시 저장(수집 재실행) — 행 수 그대로, 다른 노드 보존
+        r = client.post("/gto/preflop/save", json={
+            "action_seq": "F-F-F-R2.5-F", "hands": {"AKs": {"fold": 0.5, "raise": 0.5}},
+            "raise_size": 11.0,
+        })
+        assert r.status_code == 200, r.text
+
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT s.action_seq, h.freq_fold, h.freq_call, h.freq_raise "
+            "FROM gto_preflop_situations s JOIN gto_preflop_hands h ON h.situation_id=s.id "
+            "WHERE s.position='BB' AND s.vs_position='BTN' AND s.range_type='vs_open' "
+            "ORDER BY s.action_seq"
+        ).fetchall()
+        conn.close()
+        got = {r["action_seq"]: (r["freq_fold"], r["freq_call"], r["freq_raise"]) for r in rows}
+        assert got == {"F-F-F-R2.5-C": (0.0, 1.0, 0.0), "F-F-F-R2.5-F": (0.5, 0.0, 0.5)}, got
+
+
+def test_7_8_save_requires_action_seq_and_consistent_keys():
+    """T-001: action_seq 없는 저장, 결정 노드가 아닌 키, 3종 키가 action_seq와 다른 저장은
+    거부(422)되고 DB에 아무것도 남지 않는다(레거시 enum 파생 폴백 없음)."""
+    from db.connection import get_connection
+    with _fresh_gto_db():
+        client = _save_client()
+        hands = {"AKs": {"raise": 1.0}}
+        cases = [
+            {"position": "HJ", "range_type": "open", "situation_label": "HJ RFI", "hands": hands},
+            {"action_seq": None, "hands": hands},
+            {"action_seq": "R2.5-F-F-F-F-F", "hands": hands},         # 모두 폴드 — 결정 노드 아님
+            {"action_seq": "F-F-F-R2.5-F", "hands": hands,             # 실제는 BB vs BTN open
+             "position": "SB", "vs_position": "BTN", "range_type": "vs_open"},
+        ]
+        for body in cases:
+            r = client.post("/gto/preflop/save", json=body)
+            assert r.status_code == 422, (body, r.status_code, r.text)
+        conn = get_connection()
+        n = conn.execute("SELECT COUNT(*) FROM gto_preflop_situations").fetchone()[0]
+        conn.close()
+        assert n == 0, f"거부된 저장이 행을 남김: {n}"
+
+
+def test_7_9_save_rejects_corrupt_frequencies():
+    """T-001/ADR 0002: 서버도 핸드별 빈도합 [0.9,1.1]을 검증한다 — 한 핸드라도 벗어나거나
+    핸드가 0개면 422로 거부하고 기존 저장 노드를 건드리지 않는다."""
+    from gto.loader import get_range_by_seq
+    with _fresh_gto_db():
+        client = _save_client()
+        ok = client.post("/gto/preflop/save", json={
+            "action_seq": "F", "hands": {"AKs": {"raise": 1.0}}, "raise_size": 2.5})
+        assert ok.status_code == 200, ok.text
+        for hands in ({"AKs": {"fold": 0.2, "raise": 0.1}, "AA": {"raise": 1.0}},  # 합 0.3
+                      {"AKs": {"raise": 0.7, "call": 0.6}},                          # 합 1.3
+                      {}):
+            r = client.post("/gto/preflop/save", json={"action_seq": "F", "hands": hands})
+            assert r.status_code == 422, (hands, r.status_code, r.text)
+        data = get_range_by_seq("F")
+        assert data is not None and data["hands"] == {"AKs": {"raise": 1.0}}, data
+
+
+def test_7_10_exact_node_preferred_over_label():
+    """ADR 0035 1순위: 정확한 노드가 있으면 간단 라벨보다 우선한다(approx=False).
+    멀티웨이(CO 콜)와 헤즈업 팟(CO 폴드)이 각자의 노드를 받는다."""
+    from gto.advisor import GTOAdvisor
+    with _fresh_gto_db():
+        _seed_situation("BTN", "HJ", "vs_open", 11.0, "BTN vs HJ open",
+                        {"AKs": {"raise": 1.0}}, "F-R2.5-F")
+        _seed_situation("BTN", "HJ", "vs_open", 11.0, "BTN vs HJ open",
+                        {"AKs": {"call": 1.0}}, "F-R2.5-C")
+        advisor = GTOAdvisor()
+        for co_action, want_key, want_action in (("call", "F-R2.5-C", "call"),
+                                                 ("fold", "F-R2.5-F", "raise")):
+            seq = [{"position": "UTG", "action": "fold"},
+                   {"position": "HJ", "action": "raise", "amount_bb": 2.5},
+                   {"position": "CO", "action": co_action,
+                    "amount_bb": 2.5 if co_action == "call" else None}]
+            gs = {"street": "프리플랍", "current_bet": 50, "preflop_seq": seq}
+            rec = advisor.get_recommendation([c("A", "S"), c("K", "S")], "BTN", {}, gs, 20)
+            assert rec is not None and rec["node_key"] == want_key, (co_action, rec)
+            assert rec["approx"] is False, rec
+            assert rec["frequencies"] == {want_action: 1.0}, rec
+            assert "(근사)" not in advisor.format_hint(rec)
+
+
+def test_7_11_label_fallback_is_marked_approx():
+    """ADR 0035 2순위: 정확한 노드가 없을 때만 간단 라벨(콜러 없는 노드)을 쓰고, 힌트와
+    플레이 평가에 "(근사)"로 표시한다. 라벨로 답했으면 미수집 큐에는 넣지 않는다."""
+    from gto.advisor import GTOAdvisor
+    from gto.grader import grade_preflop_action
+    with _fresh_gto_db():
+        _seed_situation("BB", "HJ", "vs_open", 14.0, "BB vs HJ open",
+                        {"AKs": {"raise": 0.6, "call": 0.4}}, "F-R2.5-F-F-F")
+        # 라이브: HJ 오픈, CO 콜 → BB 결정. 정확한 노드(F-R2.5-C-F-F)는 미수집.
+        seq = [{"position": "UTG", "action": "fold"},
+               {"position": "HJ", "action": "raise", "amount_bb": 2.5},
+               {"position": "CO", "action": "call", "amount_bb": 2.5},
+               {"position": "BTN", "action": "fold"},
+               {"position": "SB", "action": "fold"}]
+        gs = {"street": "프리플랍", "current_bet": 50, "preflop_seq": seq}
+        advisor = GTOAdvisor()
+        rec = advisor.get_recommendation([c("A", "S"), c("K", "S")], "BB", {}, gs, 20)
+        assert rec is not None and rec["approx"] is True, rec
+        assert rec["node_key"] == "F-R2.5-F-F-F", rec
+        hint = advisor.format_hint(rec)
+        assert "(근사)" in hint, hint
+        grade = grade_preflop_action("raise", rec)
+        assert grade.reason.startswith("(근사)"), grade.reason
+        assert ("BB", "F-R2.5-C-F-F") not in _queued_seq_keys(), "라벨로 답했는데 큐에 기록됨"
+
+
+def test_7_12_headsup_pot_not_given_caller_node():
+    """T-001 완료 조건 1: BB vs BTN 오픈 헤즈업 팟(SB 폴드)의 힌트가 "SB 콜 멀티웨이"
+    노드가 아니다. 콜러 노드뿐이면 None + 정확한 노드 키 큐 기록. 2인 테이블의 BB vs
+    BTN/SB 오픈은 6-max SB 오픈 노드(F-F-F-F-R…)를 받는다."""
+    from gto.advisor import GTOAdvisor
+    with _fresh_gto_db():
+        _seed_situation("BB", "BTN", "vs_open", 14.0, "BB vs BTN open",
+                        {"AKs": {"call": 1.0}}, "F-F-F-R2.5-C")
+        advisor = GTOAdvisor()
+        seq = [{"position": "UTG", "action": "fold"}, {"position": "HJ", "action": "fold"},
+               {"position": "CO", "action": "fold"},
+               {"position": "BTN", "action": "raise", "amount_bb": 2.5},
+               {"position": "SB", "action": "fold"}]
+        gs = {"street": "프리플랍", "current_bet": 50, "preflop_seq": seq}
+        rec = advisor.get_recommendation([c("A", "S"), c("K", "S")], "BB", {}, gs, 20)
+        assert rec is None, f"SB 콜 노드를 헤즈업 팟에 내줌: {rec}"
+        assert ("BB", "F-F-F-R2.5-F") in _queued_seq_keys()
+
+        _seed_situation("BB", "BTN", "vs_open", 14.0, "BB vs BTN open",
+                        {"AKs": {"raise": 1.0}}, "F-F-F-R2.5-F")
+        rec = advisor.get_recommendation([c("A", "S"), c("K", "S")], "BB", {}, gs, 20)
+        assert rec is not None and rec["node_key"] == "F-F-F-R2.5-F" and not rec["approx"], rec
+
+        # 2인 테이블: BTN/SB 오픈 3bb → BB. 6-max SB 오픈 노드로 스냅(ADR 0005)
+        _seed_situation("BB", "SB", "vs_open", 10.5, "BB vs SB open",
+                        {"AKs": {"raise": 1.0}}, "F-F-F-F-R3.5")
+        hu_seq = [{"position": "BTN/SB", "action": "raise", "amount_bb": 3.0}]
+        hu_gs = {"street": "프리플랍", "current_bet": 60, "preflop_seq": hu_seq}
+        rec = advisor.get_recommendation([c("A", "S"), c("K", "S")], "BB",
+                                         {"Bot": "BTN/SB", "Hero": "BB"}, hu_gs, 20)
+        assert rec is not None and rec["node_key"] == "F-F-F-F-R3.5", rec
+
+
+def test_7_13_headsup_not_snapped_to_utg_tree():
+    """T-001 완료 조건 2: 헤즈업 SB 레이즈 → BB 3벳에서 6-max CO 노드(R2.5-R8)로 스냅되지
+    않는다. 시퀀스 앞에 F-F-F-F를 붙여 SB 기준 노드를 찾고, 없으면 None + 큐 기록."""
+    from gto.advisor import GTOAdvisor
+    with _fresh_gto_db():
+        _seed_situation("CO", "UTG/HJ", "vs_3bet", 17.5, "CO vs HJ 3bet",
+                        {"AKs": {"call": 1.0}}, "R2.5-R8")
+        advisor = GTOAdvisor()
+        positions = {"Hero": "BTN/SB", "Bot": "BB"}
+        seq = [{"position": "BTN/SB", "action": "raise", "amount_bb": 2.5},
+               {"position": "BB", "action": "raise", "amount_bb": 8.0}]
+        gs = {"street": "프리플랍", "current_bet": 160, "preflop_seq": seq}
+        rec = advisor.get_recommendation([c("A", "S"), c("K", "S")], "BTN/SB", positions, gs, 20)
+        assert rec is None, f"헤즈업이 6-max 노드로 스냅됨: {rec}"
+        assert ("SB", "F-F-F-F-R2.5-R8") in _queued_seq_keys(), _queued_seq_keys()
+
+        _seed_situation("SB", "SB/BB", "vs_3bet", 24.0, "SB vs BB 3bet",
+                        {"AKs": {"raise": 1.0}}, "F-F-F-F-R3.5-R10")
+        rec = advisor.get_recommendation([c("A", "S"), c("K", "S")], "BTN/SB", positions, gs, 20)
+        assert rec is not None and rec["node_key"] == "F-F-F-F-R3.5-R10", rec
+        assert rec["situation"] == "SB vs BB 3bet" and rec["approx"] is False, rec
+
+
+def _make_v12_db(rows, hands):
+    """v12 운영 DB 모양의 임시 DB(schema_version=12)를 만든다. rows/hands는 튜플 목록."""
+    import sqlite3
+    path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL, "
+                 "applied_at TEXT NOT NULL DEFAULT (datetime('now')))")
+    conn.execute("INSERT INTO schema_version(version) VALUES (12)")
+    conn.execute(_V12_GTO_SITUATIONS_DDL)
+    conn.execute("""CREATE TABLE gto_preflop_hands (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        situation_id INTEGER NOT NULL REFERENCES gto_preflop_situations(id) ON DELETE CASCADE,
+        hand TEXT NOT NULL, freq_fold REAL NOT NULL DEFAULT 0.0,
+        freq_call REAL NOT NULL DEFAULT 0.0, freq_raise REAL NOT NULL DEFAULT 0.0,
+        freq_allin REAL NOT NULL DEFAULT 0.0, UNIQUE(situation_id, hand))""")
+    conn.execute("CREATE INDEX idx_gto_pre_sit ON gto_preflop_situations(position, vs_position, range_type)")
+    conn.execute("CREATE UNIQUE INDEX idx_gto_pre_seq ON gto_preflop_situations(action_seq)")
+    conn.executemany("INSERT INTO gto_preflop_situations VALUES (?,?,?,?,?,?,?,?,?)", rows)
+    conn.executemany("INSERT INTO gto_preflop_hands VALUES (?,?,?,?,?,?,?)", hands)
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_7_14_migration_v13_preserves_data():
+    """T-001 스키마(v13): 3종 UNIQUE 제거·action_seq NOT NULL 재생성 마이그레이션이 행(id
+    포함)과 핸드를 그대로 보존하고, 이후 같은 라벨의 다른 노드를 저장할 수 있다.
+    action_seq가 NULL인 행이 있으면 추측으로 채우지 않고 중단한다."""
+    import sqlite3
+    from db.connection import get_connection
+    from db.schema import SCHEMA_VERSION
+    rows = [
+        (1, "UTG", None, "open", 2.5, "UTG RFI", "", "UTG", 6),
+        (8, "BB", "BTN", "vs_open", 14.0, "BB vs BTN open", "F-F-F-R2.5-C", "BB", 3),
+    ]
+    hands = [(10, 1, "AA", 0, 0, 1.0, 0), (11, 8, "AKs", 0, 0.6, 0.4, 0),
+             (12, 8, "72o", 1.0, 0, 0, 0)]
+    path = _make_v12_db(rows, hands)
+    conn = get_connection(path)
+    try:
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+        got_rows = [tuple(r) for r in conn.execute(
+            "SELECT id, position, vs_position, range_type, raise_size, situation_label, "
+            "action_seq, hero_position, num_active FROM gto_preflop_situations ORDER BY id")]
+        got_hands = [tuple(r) for r in conn.execute("SELECT * FROM gto_preflop_hands ORDER BY id")]
+        assert got_rows == rows, got_rows
+        assert got_hands == [tuple(h) for h in hands], got_hands
+        # 같은 3종 키의 다른 노드 저장 가능, action_seq 중복·NULL은 불가
+        conn.execute("INSERT INTO gto_preflop_situations (position, vs_position, range_type, "
+                     "situation_label, action_seq) VALUES ('BB','BTN','vs_open','x','F-F-F-R2.5-F')")
+        for bad in ("'F-F-F-R2.5-C'", "NULL"):
+            try:
+                conn.execute("INSERT INTO gto_preflop_situations (position, range_type, "
+                             f"situation_label, action_seq) VALUES ('BB','open','x',{bad})")
+                raise AssertionError(f"action_seq {bad} 삽입이 거부되지 않음")
+            except sqlite3.IntegrityError:
+                pass
+        # FK CASCADE 유지
+        conn.execute("DELETE FROM gto_preflop_situations WHERE id=8")
+        assert conn.execute("SELECT COUNT(*) FROM gto_preflop_hands WHERE situation_id=8").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+    null_path = _make_v12_db([(1, "HJ", None, "open", 2.5, "HJ RFI", None, "HJ", 5)], [])
+    try:
+        get_connection(null_path).close()
+        raise AssertionError("action_seq NULL 행이 있는데 마이그레이션이 진행됨")
+    except RuntimeError as e:
+        assert "action_seq" in str(e), e
 
 
 # ═════════════════════════════════════════════════════════════
@@ -1644,6 +1895,14 @@ ALL_TESTS = [
     ("7-4  BB RFI 불가+큐 미기록(G6)",          test_7_4_bb_never_rfi_and_no_queue),
     ("7-5  오프너가 히어로보다 뒤 좌석→None(G6)", test_7_5_vs_open_opener_after_hero_is_none),
     ("7-6  save의 vs_3bet 반쪽 포맷 정규화(G17)", test_7_6_save_normalizes_vs3bet_half_format),
+    ("7-7  다른 action_seq는 다른 행(T-001)",     test_7_7_distinct_action_seq_distinct_rows),
+    ("7-8  action_seq 없는·불일치 저장 거부(T-001)", test_7_8_save_requires_action_seq_and_consistent_keys),
+    ("7-9  빈도합 불량 저장 거부(T-001)",          test_7_9_save_rejects_corrupt_frequencies),
+    ("7-10 정확한 노드가 라벨보다 우선(ADR 0035)", test_7_10_exact_node_preferred_over_label),
+    ("7-11 라벨 예비는 근사 표시(ADR 0035)",       test_7_11_label_fallback_is_marked_approx),
+    ("7-12 헤즈업 팟에 콜러 노드 안 줌(T-001)",    test_7_12_headsup_pot_not_given_caller_node),
+    ("7-13 헤즈업은 UTG 트리로 스냅 안 됨(T-001)", test_7_13_headsup_not_snapped_to_utg_tree),
+    ("7-14 v13 마이그레이션 데이터 보존(T-001)",   test_7_14_migration_v13_preserves_data),
 ]
 
 

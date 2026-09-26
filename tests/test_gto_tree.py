@@ -303,6 +303,109 @@ def test_run_aborts_on_persistent_save_failure():
         ct.connect_cdp, ct.extract_node, ct.save_node = orig_connect_cdp, orig_extract_node, orig_save_node
 
 
+def _seed_nodes(db_path: str, nodes: dict):
+    """임시 DB에 {action_seq: (raise_size, hands)} 노드를 저장 API 규칙대로 시딩."""
+    from db.connection import get_connection
+    from gto.node_key import derive_node_meta
+    conn = get_connection(db_path)
+    for seq, (raise_size, hands) in nodes.items():
+        meta = derive_node_meta(seq)
+        sid = conn.execute(
+            "INSERT INTO gto_preflop_situations (position, vs_position, range_type, raise_size, "
+            "situation_label, action_seq, hero_position) VALUES (?,?,?,?,?,?,?)",
+            (meta["hero_position"], meta["vs_position"], meta["range_type"], raise_size,
+             meta["situation_label"], seq, meta["hero_position"]),
+        ).lastrowid
+        for hand, fr in hands.items():
+            conn.execute(
+                "INSERT INTO gto_preflop_hands (situation_id, hand, freq_fold, freq_call, "
+                "freq_raise, freq_allin) VALUES (?,?,?,?,?,?)",
+                (sid, hand, fr.get("fold", 0), fr.get("call", 0), fr.get("raise", 0), fr.get("allin", 0)))
+    conn.commit()
+    conn.close()
+
+
+# [T-9] T-001 — 덮어써져 사라진 노드(visited인데 DB·failed에 없음)를 frontier로 되돌린다.
+# 기본 드라이런은 체크포인트를 바꾸지 않고, --apply만 바꾼다.
+def test_requeue_lost_nodes():
+    import requeue_lost_gto_nodes as rq
+    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    # 루트(UTG RFI): AA 레이즈 100%, 72o 폴드 100% → 콤보가중 raise=6/18, fold=12/18
+    _seed_nodes(db_path, {
+        "": (2.5, {"AA": {"raise": 1.0}, "72o": {"fold": 1.0}}),
+        "R2.5": (8.0, {"AA": {"raise": 1.0}, "KK": {"fold": 1.0}}),  # HJ: fold 6/12
+        "R2.5-C": (11.0, {"AA": {"raise": 1.0}}),   # 덮어쓴 쪽(남아 있음)
+    })
+    ckpt = {
+        "visited": ["", "R2.5-C", "R2.5-F",            # R2.5-F: 덮어써져 사라짐
+                    "R2.5-F-F-F-F-F",                   # 결정 노드 아님(모두 폴드)
+                    "F-F-F-R2.5-F"],                    # failed에 있음 → 대상 아님
+        "failed": ["F-F-F-R2.5-F"],
+        "frontier": [{"tokens": ["F"], "reach": 0.5}],
+    }
+    fd, ckpt_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    try:
+        with open(ckpt_path, "w") as f:
+            json.dump(ckpt, f)
+        before = open(ckpt_path).read()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rq.main(["--checkpoint", ckpt_path, "--db", db_path])
+        check("드라이런은 체크포인트를 바꾸지 않음", open(ckpt_path).read() == before)
+        check("드라이런이 사라진 노드 1개(R2.5-F)를 보고", "'R2.5-F'" in out.getvalue()
+              and "1개" in out.getvalue(), out.getvalue()[-400:])
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            rq.main(["--checkpoint", ckpt_path, "--db", db_path, "--apply"])
+        data = json.load(open(ckpt_path))
+        fr = {"-".join(f["tokens"]): f["reach"] for f in data["frontier"]}
+        check("--apply: R2.5-F가 visited에서 빠짐", "R2.5-F" not in data["visited"], str(data["visited"]))
+        check("--apply: R2.5-F가 frontier에 들어감", "R2.5-F" in fr, str(fr))
+        check("--apply: reach = 루트 raise(6/18) × HJ fold(6/12)",
+              abs(fr.get("R2.5-F", 0) - (6 / 18) * 0.5) < 1e-9, str(fr.get("R2.5-F")))
+        check("--apply: 결정 노드 아님·failed·DB 노드는 visited 유지",
+              {"R2.5-F-F-F-F-F", "F-F-F-R2.5-F", "", "R2.5-C"} <= set(data["visited"]),
+              str(data["visited"]))
+        check("--apply: 기존 frontier 보존", "F" in fr, str(fr))
+    finally:
+        os.unlink(ckpt_path)
+
+
+# [T-10] T-001 — audit: 3종 키 = derive_node_meta(action_seq), visited인데 DB·failed에 없음 = 0
+def test_audit_key_and_lost_checks():
+    import audit_gto_preflop as audit
+    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    _seed_nodes(db_path, {"F-F-F-R2.5-F": (14.0, {"AA": {"raise": 1.0}})})
+    from db.connection import get_connection
+    conn = get_connection(db_path)
+    # 라벨이 action_seq와 다른 행(옛 덮어쓰기 흔적 재현)
+    conn.execute("INSERT INTO gto_preflop_situations (position, vs_position, range_type, "
+                 "situation_label, action_seq, hero_position) "
+                 "VALUES ('BB','BTN','vs_open','BB vs BTN open','R2.5-C-F-F-F','BB')")
+    conn.commit()
+    rows = conn.execute("SELECT * FROM gto_preflop_situations").fetchall()
+    conn.close()
+    mism = audit.key_mismatches(rows)
+    check("3종 키 불일치 1건(R2.5-C-F-F-F는 BB vs UTG)",
+          [m[0] for m in mism] == ["R2.5-C-F-F-F"], str(mism))
+
+    fd, ckpt_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    try:
+        with open(ckpt_path, "w") as f:
+            json.dump({"visited": ["F-F-F-R2.5-F", "F-F-F-R2.5-C", "R2.5-F-F-F-F-F"],
+                       "failed": [], "frontier": []}, f)
+        lost = audit.lost_visited(ckpt_path, {"F-F-F-R2.5-F", "R2.5-C-F-F-F"})
+        check("visited인데 DB·failed에 없음 = [F-F-F-R2.5-C]", lost == ["F-F-F-R2.5-C"], str(lost))
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = audit.main(["--db", db_path, "--checkpoint", ckpt_path])
+        check("audit이 불일치를 실패(1)로 보고", rc == 1, f"rc={rc}")
+        check("체크포인트 없으면 lost 검사는 None(생략)",
+              audit.lost_visited(ckpt_path + ".none", set()) is None)
+    finally:
+        os.unlink(ckpt_path)
+
+
 ALL_TESTS = [
     ("T-1 compute_children 실측 사이즈 verbatim + action_to_token ValueError",
      test_compute_children_uses_measured_size),
@@ -315,6 +418,8 @@ ALL_TESTS = [
      test_run_requeues_node_on_limit_and_env_failure),
     ("T-8 run() 저장이 계속 실패하면 N회 안에 안전 중단(T-012)",
      test_run_aborts_on_persistent_save_failure),
+    ("T-9 사라진 노드 frontier 복구(드라이런 기본, T-001)", test_requeue_lost_nodes),
+    ("T-10 audit 3종 키·visited 누락 검사(T-001)", test_audit_key_and_lost_checks),
 ]
 
 if __name__ == "__main__":

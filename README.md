@@ -52,7 +52,7 @@ ev_plus/
 | 텍사스 홀덤 게임 엔진 | ✅ 완료 |
 | 웹 UI + 단계별 애니메이션 | ✅ 완료 |
 | AI 봇 3단계 | ✅ 난이도 = MC 샘플 수(판단 해상도) |
-| 프리플랍 GTO 힌트 | ⚠️ 데이터 기반 트리(수집된 노드, 4벳·스퀴즈 포함) — 노드 덮어쓰기·헤즈업 스냅 버그 수정 대기(TODO T-001) |
+| 프리플랍 GTO 힌트 | ✅ 정확한 노드(액션 순서) 먼저, 없으면 콜러 없는 라벨 노드를 "(근사)"로 — 옛 덮어쓰기로 사라진 vs_open 노드는 재수집 전까지 힌트 공백 |
 | GTO 패널 (레인지 그리드) | ⚠️ 오른쪽 탭 — 힌트와 별도 판정기라 다른 노드를 보일 수 있음(TODO T-013) |
 | 테스트 스위트 | ✅ `tests/run_all.py --full` |
 | 프리플랍 GTO 수집 | ✅ 체계 완료, 수집은 운영 루틴(Playwright 자동 워커) — [사양](docs/spec/gto-preflop.md), 현황은 `python3 scripts/gto_tree_report.py` |
@@ -84,8 +84,8 @@ python3 scripts/equity_worker.py --status
 ls -lh poker.db chip_violations.log   # 위반 로그가 있으면 시드로 재현 가능
 
 # 프리플랍 GTO 트리 수집(선택, 디버그 크롬 + GTO Wizard 로그인 필요) — 절차: docs/spec/gto-preflop.md
-# ⚠ TODO T-001 수정 전에는 돌리지 않는다(노드 덮어쓰기)
 python3 scripts/collect_gto_tree.py --limit 90
+python3 scripts/audit_gto_preflop.py     # 3종 키 일치·visited 누락 검사 포함
 python3 scripts/gto_tree_report.py
 ```
 

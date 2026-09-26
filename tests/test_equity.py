@@ -469,12 +469,13 @@ def test_headsup_range_uses_sb():
     try:
         conn = get_connection()
         # 좁은 SB RFI(AA·KK) + BB vs SB 콜 레인지(QQ·JJ)를 시딩
-        for pos, vs, rtype, hands in (("SB", None, "open", {"AA": (0, 1), "KK": (0, 1)}),
-                                      ("BB", "SB", "vs_open", {"QQ": (1, 0), "JJ": (1, 0)})):
+        for pos, vs, rtype, seq, hands in (
+                ("SB", None, "open", "F-F-F-F", {"AA": (0, 1), "KK": (0, 1)}),
+                ("BB", "SB", "vs_open", "F-F-F-F-R3", {"QQ": (1, 0), "JJ": (1, 0)})):
             sid = conn.execute(
                 "INSERT INTO gto_preflop_situations (position, vs_position, range_type, "
-                "raise_size, situation_label) VALUES (?,?,?,3.0,?)",
-                (pos, vs, rtype, f"{pos} {rtype}"),
+                "raise_size, situation_label, action_seq) VALUES (?,?,?,3.0,?,?)",
+                (pos, vs, rtype, f"{pos} {rtype}", seq),
             ).lastrowid
             for hand, (call, rz) in hands.items():
                 conn.execute(
