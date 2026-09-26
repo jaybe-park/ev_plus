@@ -1,96 +1,63 @@
 """
-에퀴티(승률) 계산 엔진
+에퀴티(승률) 계산 엔진 — "내 홀카드 + 보드 vs 랜덤 핸드 상대 N명" (ADR 0034)
 
-세 가지 계산 경로:
-1. Monte Carlo 샘플링 — 실시간용. 샘플 수가 봇 난이도를 결정한다.
-2. 전수조사(exact) — 리버/턴/플랍의 1:1 상황은 모든 조합을 열거해 정확값 산출.
-3. equity_cache DB — 계산 결과를 수트 정규화 키로 누적 저장.
-   봇이 플레이 중 만난 스팟은 자동으로 큐에 쌓이고,
-   scripts/equity_worker.py 가 시간 날 때마다 정확값으로 바꿔간다.
+계산 경로 (`smart_equity` / `equity_detail`):
+1. 프리플랍 — 상수 테이블(`ai/preflop_equity_table.py`, 169핸드 × 상대 1~5명, 각 100만 샘플).
+2. 리버 상대 1명 — 전수조사(990조합, 약 3ms). 모든 난이도.
+3. 그 밖 — 실시간 Monte Carlo. 기본은 적응형: 표준오차가 TARGET_SE(0.5%p)에
+   도달하면 멈추고, 최대 MC_MAX_SAMPLES(최악 p=0.5에서도 SE ≤ 0.5%p가 되는 수)까지.
+   호출자가 샘플 수를 고정하면(easy 봇, ADR 0014) 그 수만큼만 돈다.
 
-수트 정규화(canonical key): A♥K♥와 A♠K♠는 같은 스팟이므로
-24가지 수트 치환 중 사전순 최소 키를 대표로 쓴다.
+결과를 DB에 저장하지 않는다 — equity_cache는 폐기됐다(ADR 0034).
 """
 
-import atexit
 import bisect
+import math
 import random
-from itertools import combinations, permutations
-from typing import Dict, List, Optional, Tuple
+from itertools import combinations
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from core.card import Card, Suit, Rank
 from core.evaluator import HandEvaluator, evaluate_rank
+from ai.preflop_equity_table import PREFLOP_EQUITY, PREFLOP_SAMPLES
 
 _FULL_DECK = [Card(r, s) for r in Rank for s in Suit]
 _SUITS = [Suit.SPADES, Suit.HEARTS, Suit.DIAMONDS, Suit.CLUBS]
-
-# 랭크 2~14 → 정렬 가능한 1글자 코드
-_RANK_CODE = {2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8",
-              9: "9", 10: "a", 11: "b", 12: "c", 13: "d", 14: "e"}
-_CODE_RANK = {v: k for k, v in _RANK_CODE.items()}
 _RANK_BY_VALUE = {r.rank_value: r for r in Rank}
 
-# 캐시 신뢰 기준: 이 샘플 수를 넘으면 재계산 없이 캐시값 사용 (±0.35%)
-HIGH_PRECISION_SAMPLES = 20_000
+# 정밀도 목표: 봇·패널 vs 랜덤 에퀴티의 표준오차(1σ) ≤ 0.5%p (ADR 0034)
+TARGET_SE = 0.005
+# 적응형 MC: MC_BATCH 단위로 돌며 MC_MIN_SAMPLES 이후 SE ≤ TARGET_SE면 멈춘다.
+# 샘플 1개의 지분 분산은 최대 0.25(p=0.5, 동률 없음)이므로
+# MC_MAX_SAMPLES = 0.25 / TARGET_SE² = 10,000이면 어떤 스팟도 목표를 만족한다.
+MC_MIN_SAMPLES = 1_000
+MC_BATCH = 500
+MC_MAX_SAMPLES = 10_000
 
-# 테스트에서 임시 DB로 교체 가능. None이면 기본 poker.db
-DB_PATH: Optional[str] = None
+_NOTE_CHAR = {2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8",
+              9: "9", 10: "T", 11: "J", 12: "Q", 13: "K", 14: "A"}
 
-
-# ──────────────────────────────────────────
-# 수트 정규화 키
-# ──────────────────────────────────────────
 
 def street_of(board: List[Card]) -> str:
     return {0: "preflop", 3: "flop", 4: "turn", 5: "river"}[len(board)]
 
 
-def _encode(cards: List[Card], smap: dict, sort: bool) -> str:
-    toks = [_RANK_CODE[c.rank.rank_value] + str(smap[c.suit]) for c in cards]
-    if sort:
-        toks.sort(reverse=True)
-    return "".join(toks)
-
-
-def canonical_key(hole_cards: List[Card], board: List[Card]) -> str:
-    """
-    수트 치환에 불변인 스팟 키.
-    형식: "홀|플랍|턴|리버" (턴/리버는 순서 유지 — 스트리트 경계가 의미 있음)
-
-    카드 중복(홀-보드 간 또는 보드 내부)이 있으면 잘못된 스팟이므로 ValueError.
-    """
+def _check_cards(hole_cards: List[Card], board: List[Card]) -> None:
+    """홀-보드 간 또는 보드 내부에 중복 카드가 있으면 잘못된 스팟이므로 ValueError."""
     all_cards = list(hole_cards) + list(board)
     if len(all_cards) != len(set(all_cards)):
-        raise ValueError(f"canonical_key: 중복 카드 — {all_cards}")
-
-    flop, turn, river = board[:3], board[3:4], board[4:5]
-    best = None
-    for perm in permutations(range(4)):
-        smap = dict(zip(_SUITS, perm))
-        key = "|".join([
-            _encode(hole_cards, smap, True),
-            _encode(flop, smap, True),
-            _encode(turn, smap, False),
-            _encode(river, smap, False),
-        ])
-        if best is None or key < best:
-            best = key
-    return best
+        raise ValueError(f"에퀴티 계산: 중복 카드 — {all_cards}")
 
 
-def decode_key(spot_key: str) -> Tuple[List[Card], List[Card]]:
-    """canonical key → (홀카드, 보드). 워커가 계산 대상 복원에 사용."""
-    parts = spot_key.split("|")
-
-    def dec(s: str) -> List[Card]:
-        return [
-            Card(_RANK_BY_VALUE[_CODE_RANK[s[i]]], _SUITS[int(s[i + 1])])
-            for i in range(0, len(s), 2)
-        ]
-
-    hole = dec(parts[0])
-    board = dec(parts[1]) + dec(parts[2]) + dec(parts[3])
-    return hole, board
+def preflop_notation(hole_cards: List[Card]) -> str:
+    """홀카드 2장 → 'AA' / 'AKs' / 'AKo' (상수 테이블 키)."""
+    a, b = hole_cards
+    if a.rank.rank_value < b.rank.rank_value:
+        a, b = b, a
+    hi, lo = _NOTE_CHAR[a.rank.rank_value], _NOTE_CHAR[b.rank.rank_value]
+    if hi == lo:
+        return hi + lo
+    return hi + lo + ("s" if a.suit == b.suit else "o")
 
 
 # ──────────────────────────────────────────
@@ -114,13 +81,13 @@ def _showdown_share(mine: tuple, opp_ranks: List[tuple]) -> Tuple[float, float]:
     return 0.0, 2.0 / k
 
 
-def mc_counts(
+def _mc_run(
     hole_cards: List[Card],
     board: List[Card],
     num_opponents: int,
     num_simulations: int,
-) -> Tuple[float, float, int]:
-    """(wins, ties, total) 카운트 반환 — 누적 저장용."""
+) -> Tuple[float, float, float]:
+    """MC 1회분: (wins, ties, 샘플별 지분 제곱합). 제곱합은 적응형 MC의 표준오차용."""
     known = set(hole_cards) | set(board)
     deck = [c for c in _FULL_DECK if c not in known]
     need = 5 - len(board)
@@ -128,6 +95,7 @@ def mc_counts(
 
     wins = 0.0
     ties = 0.0
+    sq = 0.0
     for _ in range(num_simulations):
         drawn = random.sample(deck, draw_count)
         full = board + drawn[:need]
@@ -140,7 +108,52 @@ def mc_counts(
         w, t = _showdown_share(mine, opp_ranks)
         wins += w
         ties += t
-    return wins, ties, num_simulations
+        share = w + 0.5 * t
+        sq += share * share
+    return wins, ties, sq
+
+
+def mc_counts(
+    hole_cards: List[Card],
+    board: List[Card],
+    num_opponents: int,
+    num_simulations: int,
+) -> Tuple[float, float, int]:
+    """고정 샘플 MC: (wins, ties, total)."""
+    w, t, _ = _mc_run(hole_cards, board, num_opponents, num_simulations)
+    return w, t, num_simulations
+
+
+def mc_adaptive(
+    hole_cards: List[Card],
+    board: List[Card],
+    num_opponents: int,
+    target_se: float = TARGET_SE,
+    min_samples: int = MC_MIN_SAMPLES,
+    max_samples: int = MC_MAX_SAMPLES,
+    batch: int = MC_BATCH,
+) -> Tuple[float, float, int, float]:
+    """
+    적응형 MC: (wins, ties, total, 표준오차).
+    batch씩 돌며 min_samples 이후 표준오차 sqrt(표본분산/n)이 target_se 이하가 되면 멈춘다.
+    max_samples에서 끝나도 지분 분산 ≤ 0.25라 기본값(10,000)이면 SE ≤ 0.5%p다.
+    """
+    wins = ties = sq = 0.0
+    n = 0
+    se = 0.5
+    while n < max_samples:
+        step = min(batch, max_samples - n)
+        w, t, s = _mc_run(hole_cards, board, num_opponents, step)
+        wins += w
+        ties += t
+        sq += s
+        n += step
+        mean = (wins + 0.5 * ties) / n
+        var = max(0.0, sq / n - mean * mean)
+        se = math.sqrt(var / n)
+        if n >= min_samples and se <= target_se:
+            break
+    return wins, ties, n, se
 
 
 def calculate_equity(
@@ -149,7 +162,7 @@ def calculate_equity(
     num_opponents: int = 1,
     num_simulations: int = 200,
 ) -> float:
-    """순수 MC 승률 (0.0~1.0). 캐시 없이 즉석 계산."""
+    """순수 고정 샘플 MC 승률 (0.0~1.0)."""
     if len(hole_cards) < 2:
         return 0.5
     w, t, n = mc_counts(hole_cards, community_cards, num_opponents, num_simulations)
@@ -286,238 +299,63 @@ def equity_via_board_table(
     return wins, ties, total
 
 
-EXACT_FUNCS = {
-    "river": exact_counts_river,
-    "turn": exact_counts_turn,
-    "flop": exact_counts_flop,
-}
-
-
-# ──────────────────────────────────────────
-# DB 캐시 연동
-# ──────────────────────────────────────────
-
-def _db():
-    """DB_PATH가 None이면 db.connection.get_connection의 EV_PLUS_DB 환경변수
-    규칙을 그대로 따른다(직접 _DEFAULT_DB_PATH를 넘기면 그 규칙을 우회하게 된다)."""
-    from db.connection import get_connection
-    return get_connection(DB_PATH)
-
-
-def bump_equity_stats(
-    conn, street: str, num_opponents: int,
-    d_spots: int = 0, d_exact: int = 0, d_total: int = 0,
-) -> None:
-    """
-    equity_cache_stats(street, num_opponents)별 요약을 원자적으로 증분 갱신.
-    --status가 equity_cache 풀스캔 대신 이 작은 테이블만 읽도록 하기 위함.
-    호출자의 트랜잭션 안에서 호출해야 한다(같은 commit으로 묶여야 정합성 보장).
-    """
-    if d_spots == 0 and d_exact == 0 and d_total == 0:
-        return
-    cur = conn.execute(
-        """
-        INSERT INTO equity_cache_stats(street, num_opponents, spots, exact_done, total_sum)
-        VALUES(?,?,?,?,?)
-        ON CONFLICT(street, num_opponents) DO UPDATE SET
-            spots = spots + excluded.spots,
-            exact_done = exact_done + excluded.exact_done,
-            total_sum = total_sum + excluded.total_sum
-        """,
-        (street, num_opponents, d_spots, d_exact, d_total),
-    )
-    cur.close()
-
-
-def cache_lookup(spot_key: str, num_opponents: int) -> Optional[dict]:
-    try:
-        conn = _db()
-        row = conn.execute(
-            "SELECT wins, ties, total, exact FROM equity_cache "
-            "WHERE spot_key = ? AND num_opponents = ?",
-            (spot_key, num_opponents),
-        ).fetchone()
-        conn.close()
-        if row is None:
-            return None
-        return dict(row)
-    except Exception:
-        return None
-
-
-# MC 기여분 메모리 버퍼: (street, key, n_opp) → [wins, ties, total]
-# 봇 결정마다 커밋하면 그라인드에서 쓰기 락 경합이 나므로 배치 플러시한다.
-_contrib_buffer: dict = {}
-_CONTRIB_FLUSH_AT = 25  # 스팟 25개 쌓이면 플러시
-
-
-def _flush_contributions() -> None:
-    if not _contrib_buffer:
-        return
-    items = list(_contrib_buffer.items())
-    _contrib_buffer.clear()
-    try:
-        conn = _db()
-        for (street, key, n_opp), (w, t, n) in items:
-            # 델타 정확성을 위해 쓰기 전 상태를 먼저 확인 — 신규 스팟인지,
-            # 이미 exact=1이라 이번 기여가 WHERE절에 막혀 무시되는지 판별.
-            old = conn.execute(
-                "SELECT total, exact FROM equity_cache "
-                "WHERE spot_key = ? AND num_opponents = ?",
-                (key, n_opp),
-            ).fetchone()
-            cur = conn.execute(
-                """
-                INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
-                VALUES(?,?,?,?,?,?,0)
-                ON CONFLICT(spot_key, num_opponents) DO UPDATE SET
-                    wins = equity_cache.wins + excluded.wins,
-                    ties = equity_cache.ties + excluded.ties,
-                    total = equity_cache.total + excluded.total,
-                    updated_at = datetime('now')
-                WHERE equity_cache.exact = 0
-                """,
-                (street, key, n_opp, w, t, n),
-            )
-            cur.close()
-            if old is None:
-                bump_equity_stats(conn, street, n_opp, d_spots=1, d_total=n)
-            elif old["exact"] == 0:
-                bump_equity_stats(conn, street, n_opp, d_total=n)
-            # old["exact"] == 1 이면 WHERE절에 막혀 실제로는 아무 변화 없음 → 델타 없음
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
-
-
-atexit.register(lambda: _flush_contributions())
-
-
-def cache_contribute(
-    street: str, spot_key: str, num_opponents: int,
-    wins: float, ties: float, total: int, exact: bool = False,
-) -> None:
-    """계산 결과를 캐시에 누적. MC 기여는 버퍼링 후 배치 플러시."""
-    if not exact:
-        buf = _contrib_buffer.setdefault((street, spot_key, num_opponents), [0.0, 0.0, 0])
-        buf[0] += wins; buf[1] += ties; buf[2] += total
-        if len(_contrib_buffer) >= _CONTRIB_FLUSH_AT:
-            _flush_contributions()
-        return
-    try:
-        conn = _db()
-        old = conn.execute(
-            "SELECT total, exact FROM equity_cache "
-            "WHERE spot_key = ? AND num_opponents = ?",
-            (spot_key, num_opponents),
-        ).fetchone()
-        if exact:
-            cur = conn.execute(
-                """
-                INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
-                VALUES(?,?,?,?,?,?,1)
-                ON CONFLICT(spot_key, num_opponents) DO UPDATE SET
-                    wins = excluded.wins, ties = excluded.ties,
-                    total = excluded.total, exact = 1,
-                    updated_at = datetime('now')
-                """,
-                (street, spot_key, num_opponents, wins, ties, total),
-            )
-            cur.close()
-            if old is None:
-                bump_equity_stats(conn, street, num_opponents,
-                                   d_spots=1, d_exact=1, d_total=total)
-            else:
-                bump_equity_stats(
-                    conn, street, num_opponents,
-                    d_exact=(1 if old["exact"] == 0 else 0),
-                    d_total=total - old["total"],
-                )
-        else:
-            cur = conn.execute(
-                """
-                INSERT INTO equity_cache(street, spot_key, num_opponents, wins, ties, total, exact)
-                VALUES(?,?,?,?,?,?,0)
-                ON CONFLICT(spot_key, num_opponents) DO UPDATE SET
-                    wins = equity_cache.wins + excluded.wins,
-                    ties = equity_cache.ties + excluded.ties,
-                    total = equity_cache.total + excluded.total,
-                    updated_at = datetime('now')
-                WHERE equity_cache.exact = 0
-                """,
-                (street, spot_key, num_opponents, wins, ties, total),
-            )
-            cur.close()
-            if old is None:
-                bump_equity_stats(conn, street, num_opponents, d_spots=1, d_total=total)
-            elif old["exact"] == 0:
-                bump_equity_stats(conn, street, num_opponents, d_total=total)
-            # old["exact"] == 1 이면 WHERE절에 막혀 실제 변화 없음 → 델타 없음
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass  # DB 문제 시 조용히 무시 (equity 계산 자체는 유효)
-
-
 def _ratio(wins: float, ties: float, total: int) -> float:
     return (wins + 0.5 * ties) / total if total > 0 else 0.5
 
 
 # ──────────────────────────────────────────
-# 스마트 에퀴티 (봇 런타임 진입점)
+# 스마트 에퀴티 (봇·패널 진입점)
 # ──────────────────────────────────────────
+
+class EquityResult(NamedTuple):
+    equity: float
+    source: str    # "preflop-table" | "exact" | "mc:N" | "none"
+    samples: int   # 테이블 샘플 수 / 전수 조합 수 / MC 샘플 수
+
+
+def equity_detail(
+    hole_cards: List[Card],
+    board: List[Card],
+    num_opponents: int = 1,
+    num_simulations: Optional[int] = None,
+) -> EquityResult:
+    """
+    vs 랜덤 핸드 에퀴티와 그 계산 경로 (ADR 0034).
+
+    - 프리플랍(상대 1~5명): 상수 테이블. num_simulations와 무관.
+    - 리버 상대 1명: 전수조사(990조합). num_simulations와 무관(모든 난이도).
+    - 그 밖: num_simulations가 None이면 적응형 MC(SE ≤ TARGET_SE),
+      정수면 그 수만큼 고정 MC(easy 봇처럼 해상도를 일부러 낮출 때 — ADR 0014).
+    DB에 읽거나 쓰지 않는다.
+    """
+    if len(hole_cards) < 2:
+        return EquityResult(0.5, "none", 0)
+    _check_cards(hole_cards, board)
+    street = street_of(board)
+
+    if street == "preflop" and 1 <= num_opponents <= 5:
+        vals = PREFLOP_EQUITY[preflop_notation(hole_cards)]
+        return EquityResult(vals[num_opponents - 1], "preflop-table", PREFLOP_SAMPLES)
+
+    if street == "river" and num_opponents == 1:
+        w, t, n = exact_counts_river(hole_cards, board)
+        return EquityResult(_ratio(w, t, n), "exact", n)
+
+    if num_simulations is None:
+        w, t, n, _se = mc_adaptive(hole_cards, board, num_opponents)
+    else:
+        w, t, n = mc_counts(hole_cards, board, num_opponents, num_simulations)
+    return EquityResult(_ratio(w, t, n), f"mc:{n}", n)
+
 
 def smart_equity(
     hole_cards: List[Card],
     board: List[Card],
     num_opponents: int = 1,
-    num_simulations: int = 300,
-    use_cache: bool = True,
-    contribute: bool = True,
-    exact_river: bool = False,
+    num_simulations: Optional[int] = None,
 ) -> float:
-    """
-    캐시 → 전수조사 → MC 순으로 최선의 equity 반환.
-
-    - use_cache: 정확값/고정밀 누적값이 있으면 그대로 사용 (hard 봇용).
-      상대 1명일 때만 적용 — 멀티웨이 캐시 행은 읽지 않는다(T-032, 캐시 폐기는 T-036/ADR 0034)
-    - contribute: MC 결과를 캐시에 누적 → 봇이 칠수록 DB가 똑똑해짐.
-      처음 만난 스팟은 자동으로 워커 큐에 등록되는 효과.
-    - exact_river: 리버 1:1이면 전수조사(990조합, <1초)로 정확값 계산
-    """
-    if len(hole_cards) < 2:
-        return 0.5
-
-    street = street_of(board)
-    key = None
-    row = None
-    if use_cache or contribute:
-        key = canonical_key(hole_cards, board)
-        row = cache_lookup(key, num_opponents)
-
-    # 멀티웨이(num_opponents>1) 캐시 행은 과거 동률을 1/2로 센 값이 섞여 있어(T-032)
-    # 읽지 않는다. 캐시 자체는 T-036(ADR 0034)에서 폐기된다.
-    read_cache = use_cache and num_opponents == 1
-
-    if read_cache and row:
-        if row["exact"] or row["total"] >= HIGH_PRECISION_SAMPLES:
-            return _ratio(row["wins"], row["ties"], row["total"])
-
-    if exact_river and street == "river" and num_opponents == 1:
-        w, t, n = exact_counts_river(hole_cards, board)
-        if contribute and key:
-            cache_contribute(street, key, 1, w, t, n, exact=True)
-        return _ratio(w, t, n)
-
-    w, t, n = mc_counts(hole_cards, board, num_opponents, num_simulations)
-    if contribute and key:
-        cache_contribute(street, key, num_opponents, w, t, n)
-
-    # 캐시에 부분 누적이 있으면 합쳐서 더 정확한 추정치 사용
-    if read_cache and row and not row["exact"] and row["total"] > 0:
-        return _ratio(row["wins"] + w, row["ties"] + t, row["total"] + n)
-    return _ratio(w, t, n)
+    """equity_detail의 에퀴티 값만 (0.0~1.0)."""
+    return equity_detail(hole_cards, board, num_opponents, num_simulations).equity
 
 
 # ──────────────────────────────────────────
@@ -614,7 +452,7 @@ def mc_counts_ranged(
 ) -> Tuple[float, float, int]:
     """
     상대별 레인지 샘플러를 적용한 MC. samplers의 None은 랜덤 핸드.
-    레인지 조건부 분포라 equity_cache에는 저장하지 않는다.
+    레인지 조건부 분포다.
 
     상대 홀카드는 결합분포 Π w_i(h_i)·[카드 비중복]에서 뽑는다(T-034):
     1) 각 레인지에서 내 홀·보드와 겹치는 콤보를 미리 뺀다(남는 게 없으면 랜덤 상대).
@@ -674,7 +512,7 @@ def ranged_equity(
     samplers: List[Optional[RangeSampler]],
     num_simulations: int = 300,
 ) -> float:
-    """레인지 반영 equity. 캐시 미사용 (조건부 분포)."""
+    """레인지 반영 equity (조건부 분포, 고정 샘플 MC)."""
     if len(hole_cards) < 2 or not samplers:
         return 0.5
     w, t, n = mc_counts_ranged(hole_cards, board, samplers, num_simulations)

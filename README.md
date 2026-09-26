@@ -33,9 +33,10 @@ ev_plus/
 ├── gto/           # GTO 어드바이저
 ├── server/        # FastAPI 백엔드
 ├── web/           # React + Vite + Tailwind 프론트엔드
-├── db/            # SQLite (게임 기록 + GTO 데이터 + 에퀴티 캐시)
-├── scripts/       # equity_worker(캐시 채우기) · grind(워커+아레나) · bot_arena · tune_bot · ai_regression
+├── db/            # SQLite (게임 기록 + GTO 데이터)
+├── scripts/       # grind(아레나 반복) · bot_arena · tune_bot · ai_regression · bench_equity(응답 시간)
 │                  # collect_gto_tree(GTO 수집) · gto_tree_report · audit_gto_preflop · show_missing_spots
+│                  # export_preflop_equity(프리플랍 에퀴티 상수 생성) · slim_db
 ├── tools/         # gto_extract_and_save.js (GTO Wizard 콘솔 수동 저장)
 ├── tests/         # 테스트 (포커 로직, GTO 트리, 에퀴티/봇, 플레이 평가 — tests/run_all.py)
 ├── start.sh       # 개발 모드 실행 (= dev.sh)
@@ -56,9 +57,8 @@ ev_plus/
 | GTO 패널 (레인지 그리드) | ⚠️ 오른쪽 탭 — 힌트와 별도 판정기라 다른 노드를 보일 수 있음(TODO T-013) |
 | 테스트 스위트 | ✅ `tests/run_all.py --full` |
 | 프리플랍 GTO 수집 | ✅ 체계 완료, 수집은 운영 루틴(Playwright 자동 워커) — [사양](docs/spec/gto-preflop.md), 현황은 `python3 scripts/gto_tree_report.py` |
-| AI 봇 equity 기반 재작성 | ✅ MC/전수조사 + 레인지 반영 + 페르소나 |
-| 에퀴티 전수조사 워커 | ✅ `scripts/equity_worker.py` (중단/재개 안전) |
-| 봇 아레나 / 그라인드 | ✅ bb/100 검증 + 캐시·학습데이터 동시 축적 |
+| AI 봇 equity 기반 재작성 | ✅ 프리플랍 상수 테이블 + 리버 1:1 전수 + 적응형 MC(±0.5%p) + 레인지 반영 + 페르소나 |
+| 봇 아레나 / 그라인드 | ✅ bb/100 검증 + 학습데이터 축적 (에퀴티 캐시·워커는 폐기, ADR 0034) |
 | RL 학습 데이터 기록 | ✅ 전 액션 DB 기록 (equity/reward 포함) |
 | 에퀴티 패널 + 플레이 평가 | ✅ 실시간 상대별 에퀴티, 핸드 복기 등급/EV |
 | 포스트플랍 GTO | ❌ 실측 수집 폐기 → 레인지 기반 핸드 리딩으로 근사 예정(TODO E-2) |
@@ -68,19 +68,15 @@ ev_plus/
 ## 야간 루틴
 
 ```bash
-# 1순위: 그라인드 — 에퀴티 캐시 + RL 학습데이터 + 미수집 스팟 발견 동시 축적.
-# pypy3로 실행하면 워커·아레나 서브프로세스도 PyPy(처리량 약 3.7배). 워커는 기본 cpu_count()-2 병렬.
+# 1순위: 그라인드 — 아레나를 새 시드로 반복해 RL 학습데이터 + 미수집 스팟 발견을 축적.
+# pypy3로 실행하면 아레나 서브프로세스도 PyPy.
 pypy3 scripts/grind.py
-
-# 또는: 프리플랍 equity 채우기(순수 워커)
-pypy3 scripts/equity_worker.py --preflop-first
 
 # 또는: 파라미터 튜닝 캠페인(결과는 tuning_results.json, 반영은 사람이 수동)
 python3 scripts/tune_bot.py --profile hard --param aggression_margin --values 0.04,0.08,0.12 --hands 3000 --seeds 3
 python3 scripts/tune_bot.py --profile hard --param semibluff_freq --evolve --start 0.55 --step 0.1 --rounds 5 --hands 2000
 
 # 다음날 아침 확인
-python3 scripts/equity_worker.py --status
 ls -lh poker.db chip_violations.log   # 위반 로그가 있으면 시드로 재현 가능
 
 # 프리플랍 GTO 트리 수집(선택, 디버그 크롬 + GTO Wizard 로그인 필요) — 절차: docs/spec/gto-preflop.md
@@ -89,7 +85,7 @@ python3 scripts/collect_gto_tree.py --limit 90
 python3 scripts/gto_tree_report.py
 ```
 
-⚠️ 동시 실행 금지: 워커 2개(중복 계산), 그라인드+워커, 그라인드+튜닝(CPU/DB 경합)
+⚠️ 동시 실행 금지: 그라인드+튜닝(CPU/DB 경합)
 
 ---
 
@@ -99,7 +95,7 @@ python3 scripts/gto_tree_report.py
 |---|---|
 | [게임](docs/spec/game.md) | 룰, 웹 게임 흐름(이벤트), API 목록 — 필드 상세는 `https://localhost:8765/docs` |
 | [AI 봇](docs/spec/bot.md) | 난이도·페르소나, 의사결정, 플레이 평가, 아레나·튜닝 |
-| [에퀴티](docs/spec/equity.md) | 에퀴티 엔진·캐시·워커, 에퀴티 패널 |
+| [에퀴티](docs/spec/equity.md) | 에퀴티 엔진(프리플랍 테이블·전수·적응형 MC), 에퀴티 패널, 응답 시간 |
 | [프리플랍 GTO](docs/spec/gto-preflop.md) | 수집·저장·조회 규칙, 운영 방법 |
 | [DB](docs/spec/db.md) | 연결·마이그레이션·기록 흐름·보존 — 컬럼은 `db/schema.py` |
 | [테스트](docs/spec/testing.md) | 실행 방법, 테스트 규약 |

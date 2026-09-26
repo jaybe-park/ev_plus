@@ -1,12 +1,12 @@
 # DB — 현재 사양
 
-> 최종 갱신: 2026-09-26 · 관련 결정: [0030](../decisions/0030-sqlite-over-server-db.md), [0031](../decisions/0031-bot-hand-archive-human-hand-retain.md), [0032](../decisions/0032-partial-index-only-for-pending-queues.md), [0033](../decisions/0033-no-direct-writes-to-shared-db.md), [0020](../decisions/0020-sqlite-single-writer.md), [0021](../decisions/0021-equity-stats-incremental.md)
+> 최종 갱신: 2026-09-26 · 관련 결정: [0030](../decisions/0030-sqlite-over-server-db.md), [0031](../decisions/0031-bot-hand-archive-human-hand-retain.md), [0032](../decisions/0032-partial-index-only-for-pending-queues.md), [0033](../decisions/0033-no-direct-writes-to-shared-db.md), [0020](../decisions/0020-sqlite-single-writer.md), [0034](../decisions/0034-abolish-equity-cache.md)
 
 ## 무엇을 하는가
 
-`poker.db` 하나(SQLite, WAL)에 핸드/액션 기록, 프리플랍 GTO 레인지, 에퀴티 캐시를 함께 담는다.
+`poker.db` 하나(SQLite, WAL)에 핸드/액션 기록과 프리플랍 GTO 레인지를 담는다. 에퀴티는 저장하지 않는다(캐시 폐기, ADR 0034).
 연결·스키마 버전·마이그레이션은 이 spec이 다룬다. 각 테이블 그룹의 **사용 규칙**(무엇을 언제 조회·저장하는가)은
-해당 도메인 spec이 주인이다 — 프리플랍 GTO 테이블은 [`gto-preflop.md`](gto-preflop.md), 에퀴티 캐시는 [`equity.md`](equity.md).
+해당 도메인 spec이 주인이다 — 프리플랍 GTO 테이블은 [`gto-preflop.md`](gto-preflop.md).
 원본 컬럼 정의: `db/schema.py`.
 
 ## 규칙 (지금 유효한 것만)
@@ -16,8 +16,8 @@
 - 모든 연결에 `PRAGMA foreign_keys=ON`, `journal_mode=WAL`, `busy_timeout=30000`(ms)을 적용한다 — 근거: [0020](../decisions/0020-sqlite-single-writer.md) · 강제 장치: 없음
 - 로컬 단일 사용자 SQLite를 유지한다(서버형 DB로 전환하지 않음) — 근거: [0030](../decisions/0030-sqlite-over-server-db.md)
 
-### 쓰기 원칙 (DB 공통 — 에퀴티 워커 세부는 `equity.md`)
-- 쓰기(캐시 조회·저장 포함)는 항상 메인 프로세스 1개만 한다. 병렬화는 DB에 닿지 않는 순수 계산에만 쓴다. 커넥션은 열고-쓰고-닫는다 — 근거: [0020](../decisions/0020-sqlite-single-writer.md) · 강제 장치: `tests/test_workflow.py::test_exclusive_runs`(에이전트 동시 실행만 차단, 사람이 직접 여러 프로세스를 띄우면 장치 없음)
+### 쓰기 원칙 (DB 공통)
+- 쓰기는 항상 메인 프로세스 1개만 한다. 병렬화는 DB에 닿지 않는 순수 계산에만 쓴다. 커넥션은 열고-쓰고-닫는다 — 근거: [0020](../decisions/0020-sqlite-single-writer.md) · 강제 장치: `tests/test_workflow.py::test_exclusive_runs`(에이전트 동시 실행만 차단, 사람이 직접 여러 프로세스를 띄우면 장치 없음)
 - 게임 기록기는 액션마다 커밋하지 않고 핸드 종료 시 한 트랜잭션으로 일괄 INSERT한다(원인: 액션마다 커밋하면 recorder가 쓰기 트랜잭션을 오래 점유해 다른 프로세스가 `busy_timeout`까지 블로킹됨) — 근거: [0020](../decisions/0020-sqlite-single-writer.md) · 강제 장치: 없음(`db/recorder.py::finish_hand`)
 - 공유 운영 DB(`poker.db`)에 대한 수동 쓰기(삭제·갱신·구조 변경)는 사람이 직접 `sqlite3` CLI로 하지 않고 스크립트(가능하면 `--dry-run` 지원)를 경유한다 — 근거: [0033](../decisions/0033-no-direct-writes-to-shared-db.md) · 강제 장치: 없음(TODO 후보, 아래 알려진 한계 참고)
 
@@ -25,10 +25,11 @@
 - `SCHEMA_VERSION`(`db/schema.py`) 상수와 `schema_version` 테이블(적용 이력)로 버전을 관리한다. 연결마다 `_migrate()`가 현재 버전을 넘는 마이그레이션만 순서대로 실행한다 — 강제 장치: 없음(`db/connection.py::_migrate`)
 - 신규 DB(이력 0)는 마이그레이션을 건너뛰고 `ALL_STATEMENTS`(최종 상태 DDL)만 실행한다. 기존 DB만 `MIGRATIONS[v]`를 순서대로 적용한다 — 이유: 마이그레이션에는 특정 버전에서만 유효한 `DROP`/`ALTER`(아직 존재하지 않는 테이블 대상)가 섞여 있어 신규 DB에 그대로 실행하면 에러가 나거나 불필요한 삭제가 된다 — 강제 장치: 없음
 - 마이그레이션 스텝은 SQL 문자열 또는 콜러블(connection을 받는 파이썬 함수)일 수 있다. 콜러블은 순수 SQL로 표현 불가한 결정론적 데이터 백필(예: v12 노드 키 계산, `backfill_v12`)에 쓴다 — 강제 장치: 없음
+- 에퀴티 캐시 테이블(`equity_cache`, `equity_cache_stats`, `worker_meta`)과 그 부분 인덱스는 `ALL_STATEMENTS`에 없다 — 새 DB는 만들지 않는다. v7·v9·v10 마이그레이션 스텝은 이력 보존용 no-op이다. 기존 DB의 테이블은 DROP하지 않는다(운영 DB 직접 변경 금지 — 파일 정리는 `scripts/slim_db.py`, D-15). `SCHEMA_VERSION`은 12 그대로라 기존 DB를 열어도 마이그레이션 쓰기가 일어나지 않는다 — 근거: [0034](../decisions/0034-abolish-equity-cache.md) · 강제 장치: `tests/test_equity.py::test_no_db_writes`(새 DB에 에퀴티 테이블 없음)
 
 ### 인덱스
 - 항상 조건이 걸리는 대기 큐(예: `exact=0`인 미완료 행)에는 **부분 인덱스**만 만든다. 조건 없는 전체 인덱스는 테이블이 커질수록 쓰기 비용만 늘고 읽기에는 안 쓰인다 — 근거: [0032](../decisions/0032-partial-index-only-for-pending-queues.md)
-- 인덱스를 지우기 전에는 그 인덱스를 타는 것으로 보이는 모든 쿼리의 `EXPLAIN QUERY PLAN`을 확인한다. v8에서 "잉여"로 보고 지운 전체 인덱스가 실은 다른 쿼리 하나가 의존하던 인덱스였고, v10까지 배치마다 숨은 풀스캔(3.1초)으로 이어졌다 — 근거: [0032](../decisions/0032-partial-index-only-for-pending-queues.md) · 강제 장치: 없음(테스트 후보 — 워커 쿼리마다 `EXPLAIN QUERY PLAN`에 `SCAN`이 없는지 assert)
+- 인덱스를 지우기 전에는 그 인덱스를 타는 것으로 보이는 모든 쿼리의 `EXPLAIN QUERY PLAN`을 확인한다. v8에서 "잉여"로 보고 지운 전체 인덱스가 실은 다른 쿼리 하나가 의존하던 인덱스였고, v10까지 배치마다 숨은 풀스캔(3.1초)으로 이어졌다 — 근거: [0032](../decisions/0032-partial-index-only-for-pending-queues.md) · 강제 장치: 없음
 
 ### 기록 흐름
 `WebGameSession`이 내장한 `GameRecorder`(`db/recorder.py`)가 핸드 진행에 맞춰 아래 테이블에 쓴다. 기록 실패는 게임을 막지 않도록 호출부에서 무시한다(아레나/그라인드도 같은 세션을 써서 자동 기록됨).
@@ -58,13 +59,11 @@
 | `gto_preflop_situations` / `gto_preflop_hands` | 프리플랍 GTO 노드·핸드 빈도 | [gto-preflop.md](gto-preflop.md) |
 | `gto_postflop_situations` / `gto_postflop_hands` | 포스트플랍 GTO(미사용) | 없음 |
 | `gto_missing_spots_preflop` | 미수집 프리플랍 스팟 큐 | [gto-preflop.md](gto-preflop.md) |
-| `equity_cache` / `equity_cache_stats` | 에퀴티 계산 결과 캐시·집계 | [equity.md](equity.md) |
-| `worker_meta` | 에퀴티 워커 진행 커서(key-value) | [equity.md](equity.md) |
 | `schema_version` | 적용된 마이그레이션 버전 이력 | db |
 
 ## 알려진 한계
 
-- `equity_cache`가 파일 15GB 중 12.7GB(테이블 8.5GB + UNIQUE 인덱스 4.2GB), freelist 0이라 행을 지워도 `VACUUM INTO` 없이는 줄지 않는다 — D-23, D-15, T-036
+- 옛 DB 파일에는 `equity_cache`/`equity_cache_stats`/`worker_meta`가 남아 있을 수 있다(코드는 읽거나 쓰지 않음). 운영 `poker.db`는 `scripts/slim_db.py`로 이 테이블들을 뺀 사본으로 교체됐다(약 2.2GB) — D-15
 - 봇 핸드 아카이브(내보내기 후 삭제)는 설계만 있고 미구현.
 - 공유 운영 DB에 대한 수동 CLI 쓰기를 막는 장치가 없다(사람이 직접 `sqlite3 poker.db`로 `DELETE`/`UPDATE`/`DROP` 등을 실행한 이력 있음, 모두 의도된 작업이었음) — TODO 후보.
 - 인덱스 삭제가 숨은 풀스캔을 유발한 사고가 2회 있었고, 이를 막는 자동 검증(`EXPLAIN QUERY PLAN` 회귀 테스트)은 아직 없다.

@@ -11,8 +11,8 @@ _DEFAULT_DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "poker.db"
 )
 
-# 워커/그라인드 시작 전 DB 파일 크기 가드 기본값(GB) — scripts/equity_worker.py,
-# scripts/grind.py의 --max-db-gb 기본값으로도 쓰인다.
+# 그라인드 시작 전 DB 파일 크기 가드 기본값(GB) — scripts/grind.py의
+# --max-db-gb 기본값으로도 쓰인다.
 DEFAULT_MAX_DB_GB = 20.0
 
 
@@ -38,7 +38,7 @@ def check_db_size_guard(
     db_path: str = None, max_gb: float = DEFAULT_MAX_DB_GB
 ) -> Optional[str]:
     """DB 파일 크기가 max_gb(GB)를 넘으면 사람이 읽을 이유 문자열을 반환,
-    넘지 않으면 None. 워커/그라인드가 시작 전에 호출해 초과 시 실행하지 않는다."""
+    넘지 않으면 None. 그라인드가 시작 전에 호출해 초과 시 실행하지 않는다."""
     size_gb = db_size_gb(db_path)
     if size_gb > max_gb:
         return (

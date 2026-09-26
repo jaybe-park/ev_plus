@@ -17,7 +17,7 @@
 | [0011](0011-data-driven-tree-collection.md) | 데이터 기반 트리 수집(가정 금지, ε 분기, 도달확률 best-first) | 유효 | gto-preflop |
 | [0012](0012-collector-operational-safety.md) | 수집 운영 안전장치 — 한도·환경오류·자격증명·지연 | 유효 | gto-preflop |
 | [0013](0013-no-arena-gate-collection-as-routine.md) | 아레나 검증 게이트 폐기, 수집은 운영 루틴 | 유효 | gto-preflop |
-| [0014](0014-difficulty-is-mc-resolution.md) | 봇 난이도 = MC 샘플 수(판단 해상도), 일부러 약하게 코딩하지 않는다 | 유효 | bot |
+| [0014](0014-difficulty-is-mc-resolution.md) | 봇 난이도 = MC 샘플 수(판단 해상도), 일부러 약하게 코딩하지 않는다 | 일부 대체됨 → 0038 (샘플 수치. 원칙은 유효) | bot |
 | [0015](0015-aggression-margin.md) | 어그레션 마진 — 벳을 받으면 콜 기준을 벳 크기에 비례해 올린다 | 유효 | bot |
 | [0016](0016-bot-validation-arena-legacy.md) | 봇 검증 = 아레나 bb/100 + legacy 베이스라인, 튜닝 결과는 사람이 반영 | 유효 | bot |
 | [0017](0017-equity-canonical-key-exact-protection.md) | equity_cache 키 = 수트 정규화, exact 값은 보호, 레인지 조건부 equity는 저장하지 않는다 | 대체됨 → 0034 | equity |
@@ -38,3 +38,4 @@
 | [0035](0035-gto-lookup-sequence-first.md) | GTO 조회는 액션 순서 키 먼저, 간단 라벨은 "근사" 예비 | 유효 | gto-preflop |
 | [0036](0036-moving-button.md) | 파산으로 좌석이 빠질 때는 무빙 버튼 | 유효 | game |
 | [0037](0037-allin-only-snaps-to-allin-sibling.md) | 라이브 올인은 올인 형제에만 스냅한다(레이즈 형제와 구분) | 유효 | gto-preflop |
+| [0038](0038-adaptive-mc-for-precision-target.md) | 정밀도 목표 ±0.5%p는 적응형 MC로 지킨다 — 샘플 1,000~10,000, easy만 고정 40 | 유효 (사용자 확인 대기) | equity |

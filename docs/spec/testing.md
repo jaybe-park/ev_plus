@@ -28,7 +28,7 @@ exit code 1.
   사이드팟/프리플랍 GTO 트리 라우팅) · `test_equity.py` = 에퀴티 엔진 + 봇 의사결정 ·
   `test_grader.py` = 플레이 평가(Play Grader) 판정 엔진 · `test_gto_tree.py` = GTO 트리
   수집 워커의 순수 로직 · `test_guards.py` = 테스트 인프라 자체의 가드(poker.db 무결성
-  검사 로직, DB 크기 임계치 판정 함수, `canonical_key` 입력 검증) · `test_poker.py` = 기본
+  검사 로직, DB 크기 임계치 판정 함수, `equity_detail` 중복 카드 입력 검증) · `test_poker.py` = 기본
   핸드 평가 유닛 테스트(레거시).
   각 파일의 정확한 항목 수·번호는 여기 쓰지 않는다 — 실제 목록은 각 파일의 `def test_*`
   (또는 `check(...)`) 선언을 grep하거나 `run_all.py` 출력의 통합 요약을 본다.
@@ -50,10 +50,8 @@ exit code 1.
   호출하는 모든 경로(`gto/loader.py`, `gto/advisor.py` 등)가 대상이라, 파일마다 모듈
   임포트 시점에 `os.environ["EV_PLUS_DB"] = tempfile...`를 직접 설정해야 한다 —
   `test_poker_full.py`, `test_equity.py`, `test_grader.py`, `test_gto_tree.py`,
-  `test_guards.py` 모두 이 패턴을 쓴다. `ai/equity.py`의 `_db()`는 `DB_PATH`가 `None`이면
-  `_DEFAULT_DB_PATH`를 직접 넘기지 않고 `get_connection(None)`으로 위임해 이 환경변수
-  규칙을 그대로 따른다(과거엔 `_DEFAULT_DB_PATH`를 직접 넘겨 환경변수를 우회했다) —
-  강제 장치: `tests/test_equity.py`(전체, DB_PATH 미지정 경로도 실 DB를 타지 않음을 보장)
+  `test_guards.py` 모두 이 패턴을 쓴다. 에퀴티 계산(`ai/equity.py`)은 DB를 전혀 열지
+  않는다 — 강제 장치: `tests/test_equity.py::test_no_db_writes`
 - **운영 poker.db 무결성 가드**: `tests/run_all.py`가 실행 전후 운영 `poker.db`의
   `(mtime, size)`를 비교해(`poker_db_snapshot`/`poker_db_untouched`) 값이 바뀌면(격리
   누락으로 실제 DB에 썼다는 뜻) 전체를 실패로 처리한다 — 강제 장치: `tests/run_all.py`
