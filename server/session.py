@@ -83,6 +83,9 @@ class WebGameSession:
         self.street_index: int = 0
 
         # 핸드/게임 상태
+        # 버튼 보유자는 인덱스가 아니라 이름으로 기억한다(파산으로 좌석이 빠져도 안전).
+        # None이면 다음 핸드는 game.dealer_index를 그대로 버튼으로 쓴다(첫 핸드).
+        self._button_name: Optional[str] = None
         self.hand_number: int = 0
         self.hand_over: bool = False
         self.game_over: bool = False
@@ -220,12 +223,12 @@ class WebGameSession:
         self._equity_history_streets = set()
         self.hand_reviews = []
 
-        # 파산 플레이어 제거
-        self.game.players = [p for p in self.game.players if p.chips > 0]
+        # 파산 플레이어 제거 + 무빙 버튼(직전 버튼 다음 생존자, ADR 0036)
+        self.game.seat_for_next_hand(self._button_name)
         if len(self.game.players) < 2 or self.human not in self.game.players:
             self.game_over = True
             return
-        self.game.dealer_index = self.game.dealer_index % len(self.game.players)
+        self._button_name = self.game.players[self.game.dealer_index].name
 
         self.hand_number += 1
         self._hand_start_chips = {p.name: p.chips for p in self.game.players}
@@ -519,7 +522,6 @@ class WebGameSession:
             contenders = [p for p in contenders if len(p.hole_cards) >= 2]
             if not contenders:
                 self.game.pot = 0
-                self.game._advance_dealer()
                 self.hand_over = True
                 return
 
@@ -551,7 +553,8 @@ class WebGameSession:
                     if len(eligible) > 1:
                         all_winners.add(w.name)
                 if remainder:
-                    pot_winners[0].chips += remainder
+                    # 홀수 칩은 버튼 왼쪽부터 돌아 처음 만나는 승자에게
+                    self.game.order_from_button_left(pot_winners)[0].chips += remainder
 
             self.winners = list(all_winners)
             self.showdown_hands = {p.name: str(evals[p.name]) for p in contenders}
@@ -586,8 +589,9 @@ class WebGameSession:
         # 세션 전체 누적 (요약 API용) — 이번 핸드 평가를 합산
         self.session_reviews.extend(self.hand_reviews)
 
+        # 딜러 이동은 다음 핸드 시작 시점(_start_new_hand)에 한다 — 핸드 종료 응답의
+        # 포지션 라벨이 방금 친 핸드 기준으로 남는다(ADR 0036).
         self.game.pot = 0
-        self.game._advance_dealer()
         self.hand_over = True
 
         if self.human.chips <= 0 or sum(1 for p in self.game.players if p.chips > 0) < 2:

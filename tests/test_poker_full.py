@@ -417,20 +417,23 @@ def test_3_2_split_pot_even():
     assert players[1].chips == initial_p1 + 100
 
 def test_3_3_split_pot_odd_remainder():
-    """홀수 팟 — 나머지 1칩은 첫 번째 승자에게"""
-    game, players = make_game(2, chips=500, sb=10)
-    game.start_hand()
-    force_community(game, [c("A","S"), c("K","S"), c("Q","S"), c("J","S"), c("10","S")])
-    players[0].hole_cards = [c("2","H"), c("3","D")]
-    players[1].hole_cards = [c("4","H"), c("5","D")]
+    """홀수 팟 — 나머지 1칩은 버튼 왼쪽 첫 승자에게(리스트 첫 승자가 아님, T-022)"""
+    for dealer, odd_idx in [(0, 1), (1, 0)]:
+        game, players = make_game(2, chips=500, sb=10)
+        game.dealer_index = dealer
+        game.start_hand()
+        force_community(game, [c("A","S"), c("K","S"), c("Q","S"), c("J","S"), c("10","S")])
+        players[0].hole_cards = [c("2","H"), c("3","D")]
+        players[1].hole_cards = [c("4","H"), c("5","D")]
 
-    game.pot = 201
-    initial_p0 = players[0].chips
-    initial_p1 = players[1].chips
+        game.pot = 201
+        initial = [p.chips for p in players]
 
-    game.showdown()
-    total_gained = (players[0].chips - initial_p0) + (players[1].chips - initial_p1)
-    assert total_gained == 201, f"팟 전액 분배돼야 함: {total_gained}"
+        game.showdown()
+        gained = [players[i].chips - initial[i] for i in range(2)]
+        assert sum(gained) == 201, f"팟 전액 분배돼야 함: {gained}"
+        assert gained[odd_idx] == 101 and gained[1 - odd_idx] == 100, \
+            f"딜러={dealer}: 홀수 칩은 버튼 왼쪽(P{odd_idx})에게 가야 함: {gained}"
 
 def test_3_4_winner_takes_all():
     """1명 남았을 때 팟 전액 수령"""
@@ -484,30 +487,31 @@ def test_3_5_allin_player_cannot_win_more_than_contributed():
 # ═════════════════════════════════════════════════════════════
 
 def test_4_1_dealer_rotation():
-    """딜러 버튼이 매 핸드마다 한 칸씩 이동"""
+    """딜러 버튼이 매 핸드 좌석 순서대로 정확히 한 칸씩 이동하고, SB·BB가 그 뒤 두 명이다
+    (세션 경로, 파산 없음)."""
     from server.session import WebGameSession
-    sess = WebGameSession("dr", "Human", 1000, 2, "easy", 10)
+    sess = WebGameSession("dr", "Human", 1000, 3, "easy", 10, equity_enabled=False)
     stub_all_bots(sess)
+    seats = [p.name for p in sess.game.players]
+    n = len(seats)
 
-    dealer_indices = []
-    for _ in range(5):
-        dealer_indices.append(sess.game.dealer_index)
-        # 핸드 빠르게 종료 (폴드)
-        for _ in range(10):
-            state = sess.get_state()
-            if state["hand_over"] or state["game_over"]:
-                break
-            if state["waiting_for_action"]:
-                sess.submit_action("fold", 0)
-        state = sess.get_state()
-        if state["hand_over"] and not state["game_over"]:
-            sess.next_hand()
-        if state["game_over"]:
-            break
+    rows = []
+    for _ in range(8):
+        pos = sess.game.get_positions()
+        rows.append({lbl: name for name, lbl in pos.items()})
+        guard = 0
+        while not sess.hand_over:
+            guard += 1
+            assert guard < 20, "핸드가 끝나지 않음"
+            sess.submit_action("fold", 0)
+        sess.next_hand()
+        assert not sess.game_over
 
-    # 딜러 인덱스가 순환하는지 확인 (연속 동일값이 없어야 함)
-    if len(dealer_indices) >= 2:
-        assert len(set(dealer_indices)) > 1, f"딜러가 고정됨: {dealer_indices}"
+    for prev, cur in zip(rows, rows[1:]):
+        want_btn = seats[(seats.index(prev["BTN"]) + 1) % n]
+        assert cur["BTN"] == want_btn, f"버튼이 한 칸 이동해야 함: {prev['BTN']} → {cur['BTN']}"
+        assert cur["SB"] == seats[(seats.index(want_btn) + 1) % n], cur
+        assert cur["BB"] == seats[(seats.index(want_btn) + 2) % n], cur
 
 def test_4_2_bankrupt_player_removed():
     """파산 플레이어는 다음 핸드에서 제거됨"""
@@ -1847,7 +1851,10 @@ def _scripted_session(num_bots, scripts=None, chips=None, dealer_index=0, sb=10)
     for i, p in enumerate(sess.game.players):
         p.chips = chips[i] if chips else 1000
     sess.game.pot = 0
+    # 이 핸드의 버튼을 dealer_index로 고정: 직전 버튼 기록을 지우면 다음 핸드는
+    # dealer_index를 그대로 버튼으로 쓴다(첫 핸드와 같은 규칙).
     sess.game.dealer_index = dealer_index
+    sess._button_name = None
     scripts = scripts or {}
     for name, bot in list(sess.bots.items()):
         sess.bots[name] = StubBot(bot.player, scripts.get(name))
@@ -2193,7 +2200,7 @@ def _walk_events(events, chips, bets):
 def test_8_12_session_fuzz_event_amounts_and_conservation():
     """T-021 퍼저(시드 고정, 세션 경로): 무작위 스택·인원·액션(불법 포함)으로 수백 핸드를
     돌려 ① 이벤트·로그 금액 = 실제 칩 이동(블라인드 포함) ② 칩 보존 ③ 사람 불법 액션은
-    상태를 바꾸지 않음을 검사한다."""
+    상태를 바꾸지 않음 ④ 파산 전환을 포함한 무빙 버튼 이동(T-022)을 검사한다."""
     import random
     import logging
     from core.game import IllegalActionError
@@ -2211,6 +2218,7 @@ def test_8_12_session_fuzz_event_amounts_and_conservation():
                                              dealer_index=rng.randint(0, n_bots))
             for name, bot in list(sess.bots.items()):
                 sess.bots[name] = _RandomBot(bot.player, rng)
+            seats = [p.name for p in sess.game.players]
             total = sum(stacks)
             for _ in range(15):  # 세션당 최대 15핸드
                 if sess.game_over:
@@ -2239,10 +2247,128 @@ def test_8_12_session_fuzz_event_amounts_and_conservation():
                 _walk_events(st["events"], chips, bets)
                 assert _total_chips(sess) == total, "칩 보존 위반(핸드 종료)"
                 hands += 1
+                btn_label = "BTN/SB" if len(sess.game.players) == 2 else "BTN"
+                prev_btn = _labels(sess)[btn_label]
                 sess.next_hand()
                 events = sess.get_state()["events"]
+                if not sess.game_over:
+                    # ④ 무빙 버튼(ADR 0036): 파산 전환 포함, 버튼 = 직전 버튼 다음 생존자
+                    alive = {p.name for p in sess.game.players}
+                    want = _expected_next_button(seats, prev_btn, alive)
+                    btn_label = "BTN/SB" if len(alive) == 2 else "BTN"
+                    assert _labels(sess)[btn_label] == want, \
+                        f"버튼 이동 위반: 직전 {prev_btn} → {_labels(sess)[btn_label]} (기대 {want})"
     finally:
         lg.setLevel(old_level)
+
+
+def _labels(sess):
+    """{포지션 라벨: 이름}"""
+    return {lbl: name for name, lbl in sess.game.get_positions().items()}
+
+
+def _finish_hand_by_folding(sess):
+    guard = 0
+    while not sess.hand_over:
+        guard += 1
+        assert guard < 20, "핸드가 끝나지 않음"
+        sess.submit_action("fold", 0)
+
+
+def _expected_next_button(seats, prev_button, alive):
+    """무빙 버튼(ADR 0036): 좌석 순서에서 직전 버튼 다음의 살아 있는 사람."""
+    i = seats.index(prev_button)
+    for k in range(1, len(seats) + 1):
+        name = seats[(i + k) % len(seats)]
+        if name in alive:
+            return name
+    return None
+
+
+def test_8_15_moving_button_on_bust():
+    """T-022(ADR 0036): 봇이 파산해 빠져도 버튼은 '직전 버튼 다음의 살아 있는 사람'으로
+    옮기고 SB·BB는 그 뒤 두 명이다 — 직전 BB가 SB를 건너뛰고 바로 BTN이 되지 않는다."""
+    # 5인 [H, Alpha, Beta, Gamma, Delta], 직전 핸드 BTN=Gamma/SB=Delta/BB=H.
+    cases = [
+        # (파산하는 봇, 기대 BTN, SB, BB)
+        ("🤖 Alpha", "🤖 Delta", "Human", "🤖 Beta"),    # 버튼 앞 좌석 파산(리뷰 재현)
+        ("🤖 Gamma", "🤖 Delta", "Human", "🤖 Alpha"),   # 버튼 자신 파산
+        ("🤖 Delta", "Human", "🤖 Alpha", "🤖 Beta"),    # 다음 버튼이 될 좌석 파산
+    ]
+    for bust, btn, sb, bb in cases:
+        sess, _ = _scripted_session(4, dealer_index=3)
+        before = _labels(sess)
+        assert (before["BTN"], before["SB"], before["BB"]) == ("🤖 Gamma", "🤖 Delta", "Human"), before
+        _finish_hand_by_folding(sess)
+        victim = next(p for p in sess.game.players if p.name == bust)
+        victim.chips = 0
+        sess.next_hand()
+        after = _labels(sess)
+        assert bust not in after.values(), f"파산자가 남아 있음: {after}"
+        assert (after["BTN"], after["SB"], after["BB"]) == (btn, sb, bb), \
+            f"{bust} 파산 뒤 BTN/SB/BB: {(after['BTN'], after['SB'], after['BB'])} ≠ {(btn, sb, bb)}"
+
+    # 3인 → 헤즈업 전환: 버튼 = 직전 버튼 다음 생존자이고 헤즈업은 버튼이 SB
+    sess, _ = _scripted_session(2, dealer_index=1)   # BTN=Alpha, SB=Beta, BB=H
+    _finish_hand_by_folding(sess)
+    next(p for p in sess.game.players if p.name == "🤖 Beta").chips = 0
+    sess.next_hand()
+    after = _labels(sess)
+    assert after == {"BTN/SB": "Human", "BB": "🤖 Alpha"}, f"헤즈업 전환: {after}"
+
+
+def test_8_16_hand_over_positions_are_played_hand():
+    """T-022: 핸드 종료 응답의 포지션 라벨은 방금 친 핸드 기준이다(딜러 이동은 다음 핸드
+    시작 시점). 폴드 종료·쇼다운 종료 모두."""
+    # ① 사람 폴드로 종료
+    sess, _ = _scripted_session(3, dealer_index=2)
+    during = {p["name"]: p["position"] for p in sess.get_state()["players"]}
+    _finish_hand_by_folding(sess)
+    st = sess.get_state()
+    assert st["hand_over"]
+    after = {p["name"]: p["position"] for p in st["players"]}
+    assert after == during, f"종료 응답 포지션이 다음 핸드 기준으로 바뀜: {during} → {after}"
+
+    # ② 쇼다운으로 종료(스텁 봇은 콜/체크, 사람도 콜/체크)
+    sess, _ = _scripted_session(2, dealer_index=1)
+    during = {p["name"]: p["position"] for p in sess.get_state()["players"]}
+    guard = 0
+    while not sess.hand_over:
+        guard += 1
+        assert guard < 20
+        sess.submit_action("call" if sess.get_state()["call_amount"] > 0 else "check", 0)
+    st = sess.get_state()
+    assert st["showdown_hands"], "쇼다운으로 끝나야 함"
+    after = {p["name"]: p["position"] for p in st["players"]}
+    assert after == during, f"쇼다운 종료 응답 포지션이 바뀜: {during} → {after}"
+    # 다음 핸드에서야 버튼이 이동한다
+    sess.next_hand()
+    seats = [p.name for p in sess.game.players]
+    prev_btn = next(n for n, lbl in during.items() if lbl == "BTN")
+    assert _labels(sess)["BTN"] == seats[(seats.index(prev_btn) + 1) % len(seats)]
+
+
+def test_8_17_odd_chip_to_first_winner_left_of_button():
+    """T-022: 스플릿 팟의 홀수 칩은 버튼 왼쪽부터 돌아 처음 만나는 승자가 받는다
+    (세션 쇼다운 경로 — 기여액 오름차순·리스트 첫 승자가 아님)."""
+    # 3인 [H, Alpha, Beta], BTN=Alpha → 버튼 왼쪽 = Beta. H 폴드, Alpha·Beta 보드 로열 스플릿.
+    sess, _ = _scripted_session(2, dealer_index=1)
+    g = sess.game
+    board = [c("A", "S"), c("K", "S"), c("Q", "S"), c("J", "S"), c("10", "S")]
+    g.community_cards = board
+    holes = {"Human": [c("2", "H"), c("3", "D")], "🤖 Alpha": [c("4", "H"), c("5", "D")],
+             "🤖 Beta": [c("6", "H"), c("7", "D")]}
+    for p in g.players:
+        p.hole_cards = holes[p.name]
+        p.total_bet_this_round = 67
+        p.chips = 1000
+        p.is_folded = (p.name == "Human")
+        p.is_all_in = False
+    g.pot = 201
+    sess._do_showdown()
+    chips = {p.name: p.chips for p in g.players}
+    assert chips["🤖 Beta"] == 1101 and chips["🤖 Alpha"] == 1100, \
+        f"홀수 칩은 버튼(Alpha) 왼쪽 Beta에게: {chips}"
 
 
 # ═════════════════════════════════════════════════════════════
@@ -2351,6 +2477,9 @@ ALL_TESTS = [
     ("8-12 세션 퍼저: 이벤트 금액=칩 이동·보존",  test_8_12_session_fuzz_event_amounts_and_conservation),
     ("8-13 행동 가능 1명 + 콜 없음 → 런아웃",     test_8_13_runout_when_one_player_can_act),
     ("8-14 사람 BB일 때 blind 이벤트 SB→BB",      test_8_14_blind_events_sb_then_bb_when_human_bb),
+    ("8-15 파산 전환 시 무빙 버튼(ADR 0036)",     test_8_15_moving_button_on_bust),
+    ("8-16 핸드 종료 응답 포지션 = 방금 핸드",     test_8_16_hand_over_positions_are_played_hand),
+    ("8-17 홀수 칩 → 버튼 왼쪽 첫 승자",          test_8_17_odd_chip_to_first_winner_left_of_button),
 ]
 
 

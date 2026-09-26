@@ -1,6 +1,6 @@
 # 게임 엔진 / 웹 게임 흐름 — 현재 사양
 
-> 최종 갱신: 2026-09-26 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md), [0038](../decisions/0038-action-validation-and-real-amounts.md)
+> 최종 갱신: 2026-09-26 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md), [0036](../decisions/0036-moving-button.md), [0038](../decisions/0038-action-validation-and-real-amounts.md)
 
 ## 무엇을 하는가
 
@@ -68,9 +68,27 @@
 - 칩 보존: 모든 핸드에서 `모든 플레이어 chips 합 + pot == 핸드 시작 시 총합`이 성립한다
   (헤즈업·사이드팟 포함) — 강제 장치: `tests/test_poker_full.py::test_3_1_pot_conservation`,
   `::test_6_4_headsup_chip_conservation`, `::test_6_8_sidepot_conservation`
-- 파산: 칩이 0 이하인 플레이어는 다음 핸드 시작 시(`_start_new_hand`) 좌석에서 제거된다.
-  사람이 파산하거나 활성 플레이어가 2명 미만이 되면 `game_over=true` — 강제 장치:
-  `tests/test_poker_full.py::test_4_2_bankrupt_player_removed`, `::test_4_5_game_over_when_human_busted`
+- 홀수 칩: 스플릿 팟(사이드팟 계층 포함)을 나누고 남는 칩은 버튼 왼쪽(SB 자리)부터 시계
+  방향으로 돌아 처음 만나는 승자가 받는다(헤즈업은 BB). 세션 쇼다운과 core `showdown()`이
+  같은 헬퍼 `TexasHoldem.order_from_button_left`를 쓴다 — 강제 장치:
+  `tests/test_poker_full.py::test_8_17_odd_chip_to_first_winner_left_of_button`(세션 경로),
+  `::test_3_3_split_pot_odd_remainder`(core, 수령자까지 검사)
+- 파산: 칩이 0 이하인 플레이어는 다음 핸드 시작 시(`_start_new_hand` → core
+  `seat_for_next_hand`) 좌석에서 제거된다. 사람이 파산하거나 활성 플레이어가 2명 미만이 되면
+  `game_over=true` — 강제 장치: `tests/test_poker_full.py::test_4_2_bankrupt_player_removed`,
+  `::test_4_5_game_over_when_human_busted`
+- 버튼(무빙 버튼): 버튼은 매 핸드 "고정 좌석 순서(`TexasHoldem.seat_names`)에서 직전 버튼
+  보유자 다음의 살아 있는 사람"으로 옮기고, SB·BB는 그 뒤 두 명이다(헤즈업은 버튼 = SB).
+  세션은 버튼 보유자를 인덱스가 아니라 이름(`WebGameSession._button_name`)으로 기억하므로
+  버튼 앞 좌석이 파산해 빠져도 버튼이 한 칸 더 건너뛰지 않는다. 드물게 블라인드를 연속으로
+  내거나 건너뛰는 사람이 생길 수 있다(규칙상 일관된 동작) — 근거:
+  [0036](../decisions/0036-moving-button.md) · 강제 장치:
+  `tests/test_poker_full.py::test_8_15_moving_button_on_bust`(파산 전환·헤즈업 전환),
+  `::test_4_1_dealer_rotation`(파산 없을 때 정확히 한 칸, SB·BB 추종),
+  `::test_8_12_session_fuzz_event_amounts_and_conservation`(무작위 파산 전환 버튼 불변식)
+- 딜러 이동 시점: 다음 핸드 시작 시(`_start_new_hand`)에만 이동한다. 그래서 핸드 종료
+  응답(`hand_over=true`)의 포지션 라벨·RL 기록의 포지션은 방금 친 핸드 기준이다 — 강제 장치:
+  `tests/test_poker_full.py::test_8_16_hand_over_positions_are_played_hand`
 
 ### 웹 게임 흐름
 - `POST /game/{id}/action`은 사람 액션을 적용한 뒤 `_run_until_human()`으로 봇을 자동
@@ -160,7 +178,9 @@ GTO 관리 API(`/gto/preflop/*`)는 이 문서 담당이 아니다 — 규칙은
 - 불완전 올인으로 액션이 닫힌 사람에게도 프론트 `ActionBar`의 "올인" 버튼은 보인다
   (레이즈 UI는 `min_raise_to=0`으로 꺼짐). 누르면 서버가 400으로 거절하고 오류 배너가 뜬다 —
   버튼을 `can_raise`로 숨기는 것은 UI 변경이라 별도 확인 필요.
-- 이벤트 금액·칩 보존은 세션 퍼저(`test_8_12`)가 검사하지만, 이벤트 종류 순서·카드 공개
-  규칙 전체에 대한 전수 불변식 테스트는 없다(T-024 퍼저 확장 대상).
+- 이벤트 금액·칩 보존·버튼 이동은 세션 퍼저(`test_8_12`)가 검사하지만, 이벤트 종류 순서·카드
+  공개 규칙 전체에 대한 전수 불변식 테스트는 없다(T-024 퍼저 확장 대상).
+- CLI(`cli/main.py`)는 아직 core `showdown()`의 인덱스 기반 `_advance_dealer()` 후 파산자를
+  지우는 옛 버튼 방식이다(무빙 버튼은 웹 세션만). core 단일화 T-024에서 함께 정리한다.
 - `GameState.gto_hint`/`gto_key`는 서로 다른 판정 경로(advisor vs `action_log` 문자열
   매칭)를 쓴다 — GTO 도메인 사안이라 `docs/spec/gto-preflop.md`의 한계로 다룬다.
