@@ -106,7 +106,7 @@ export interface GtoKey {
 export interface GtoRange {
   found: boolean;
   situation?: string;         // "BTN RFI"
-  raise_size?: string;        // "2.5bb"
+  raise_size?: number | null; // 실측 bb(REAL) 단위 raise-to, 없으면 null — server/main.py::raise_size
   summary?: Record<string, number>; // {fold:0.48, raise:0.52}
   hands?: Record<string, Record<string, number>>; // {AA:{raise:1.0}, K7o:{raise:0.21,fold:0.79}}
   position?: string;
