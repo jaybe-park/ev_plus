@@ -739,6 +739,7 @@ def run(args) -> int:
     processed = 0
     saved = 0
     consec_env_fail = 0  # 연속 환경오류(크래시/타임아웃 등) 카운터 — 성공하면 리셋
+    consec_save_fail = 0  # 연속 저장(POST) 실패 카운터 — 성공하면 리셋 (T-012)
     since_recycle = 0    # 마지막 탭 재생성 이후 처리한 노드 수 — 예방적 재생성용
     try:
         while len(frontier) > 0 and processed < args.limit:
@@ -837,10 +838,23 @@ def run(args) -> int:
                 out = save_node(args.server, key, meta, res.hands, res.raise_size)
             except Exception as e:
                 processed -= 1
-                print(f"        [저장 실패] {e} (서버 실행 중인지 확인) — 재시도 대상으로 큐에 되돌림")
+                consec_save_fail += 1
+                print(f"        [저장 실패 {consec_save_fail}/{CONSEC_ENV_ABORT_THRESHOLD}] {e} "
+                      f"(서버 실행 중인지 확인) — 재시도 대상으로 큐에 되돌림")
                 frontier.push(node)
+                # ⚠️ T-012: 저장 실패가 연속되면(백엔드가 꺼져 있는 등) 같은 노드를
+                # 무한 재시도해 GTO Wizard 일일 한도를 헛되이 소진할 수 있다. 환경오류와
+                # 같은 기준(CONSEC_ENV_ABORT_THRESHOLD)으로 안전 중단한다. 노드는 이미
+                # frontier로 되돌렸으므로 유실되지 않는다(visited/failed 둘 다 미기입).
+                if consec_save_fail >= CONSEC_ENV_ABORT_THRESHOLD:
+                    print(f"        [안전 중단] 저장이 {consec_save_fail}회 연속 실패 — "
+                          f"서버 확인(백엔드가 켜져 있는지 https://localhost:8765). "
+                          f"체크포인트 보존(재실행하면 이어감).")
+                    ckpt.save(frontier)
+                    break
                 ckpt.save(frontier)
                 continue
+            consec_save_fail = 0  # 저장 성공 — 연속 저장실패 카운터 리셋
             saved += 1
             since_recycle += 1
             ckpt.visited.add(key)

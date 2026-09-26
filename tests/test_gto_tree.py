@@ -207,10 +207,9 @@ def test_run_requeues_node_on_limit_and_env_failure():
     finally:
         ct.connect_cdp, ct.extract_node = orig_connect_cdp, orig_extract_node
 
-    # 시나리오 C(저장 실패, 로컬 백엔드 문제): 노드를 frontier로 되돌린 뒤 재시도한다.
-    # 참고: save_node가 "항상" 실패하면 현재 코드는 processed 카운터만 되돌리고 같은 노드를
-    # 무한 재시도해 --limit으로 멈추지 않는다(실제 버그 가능성). 첫 시도만 실패시키고 그
-    # 시점 체크포인트 스냅샷으로 "유실되지 않았음"을 확인한 뒤 재시도가 성공하게 한다.
+    # 시나리오 C(저장 실패, 로컬 백엔드 문제, 일시적): 노드를 frontier로 되돌린 뒤 재시도한다.
+    # 첫 시도만 실패시키고 그 시점 체크포인트 스냅샷으로 "유실되지 않았음"을 확인한 뒤
+    # 재시도가 성공하게 한다.
     ckpt_path = _fresh_checkpoint_path()
     orig_ckpt_save = ct.Checkpoint.save
     try:
@@ -255,6 +254,55 @@ def test_run_requeues_node_on_limit_and_env_failure():
         ct.connect_cdp, ct.extract_node, ct.save_node = orig_connect_cdp, orig_extract_node, orig_save_node
 
 
+# [T-8] T-012 — save_node가 계속 실패하면(백엔드가 꺼진 등) 한도를 다 쓸 때까지
+# 같은 노드를 무한 재시도하지 않고, 환경오류와 같은 기준(CONSEC_ENV_ABORT_THRESHOLD)
+# 안에 "서버 확인" 메시지와 함께 안전 중단한다. 노드는 frontier에 보존된다(유실 아님).
+def test_run_aborts_on_persistent_save_failure():
+    if _SKIP_BROWSER_DRIVER:
+        print(f"  [스킵] collect_gto_tree import 실패(playwright 등 환경 문제): {_SKIP_REASON}")
+        return
+
+    orig_connect_cdp, orig_extract_node, orig_save_node = ct.connect_cdp, ct.extract_node, ct.save_node
+    ckpt_path = _fresh_checkpoint_path()
+    try:
+        ct.connect_cdp = lambda cdp_url: _fake_cdp_handles()
+        ct.extract_node = lambda page, node_key, nav_timeout: ct.ExtractResult(
+            True, hands={"AA": {"raise": 1.0}, "72o": {"fold": 1.0}}, raise_size=2.5, used=None)
+
+        calls = {"n": 0}
+
+        def always_fail_save_node(server, node_key, meta, hands, raise_size):
+            calls["n"] += 1
+            raise RuntimeError("가짜 저장 실패(백엔드가 계속 꺼져 있는 상황 시뮬레이션)")
+
+        ct.save_node = always_fail_save_node
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            # limit을 크게 잡아도(한도를 다 쓰기 전에) 안전 중단해야 한다.
+            rc = ct.run(_make_args(ckpt_path, limit=90))
+        output = buf.getvalue()
+
+        with open(ckpt_path) as f:
+            data = json.load(f)
+        frontier_keys = ["-".join(f["tokens"]) for f in data["frontier"]]
+
+        check("run()이 정상 종료(rc=0)", rc == 0, f"rc={rc}")
+        check(f"저장이 CONSEC_ENV_ABORT_THRESHOLD({ct.CONSEC_ENV_ABORT_THRESHOLD})회 안에 중단"
+              f"(save_node 호출 수가 한도를 다 쓰지 않음)",
+              calls["n"] == ct.CONSEC_ENV_ABORT_THRESHOLD,
+              f"calls={calls['n']} (limit=90이면 무한 재시도 시 훨씬 커야 함)")
+        check("중단 메시지에 '서버 확인'이 포함됨", "서버 확인" in output, f"output 일부={output[-500:]}")
+        check("루트 노드가 frontier에 보존됨(유실 아님)", "" in frontier_keys, f"frontier={frontier_keys}")
+        check("루트 노드가 visited에는 없음(성공 처리 아님)", "" not in data["visited"],
+              f"visited={data['visited']}")
+        check("루트 노드가 failed(영구 no-retry)에도 없음(재시도 가능해야 함)",
+              "" not in data["failed"], f"failed={data['failed']}")
+    finally:
+        os.path.exists(ckpt_path) and os.unlink(ckpt_path)
+        ct.connect_cdp, ct.extract_node, ct.save_node = orig_connect_cdp, orig_extract_node, orig_save_node
+
+
 ALL_TESTS = [
     ("T-1 compute_children 실측 사이즈 verbatim + action_to_token ValueError",
      test_compute_children_uses_measured_size),
@@ -265,6 +313,8 @@ ALL_TESTS = [
     ("T-6 _limit_hit/_parse_usage 카운터 우선", test_limit_hit_counter_authority),
     ("T-7 run() 한도/환경오류/저장실패 시 노드 유실 없음",
      test_run_requeues_node_on_limit_and_env_failure),
+    ("T-8 run() 저장이 계속 실패하면 N회 안에 안전 중단(T-012)",
+     test_run_aborts_on_persistent_save_failure),
 ]
 
 if __name__ == "__main__":
