@@ -118,6 +118,22 @@ def estimate_opponent_ranges(state: dict, opponents: list) -> Optional[list]:
     return [s for s, _ in opponent_range_info(state, opponents)]
 
 
+def facing_bet_ratio(pot: int, current_bet: int, street_bets: List[int]) -> float:
+    """
+    받은 벳/레이즈의 크기 ÷ 그 공격자가 액션하기 직전 팟 (어그레션 마진용, ADR 0015).
+
+    - 크기 = 공격자의 이번 스트리트 총 벳(current_bet). 공격자가 이 스트리트 첫 액션이라고 본다.
+    - 직전 팟 = 팟 − 이번 스트리트에 current_bet만큼 넣은 사람들(공격자 + 그 뒤 콜러)의 벳.
+      current_bet보다 적게 넣은 사람(나의 벳, 먼저 벳했다가 레이즈당한 사람)은 공격자 이전 액션이므로 포함.
+    예: 팟 100에 내가 50 벳, 상대 150으로 레이즈 → 150 / (300 − 150) = 1.0.
+    (이전 공식 콜/(팟−콜)은 100/200 = 0.5로 레이즈를 절반 크기로 봤다.)
+    """
+    if current_bet <= 0:
+        return 0.0
+    matched = sum(b for b in street_bets if b >= current_bet)
+    return current_bet / max(pot - matched, 1)
+
+
 def board_wetness(board: List[Card]) -> float:
     """
     보드 텍스처 0.0(드라이) ~ 1.0(웻).
@@ -396,9 +412,11 @@ class PokerBot:
         margin = prof["call_margin"]
         # 어그레션 마진: 상대가 벳했다 = 랜덤보다 강한 레인지.
         # 벳이 클수록 equity(vs 랜덤)의 과대평가가 심해지므로 기준 상향.
-        # (벳 크기 신호는 캡하지 않은 원래 금액 기준)
-        raw_call = max(0, state["current_bet"] - self.player.current_bet)
-        bet_ratio = raw_call / max(state["pot"] - raw_call, 1)
+        # (벳 크기 신호는 캡하지 않은 원래 금액 기준 — 레이즈를 받아도 실제 레이즈 크기, T-034)
+        bet_ratio = facing_bet_ratio(
+            state["pot"], state["current_bet"],
+            [p.get("current_bet", 0) for p in state.get("players", [])],
+        )
         margin += prof["aggression_margin"] * min(bet_ratio, 1.2)
         if is_draw:
             margin -= 0.04  # 임플라이드 오즈 (뜨면 더 딸 수 있음)

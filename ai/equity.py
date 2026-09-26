@@ -562,6 +562,27 @@ class RangeSampler:
                 continue
         self.total = total
 
+    def restricted(self, blocked: set) -> Optional["RangeSampler"]:
+        """blocked 카드와 겹치는 콤보를 뺀 새 샘플러(가중치 유지). 남는 콤보가 없으면 None."""
+        sub = RangeSampler({})
+        total = 0.0
+        prev = 0.0
+        for combo, cum in zip(self.combos, self.cum):
+            w = cum - prev
+            prev = cum
+            if combo[0] in blocked or combo[1] in blocked or w <= 0:
+                continue
+            total += w
+            sub.combos.append(combo)
+            sub.cum.append(total)
+        sub.total = total
+        return sub if sub.combos else None
+
+    def draw(self) -> Tuple[Card, Card]:
+        """가중치대로 콤보 1개 (블로커 무시 — 호출자가 거절 판단)."""
+        i = self._bisect.bisect_left(self.cum, random.random() * self.total)
+        return self.combos[min(i, len(self.combos) - 1)]
+
     def sample(self, blocked: set) -> Optional[Tuple[Card, Card]]:
         """blocked와 겹치지 않는 콤보 샘플. 30회 실패 시 None (랜덤 폴백)."""
         if not self.combos:
@@ -574,6 +595,9 @@ class RangeSampler:
         return None
 
 
+_JOINT_MAX_TRIES = 200
+
+
 def mc_counts_ranged(
     hole_cards: List[Card],
     board: List[Card],
@@ -583,29 +607,49 @@ def mc_counts_ranged(
     """
     상대별 레인지 샘플러를 적용한 MC. samplers의 None은 랜덤 핸드.
     레인지 조건부 분포라 equity_cache에는 저장하지 않는다.
+
+    상대 홀카드는 결합분포 Π w_i(h_i)·[카드 비중복]에서 뽑는다(T-034):
+    1) 각 레인지에서 내 홀·보드와 겹치는 콤보를 미리 뺀다(남는 게 없으면 랜덤 상대).
+    2) 레인지 상대 전원을 독립으로 한 번에 뽑고, 서로 겹치면 전체를 다시 뽑는다(결합 거절 샘플링).
+    3) 랜덤 상대는 남은 카드에서 균등하게 뽑는다(균등 가중이라 조건부도 균등 — 정확).
+    상대를 한 명씩 차례로 뽑으면(이전 방식) 결합분포가 아니어서 좁은 레인지끼리 편향된다.
+    거절이 _JOINT_MAX_TRIES번 연속이면(레인지끼리 거의 전부 겹침) 그 샘플만 순차 방식으로 대체한다.
     """
     known = set(hole_cards) | set(board)
     deck = [c for c in _FULL_DECK if c not in known]
     need = 5 - len(board)
 
+    restricted = [s.restricted(known) if s else None for s in samplers]
+    ranged = [s for s in restricted if s is not None]
+    n_random = len(restricted) - len(ranged)
+
     wins = ties = 0.0
     for _ in range(num_simulations):
-        blocked = set(known)
-        opp_holes = []
-        for sampler in samplers:
-            pair = sampler.sample(blocked) if sampler else None
-            if pair is None:
-                # 랜덤 폴백 (블록 카드와 겹치면 재시도 — 블록이 적어 드묾)
-                while True:
-                    c1, c2 = random.sample(deck, 2)
-                    if c1 not in blocked and c2 not in blocked:
-                        pair = (c1, c2)
-                        break
-            opp_holes.append(pair)
-            blocked.add(pair[0])
-            blocked.add(pair[1])
+        opp_holes = None
+        for _try in range(_JOINT_MAX_TRIES):
+            holes = [s.draw() for s in ranged]
+            cards_used = {c for pair in holes for c in pair}
+            if len(cards_used) == 2 * len(holes):
+                opp_holes = holes
+                break
+        if opp_holes is None:  # 드문 폴백: 순차 샘플링
+            opp_holes = []
+            cards_used = set()
+            for s in ranged:
+                pair = s.sample(known | cards_used)
+                if pair is None:
+                    pair = tuple(random.sample(
+                        [c for c in deck if c not in cards_used], 2))
+                opp_holes.append(pair)
+                cards_used.update(pair)
 
+        blocked = known | cards_used
         avail = [c for c in deck if c not in blocked]
+        if n_random:
+            rnd = random.sample(avail, 2 * n_random)
+            opp_holes = opp_holes + [(rnd[2 * i], rnd[2 * i + 1]) for i in range(n_random)]
+            blocked = blocked | set(rnd)
+            avail = [c for c in avail if c not in blocked]
         board_fill = random.sample(avail, need) if need else []
         full = board + board_fill
 

@@ -341,6 +341,29 @@ def test_bot_decisions():
         bot.player.chips = 100
         check("봇 유효 콜·팟 = (100, 250)", bot._effective_call_pot(_shove_state()) == (100, 250),
               f"={bot._effective_call_pot(_shove_state())}")
+
+        # bet_ratio (T-034): 팟 100에 내가 50 벳, 상대 150으로 레이즈 → 1.0 (이전 공식 0.5)
+        from ai.bot import facing_bet_ratio
+        r = facing_bet_ratio(300, 150, [50, 150])
+        check("레이즈 받음 bet_ratio = 1.0", abs(r - 1.0) < 1e-9, f"={r}")
+        r = facing_bet_ratio(150, 50, [0, 50])
+        check("단순 벳 bet_ratio = 0.5 (팟 100에 50)", abs(r - 0.5) < 1e-9, f"={r}")
+        r = facing_bet_ratio(200, 50, [0, 50, 50])
+        check("벳+콜러 뒤 bet_ratio = 0.5 (콜러 칩 제외)", abs(r - 0.5) < 1e-9, f"={r}")
+        r = facing_bet_ratio(300, 150, [0, 50, 150])
+        check("제3자 벳 후 레이즈 bet_ratio = 1.0", abs(r - 1.0) < 1e-9, f"={r}")
+        # 실제 판단에 반영: A7 on K9532 리버 exact 0.316, 팟오즈 100/400=25%.
+        # hard 마진 0.02+0.08×ratio → ratio 1.0이면 35% 필요(폴드), 0.5였다면 31%(콜)
+        bot = _make_bot(["Ah", "7d"], BotDifficulty.HARD)
+        bot.player.current_bet = 50
+        st = _bot_state("리버", ["Ks", "9d", "5c", "3h", "2s"], 300, 150, players=[
+            {"name": "Bot", "chips": 950, "current_bet": 50,
+             "is_folded": False, "is_all_in": False, "is_human": False},
+            {"name": "Villain", "chips": 850, "current_bet": 150,
+             "is_folded": False, "is_all_in": False, "is_human": True},
+        ])
+        action, _ = bot.decide_action(st)
+        check("벳 후 팟 크기 레이즈를 받으면 A-high 폴드", action == Action.FOLD, f"={action}")
     finally:
         if os.path.exists(eq.DB_PATH):
             os.remove(eq.DB_PATH)
@@ -378,6 +401,40 @@ def test_ranged_equity():
     check("블록 회피 샘플링", ok)
     # 콤보가 전멸하면 None (랜덤 폴백 신호)
     check("전멸 시 None", s.sample({c("As"), c("Ah"), c("Ad")}) is None)
+
+    # 결합 거절 샘플링 (T-034): 좁은 레인지 상대 두 명 — 리버라 정답을 전수로 계산
+    from itertools import product
+    from ai.equity import mc_counts_ranged, _ratio, _showdown_share, _notation_combos
+    from core.evaluator import evaluate_rank
+    hole, board = cards("Js", "Jh"), cards("2c", "3d", "4h", "Ks", "9c")
+    known = set(hole) | set(board)
+    ra = [p for n in ("AA", "55") for p in _notation_combos(n) if not (set(p) & known)]
+    rb = [p for n in ("AA", "66") for p in _notation_combos(n) if not (set(p) & known)]
+    mine = evaluate_rank(hole + board)
+    share = n_ok = 0
+    for a, b in product(ra, rb):
+        if set(a) & set(b):
+            continue
+        w, t = _showdown_share(mine, [evaluate_rank(list(a) + board), evaluate_rank(list(b) + board)])
+        share += w + 0.5 * t
+        n_ok += 1
+    truth = share / n_ok
+    random.seed(34)
+    n = 6000
+    est = _ratio(*mc_counts_ranged(hole, board,
+                                   [RangeSampler({"AA": 1, "55": 1}), RangeSampler({"AA": 1, "66": 1})], n))
+    se = (truth * (1 - truth) / n) ** 0.5
+    check(f"좁은 레인지 2명 결합분포: 정답 {truth:.3f}, 추정 {est:.3f} (3σ={3*se:.3f})",
+          abs(est - truth) < 3 * se, f"차이={est - truth:+.3f}")
+    # 순서를 바꿔도 같은 분포
+    est2 = _ratio(*mc_counts_ranged(hole, board,
+                                    [RangeSampler({"AA": 1, "66": 1}), RangeSampler({"AA": 1, "55": 1})], n))
+    check("상대 순서 무관", abs(est2 - truth) < 3 * se, f"={est2:.3f}")
+    # 레인지가 보드·내 카드에 전부 막히면 랜덤 상대로 취급
+    blocked_all = RangeSampler({"JJ": 1.0})  # Js·Jh가 내 홀 → Jd Jc 1콤보만 남음
+    check("레인지 블로커 사전 제거", len(blocked_all.restricted(known).combos) == 1)
+    check("전부 막히면 restricted=None", RangeSampler({"KK": 1.0}).restricted(
+        known | {c("Kh"), c("Kd")}) is None)
 
     # GTO 레인지 연동 (DB에 RFI 데이터 있을 때만)
     from gto.loader import get_raise_range

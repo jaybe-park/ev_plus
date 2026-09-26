@@ -17,6 +17,7 @@
 - 캐시 키는 수트 정규화(24개 수트 치환 중 최소 키) + `num_opponents`. A♥K♥와 A♠K♠는 같은 키 — 근거: [0017](../decisions/0017-equity-canonical-key-exact-protection.md) · 강제 장치: `tests/test_equity.py::test_canonical_key`
 - `exact=1` 행에는 MC를 누적하지 않는다(저장 SQL `WHERE ... exact=0`) — 근거: [0017](../decisions/0017-equity-canonical-key-exact-protection.md) · 강제 장치: `tests/test_equity.py::test_cache`(exact 보호)
 - 레인지 조건부 equity(`ranged_equity`)는 캐시에 쓰지 않는다(분포가 매번 다름) — 근거: [0017](../decisions/0017-equity-canonical-key-exact-protection.md) · 강제 장치: 장치 없음
+- `ranged_equity`의 상대 홀카드는 결합분포 Π wᵢ(hᵢ)·[카드 비중복]에서 뽑는다: 각 레인지에서 내 홀·보드와 겹치는 콤보를 먼저 빼고(남는 게 없으면 그 상대는 랜덤), 레인지 상대 전원을 한 번에 뽑아 서로 겹치면 전체를 다시 뽑는다(결합 거절 샘플링, 200회 연속 실패 시 그 샘플만 순차 방식). 랜덤 상대는 남은 카드에서 균등. 상대 순서와 무관하다 — 강제 장치: `tests/test_equity.py::test_ranged_equity`(리버 JJ vs {AA,55}·{AA,66}: 전수 정답 31.6%와 3σ 이내, 순서 바꿔도 동일)
 - 봇·패널의 MC 기여는 메모리 버퍼에 모았다가 스팟 25개마다 플러시한다(처음 만난 스팟은 그렇게 워커 큐에 등록된다) — 강제 장치: `tests/test_equity.py::test_cache`
 - 계산용 평가는 고속 `evaluate_rank`(랭크 카운트 + 수트 비트마스크), 쇼다운 표시용은 `HandEvaluator` — 근거: [0018](../decisions/0018-equity-fast-paths.md) · 강제 장치: `tests/test_equity.py::test_fast_evaluator`
 - 턴 = 리버 자식 46개 합, 플랍 = 턴 자식 47개 합(스트리트 분해 DP). 캐시가 메모 테이블이라 플랍 1개 계산에 턴·리버 정확값 약 2,200행이 부산물로 남는다 — 근거: [0018](../decisions/0018-equity-fast-paths.md) · 강제 장치: `tests/test_equity.py::test_street_dp`
