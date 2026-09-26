@@ -14,6 +14,6 @@ enum 3종 키(35개 조합)로는 스퀴즈·멀티웨이·4벳+ 노드를 표�
 - JSON과 DB 이중 관리 유지 — 어느 쪽이 최신인지 판단할 수 없다.
 
 ## 결과
-- 영향받는 spec: `docs/spec/gto-preflop.md`, `docs/db-schema.md`
+- 영향받는 spec: `docs/spec/gto-preflop.md`, `docs/spec/db.md`
 - 강제 장치: `tests/test_poker_full.py::test_6_13_seq_key_and_enum_key_same_range`, `tests/test_poker_full.py::test_6_15_migration_normalizes_vs3bet_format`
 - 저장 API(`server/main.py`)가 실제로는 `action_seq`가 아니라 enum 3종(position/vs_position/range_type)만으로 기존 행을 찾아 UPDATE하고 있어, 서로 다른 시퀀스 노드가 한 행에 덮어써진다 — DECISIONS.md 참고.

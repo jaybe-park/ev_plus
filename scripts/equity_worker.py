@@ -236,7 +236,7 @@ def process_river_batch(conn, jobs) -> list:
     리버 배치를 실제 보드로 그룹화해 board_rank_table을 그룹당 1회만 구축.
     (조사 결과: 캐시에 쌓인 canonical 리버 스팟 20만 건 샘플에서 실제 보드
     기준 그룹 크기 평균 ~2, 최대 그룹 7 — board_rank_table 재사용 이득 있음.
-    docs/ai-bot.md 참고.)
+    docs/spec/equity.md 참고.)
 
     반환: 출력용 로그 문자열 리스트.
     """
@@ -288,7 +288,7 @@ def process_river_batch(conn, jobs) -> list:
 #   플랍 = 47개 턴 자식의 합. 턴 자식 자체는 기존처럼 캐시 조회 후 없으면
 #   exact_turn_dp_parallel을 호출 — 그러면 각 턴 자식 내부의 46개 리버가
 #   Pool로 병렬화된다. 47개 턴을 동시에 병렬화하는 건 과설계이므로 생략하고,
-#   "리버 46개 단위 병렬화"만으로 충분한 이득을 노린다(docs/ai-bot.md 실측 참고).
+#   "리버 46개 단위 병렬화"만으로 충분한 이득을 노린다(ADR 0018·0020 참고).
 # ──────────────────────────────────────────
 
 

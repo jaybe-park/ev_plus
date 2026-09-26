@@ -21,27 +21,23 @@ python3 scripts/equity_worker.py --status   # 에퀴티 캐시 현황
 - 에퀴티 워커 2개, 그라인드+워커, 그라인드/튜닝 동시 실행 금지 — 강제 장치: hook(에이전트 실행분만)
 - 테스트는 `EV_PLUS_DB` 임시 DB로 격리한다. 공유 `poker.db`를 테스트에서 쓰지 않는다 — 강제 장치: `tests/test_poker_full.py` 픽스처(부분)
 - GTO 값은 화면에서 읽은 그대로만. 추측·보간·잔여를 fold로 채우기 금지 — 강제 장치: `tests/test_poker_full.py` 영역 6·7, `tests/test_gto_tree.py` · 근거 ADR 0002
-- `docs/gto-preflop-progress.md`는 수동 편집 금지 — `python3 scripts/gto_tree_report.py`로만 — 장치 없음
 - UI 변경·새 기능·아키텍처 변경은 **사용자 확인 후** 커밋. 버그 수정·문서·설정은 바로 커밋 가능 — 장치 없음
 
 ## 문서 지도
 
-**플레이북 이관 중**(ADR 0001) — 이관된 도메인은 `docs/spec/`, 아직인 도메인은 아래 기존 문서가 현재 상태다.
-
 | 층 | 문서 |
 |---|---|
-| 현재 상태 (이관 완료) | `docs/spec/gto-preflop.md` — 프리플랍 GTO 수집·저장·조회 |
-| 현재 상태 (이관 전) | `docs/ai-bot.md`(봇·에퀴티) · `docs/db-schema.md` · `docs/game-engine.md` · `docs/api.md` · `docs/architecture.md` · `docs/testing.md` |
-| 자동 생성 | `docs/gto-preflop-progress.md` (프리플랍 수집 현황) |
+| 현재 상태 | `docs/spec/` — `game.md`(룰·웹 흐름·API) · `bot.md`(봇·플레이 평가) · `equity.md`(에퀴티 엔진·워커·패널) · `gto-preflop.md`(GTO 수집·저장·조회) · `db.md`(연결·마이그레이션·기록·보존) · `testing.md`(테스트 체계) |
+| 로컬 생성 (git 제외) | `docs/gto-preflop-progress.md` — 수집 현황, `python3 scripts/gto_tree_report.py` |
 | 결정 | `docs/decisions/` (목록: `README.md`) |
 | 결정 대기 | `DECISIONS.md` |
 | 할 일 | `TODO.md` |
 | 리뷰 기록 | `self-reviews/` |
 | 입력함 | `memo.md` (사람이 씀) |
-| 운영 표준 | `docs/ai-dev-workflow-playbook.md`, 이관 절차 `docs/ai-dev-workflow-migration.md`(이관 끝나면 삭제) |
+| 운영 표준 | `docs/ai-dev-workflow-playbook.md` |
 | 소개 | `README.md` |
 
-- 이 지도에 없는 문서를 현재 규칙으로 읽지 않는다. `TODO_ARCHIVE.md`는 이관 중 결정 추출용으로만 남아 있다(더 쌓지 않는다, 이관 완료 시 삭제).
+- 이 지도에 없는 문서를 현재 규칙으로 읽지 않는다. 완료 이력은 git log(누적 파일을 만들지 않는다).
 - 에이전트가 매 세션 읽는 문서는 이 파일 + 작업 도메인의 현재 상태 문서뿐이다.
 
 ## 작업 규칙

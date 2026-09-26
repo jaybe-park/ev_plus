@@ -1,6 +1,6 @@
 ---
 name: update-docs
-description: 변경 사항을 반영해 ev_plus의 현재 상태 문서(docs/spec, 이관 전 도메인은 기존 docs)·ADR·TODO·DECISIONS를 최신화한다. 커밋 전 문서 정리, "문서 업데이트해줘", "md 최신화" 요청 시 사용.
+description: 변경 사항을 반영해 ev_plus의 현재 상태 문서(docs/spec)·ADR·TODO·DECISIONS를 최신화한다. 커밋 전 문서 정리, "문서 업데이트해줘", "md 최신화" 요청 시 사용.
 ---
 
 # 문서 최신화 (ev_plus)
@@ -12,7 +12,7 @@ description: 변경 사항을 반영해 ev_plus의 현재 상태 문서(docs/spe
 
 | 층 | 위치 | 갱신 방식 |
 |---|---|---|
-| 현재 상태 | `docs/spec/<domain>.md` (이관 전 도메인은 `CLAUDE.md` 문서 지도의 기존 문서) | **덮어쓴다.** "(정정)"·과거 서술 금지 |
+| 현재 상태 | `docs/spec/<domain>.md` | **덮어쓴다.** "(정정)"·과거 서술 금지 |
 | 결정 | `docs/decisions/NNNN-*.md` + `README.md` 목록 | 고치지 않는다. 뒤집히면 새 ADR + 옛 ADR 상태만 `대체됨 → NNNN` |
 | 결정 대기 | `DECISIONS.md` | 결정되면 항목 삭제 + ADR 작성 |
 | 할 일 | `TODO.md` | 완료 Task는 **삭제**(archive로 옮기지 않는다) |
@@ -33,7 +33,6 @@ description: 변경 사항을 반영해 ev_plus의 현재 상태 문서(docs/spe
    - 확인한 값만 기록(추측 금지)
    - 완료 Task는 TODO에서 삭제. 남길 판단이 있으면 ADR로 승격
    - 결정이 필요한 것은 고치지 말고 `DECISIONS.md`에 등록
-   - `docs/gto-preflop-progress.md`는 수동 편집 금지 — `python3 scripts/gto_tree_report.py`로만
 5. **보고** — 문서별 한 줄 요약 + 판단이 필요해 건드리지 않은 것
 
 ## 주의

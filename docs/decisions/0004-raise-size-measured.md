@@ -13,5 +13,5 @@
 - 배수 공식(오픈×3, 3벳×2.5 등) 유지 — 포지션별 실측과 어긋난다.
 
 ## 결과
-- 영향받는 spec: `docs/spec/gto-preflop.md`, `docs/ai-bot.md`
+- 영향받는 spec: `docs/spec/gto-preflop.md`, `docs/spec/bot.md`
 - 강제 장치: 없음. `tests/test_grader.py:49`가 아직 `"raise_size": "2.5bb"` 문자열을 쓰고 있어 이 결정과 어긋난 채 남아 있다 — DECISIONS.md 참고.

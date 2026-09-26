@@ -1,7 +1,7 @@
 # 프리플랍 GTO — 현재 사양
 
 > 최종 갱신: 2026-09-26 · 관련 결정: [0005](../decisions/0005-100bb-and-headsup-sb.md), [0005](../decisions/0005-100bb-and-headsup-sb.md), [0003](../decisions/0003-layered-css-parser.md), [0004](../decisions/0004-raise-size-measured.md), [0008](../decisions/0008-node-key-action-seq.md), [0009](../decisions/0009-measured-size-node-key.md), [0010](../decisions/0010-runtime-sibling-snap.md), [0011](../decisions/0011-data-driven-tree-collection.md), [0002](../decisions/0002-gto-values-verbatim.md), [0006](../decisions/0006-enum-first-and-model-guards.md), [0012](../decisions/0012-collector-operational-safety.md), [0013](../decisions/0013-no-arena-gate-collection-as-routine.md)
-> 수집 현황(자동 생성, 수동 편집 금지): [gto-preflop-progress.md](../gto-preflop-progress.md) — `python3 scripts/gto_tree_report.py`로 재생성
+> 수집 현황: `python3 scripts/gto_tree_report.py` → `docs/gto-preflop-progress.md`(로컬 DB·체크포인트에서 생성, git 제외)
 
 ## 무엇을 하는가
 
@@ -53,7 +53,7 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 
 | 대상 | 무엇 | 비고 |
 |---|---|---|
-| `gto_preflop_situations` | 노드 1행: `position`,`vs_position`,`range_type`(open/vs_open/vs_3bet/vs_4bet/vs_5bet), `raise_size`, `situation_label`, `action_seq`, `hero_position`, `num_active`(=6−F 토큰 수) | `UNIQUE(position,vs_position,range_type)` + `idx_gto_pre_seq UNIQUE(action_seq)`. 상세 스키마: `docs/db-schema.md` |
+| `gto_preflop_situations` | 노드 1행: `position`,`vs_position`,`range_type`(open/vs_open/vs_3bet/vs_4bet/vs_5bet), `raise_size`, `situation_label`, `action_seq`, `hero_position`, `num_active`(=6−F 토큰 수) | `UNIQUE(position,vs_position,range_type)` + `idx_gto_pre_seq UNIQUE(action_seq)`. 상세 스키마: `db/schema.py`, 운영: [db.md](db.md) |
 | `gto_preflop_hands` | 노드×핸드 `freq_fold/call/raise/allin` | FK CASCADE |
 | `gto_missing_spots_preflop` | 미수집 스팟 큐(enum 행 + `range_type='seq'` 행) | `collected`를 1로 바꾸는 코드는 없다 |
 | `POST /gto/preflop/save` | 노드 저장(덮어쓰기). 기존 행은 **`(position, vs_position, range_type)`으로 찾는다**. 핸드 전부 삭제 후 재삽입, 캐시 무효화 | 호출자: 수집 워커, 브라우저 수동 저장 |

@@ -34,7 +34,9 @@ ev_plus/
 ├── server/        # FastAPI 백엔드
 ├── web/           # React + Vite + Tailwind 프론트엔드
 ├── db/            # SQLite (게임 기록 + GTO 데이터 + 에퀴티 캐시)
-├── scripts/       # 에퀴티 워커, 봇 아레나, 그라인드 모드, 프리플랍 GTO 트리 수집 워커
+├── scripts/       # equity_worker(캐시 채우기) · grind(워커+아레나) · bot_arena · tune_bot · ai_regression
+│                  # collect_gto_tree(GTO 수집) · gto_tree_report · audit_gto_preflop · show_missing_spots
+├── tools/         # gto_extract_and_save.js (GTO Wizard 콘솔 수동 저장)
 ├── tests/         # 테스트 (포커 로직, GTO 트리, 에퀴티/봇, 플레이 평가 — tests/run_all.py)
 ├── start.sh       # 개발 모드 실행 (= dev.sh)
 ├── dev.sh         # 개발 모드 실행
@@ -53,7 +55,7 @@ ev_plus/
 | 프리플랍 GTO 힌트 | ⚠️ 데이터 기반 트리(수집된 노드, 4벳·스퀴즈 포함) — 노드 덮어쓰기·헤즈업 스냅 버그 수정 대기(TODO T-001) |
 | GTO 패널 (레인지 그리드) | ⚠️ 오른쪽 탭 — 힌트와 별도 판정기라 다른 노드를 보일 수 있음(TODO T-013) |
 | 테스트 스위트 | ✅ `tests/run_all.py --full` |
-| 프리플랍 GTO 수집 | ✅ 체계 완료, 수집은 운영 루틴(Playwright 자동 워커) — [사양](docs/spec/gto-preflop.md), [현황](docs/gto-preflop-progress.md) |
+| 프리플랍 GTO 수집 | ✅ 체계 완료, 수집은 운영 루틴(Playwright 자동 워커) — [사양](docs/spec/gto-preflop.md), 현황은 `python3 scripts/gto_tree_report.py` |
 | AI 봇 equity 기반 재작성 | ✅ MC/전수조사 + 레인지 반영 + 페르소나 |
 | 에퀴티 전수조사 워커 | ✅ `scripts/equity_worker.py` (중단/재개 안전) |
 | 봇 아레나 / 그라인드 | ✅ bb/100 검증 + 캐시·학습데이터 동시 축적 |
@@ -95,14 +97,12 @@ python3 scripts/gto_tree_report.py
 
 | 문서 | 내용 |
 |---|---|
-| [아키텍처](docs/architecture.md) | 전체 구조, 모듈 의존성, 데이터 흐름 |
-| [게임 엔진](docs/game-engine.md) | core/ 상세, 게임 흐름, 베팅 라운드 규칙 |
-| [API](docs/api.md) | FastAPI 엔드포인트 명세 |
-| [프리플랍 GTO 사양](docs/spec/gto-preflop.md) | 수집·저장·조회 규칙, 운영 방법, 알려진 한계 |
-| [프리플랍 GTO 수집 현황](docs/gto-preflop-progress.md) | 자동 생성 리포트(mermaid 트리, `scripts/gto_tree_report.py`) |
-| [AI 봇](docs/ai-bot.md) | 난이도별 전략, GTO 준수율 |
-| [DB 스키마](docs/db-schema.md) | 테이블 구조, 기록 설계 |
-| [테스트](docs/testing.md) | 테스트 항목, 실행 방법 |
+| [게임](docs/spec/game.md) | 룰, 웹 게임 흐름(이벤트), API 목록 — 필드 상세는 `https://localhost:8765/docs` |
+| [AI 봇](docs/spec/bot.md) | 난이도·페르소나, 의사결정, 플레이 평가, 아레나·튜닝 |
+| [에퀴티](docs/spec/equity.md) | 에퀴티 엔진·캐시·워커, 에퀴티 패널 |
+| [프리플랍 GTO](docs/spec/gto-preflop.md) | 수집·저장·조회 규칙, 운영 방법 |
+| [DB](docs/spec/db.md) | 연결·마이그레이션·기록 흐름·보존 — 컬럼은 `db/schema.py` |
+| [테스트](docs/spec/testing.md) | 실행 방법, 테스트 규약 |
 | [결정 기록](docs/decisions/README.md) | 왜 이렇게 정했나 (ADR) |
 | [결정 대기](DECISIONS.md) | 사람이 내려야 할 결정 |
 | [TODO](TODO.md) | 실행할 작업 (완료 이력은 git log) |

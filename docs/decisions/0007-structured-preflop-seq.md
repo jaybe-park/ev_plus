@@ -14,6 +14,6 @@ advisor가 UI 표시용 한글 `action_log`를 문자열 부분매칭으로 재�
 - 별도 이벤트 체계 신설 — 기존 `event_log` 확장이 하위 호환이라 그쪽을 택했다.
 
 ## 결과
-- 영향받는 spec: `docs/spec/gto-preflop.md`, `docs/game-engine.md`
+- 영향받는 spec: `docs/spec/gto-preflop.md`, `docs/spec/game.md`
 - 강제 장치: `tests/test_poker_full.py::test_6_10_squeeze_seq_includes_call`, `tests/test_poker_full.py::test_6_11_headsup_seq_labels_btnSB`, `tests/test_poker_full.py::test_6_12_vs_open_routing_via_seq`
 - `ai/bot.py`(opponent_range_info, `_count_raises`)는 이 결정 이후에도 여전히 한글 로그를 파싱하고 있어 구조화 시퀀스로 아직 전환되지 않았다 — DECISIONS.md 참고.
