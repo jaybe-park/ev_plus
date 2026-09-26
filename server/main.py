@@ -293,25 +293,17 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
 
 
 @app.get("/gto/preflop/range")
-def get_gto_preflop_range(
-    position: str,
-    vs_position: Optional[str] = None,
-    range_type: str = "open",
-):
-    """프리플랍 레인지 데이터 반환 (전체 169핸드 + 요약 통계)"""
-    from gto.loader import _load_all, _cache
-    _load_all()
+def get_gto_preflop_range(action_seq: str):
+    """노드 키(action_seq)로 프리플랍 레인지 반환 (전체 핸드 + 콤보가중 요약).
 
-    key = (position, vs_position, range_type)
-    data = _cache.get(key)
+    GTO 패널은 게임 상태 `gto.node_key`(advisor 추천이 쓴 노드)를 그대로 넘긴다 — 힌트와
+    패널이 항상 같은 노드다(T-013). UTG RFI는 빈 문자열(`?action_seq=`).
+    """
+    from gto.loader import get_range_by_seq
+    data = get_range_by_seq(action_seq)
 
     if not data:
-        return {
-            "found": False,
-            "position": position,
-            "vs_position": vs_position,
-            "range_type": range_type,
-        }
+        return {"found": False, "action_seq": action_seq}
 
     hands = data.get("hands", {})
 
@@ -336,6 +328,7 @@ def get_gto_preflop_range(
 
     return {
         "found": True,
+        "action_seq": action_seq,
         "situation": data.get("situation", ""),
         "raise_size": data.get("raise_size", ""),
         "summary": summary,

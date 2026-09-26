@@ -1,8 +1,9 @@
-import type { GtoKey, GtoRange } from "../types";
+import type { GtoNode, GtoRange } from "../types";
 import GtoHandGrid from "./GtoHandGrid";
+import { gtoPanelView } from "./gtoPanelLogic";
 
 interface Props {
-  gtoKey: GtoKey | null;
+  gto: GtoNode | null;          // advisor 추천(게임 상태) — 레인지는 이 node_key로 조회한 것
   gtoRange: GtoRange | null;
   myHand: string | null;
   isLoading: boolean;
@@ -30,12 +31,14 @@ function FreqBar({ label, freq, color }: { label: string; freq: number; color: s
   );
 }
 
-export default function GtoPanel({ gtoKey, gtoRange, myHand, isLoading }: Props) {
-  if (isLoading) {
+export default function GtoPanel({ gto, gtoRange, myHand, isLoading }: Props) {
+  const view = gtoPanelView(gto, gtoRange, isLoading);
+
+  if (view.kind === "loading") {
     return <div className="flex items-center justify-center h-32 text-gray-500 text-sm">로딩 중...</div>;
   }
 
-  if (!gtoKey) {
+  if (view.kind === "idle") {
     return (
       <div className="flex items-center justify-center h-32 text-gray-600 text-sm text-center px-4">
         프리플랍 액션 시 GTO 정보가 표시됩니다
@@ -43,13 +46,13 @@ export default function GtoPanel({ gtoKey, gtoRange, myHand, isLoading }: Props)
     );
   }
 
-  if (!gtoRange || !gtoRange.found) {
+  if (view.kind === "missing" || !gtoRange) {
     return (
       <div className="p-3 space-y-3">
         <div className="text-center">
           <div className="text-yellow-500 text-sm font-medium mb-1">GTO 데이터 없음</div>
           <div className="text-gray-400 text-xs">
-            {gtoKey.position}{gtoKey.vs_position ? ` vs ${gtoKey.vs_position}` : " RFI"}
+            {gto?.position} — 이 상황의 노드가 아직 수집되지 않았습니다
           </div>
         </div>
         <a
@@ -64,15 +67,17 @@ export default function GtoPanel({ gtoKey, gtoRange, myHand, isLoading }: Props)
     );
   }
 
-  const { situation, raise_size, summary = {}, hands = {} } = gtoRange;
-  const myHandFreqs = myHand ? hands[myHand] : null;
+  const { raise_size, summary = {}, hands = {} } = gtoRange;
+  // 내 패 빈도는 advisor 추천 그대로(힌트와 같은 값). 없으면 레인지에서.
+  const hand = gto?.hand ?? myHand;
+  const myHandFreqs = gto?.frequencies ?? (hand ? hands[hand] : null);
 
   return (
     <div className="flex flex-col">
       {/* 상황 헤더 */}
       <div className="px-3 pt-2 pb-1.5 border-b border-gray-700 shrink-0">
         <div className="text-xs font-semibold text-green-400 truncate">
-          {situation}
+          {view.title}
           {typeof raise_size === "number" && (
             <span className="text-gray-500 ml-1">({raise_size}bb)</span>
           )}
@@ -81,9 +86,9 @@ export default function GtoPanel({ gtoKey, gtoRange, myHand, isLoading }: Props)
 
       <div className="p-3 space-y-4">
         {/* 내 패 */}
-        {myHand && (
+        {hand && (
           <div>
-            <div className="text-xs text-gray-400 mb-1.5">내 패 — <span className="text-white font-bold">{myHand}</span></div>
+            <div className="text-xs text-gray-400 mb-1.5">내 패 — <span className="text-white font-bold">{hand}</span></div>
             {myHandFreqs ? (
               <div className="space-y-1.5 bg-gray-800/50 rounded-lg p-2">
                 {ACTION_ORDER.map(action => {
@@ -111,7 +116,7 @@ export default function GtoPanel({ gtoKey, gtoRange, myHand, isLoading }: Props)
         </div>
 
         {/* 비교 */}
-        {myHand && myHandFreqs && summary.raise !== undefined && (
+        {hand && myHandFreqs && summary.raise !== undefined && (
           <div className="bg-gray-800/50 rounded-lg p-2 text-xs space-y-1">
             <div className="text-gray-400 mb-1">레이즈 비교</div>
             {[
@@ -139,7 +144,7 @@ export default function GtoPanel({ gtoKey, gtoRange, myHand, isLoading }: Props)
         {/* 레인지 그리드 */}
         <div>
           <div className="text-xs text-gray-400 mb-1.5">핸드 레인지</div>
-          <GtoHandGrid hands={hands} myHand={myHand} />
+          <GtoHandGrid hands={hands} myHand={hand} />
         </div>
       </div>
     </div>

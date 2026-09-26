@@ -24,12 +24,11 @@ export interface GameState {
   game_over: boolean;
   winners: string[];
   showdown_hands: Record<string, string>;
-  gto_hint: string | null;
   action_log: string[];
   call_amount: number;
   min_raise_to: number;
   events: GameEvent[];
-  gto_key: GtoKey | null;
+  gto: GtoNode | null;
   equity: EquityInfo | null;
   hand_review: HandReviewEntry[] | null;
 }
@@ -97,10 +96,16 @@ export interface ActionBadge {
 
 // ── GTO 레인지 ──────────────────────────────────────
 
-export interface GtoKey {
-  position: string;       // BTN, CO, MP, UTG, SB, BB
-  vs_position: string | null; // null=RFI, "BTN"=vs_open, "UTG/HJ"=vs_3bet
-  range_type: string;     // open | vs_open | vs_3bet
+// 게임 상태의 GTO 패널 정보 — advisor 추천 하나에서 만든다(T-013, server/session.py::_get_gto_panel).
+// found=false: 이 상황의 GTO 데이터 없음. 레인지는 node_key로 /gto/preflop/range?action_seq= 조회.
+export interface GtoNode {
+  found: boolean;
+  position: string;                 // 히어로 포지션(헤즈업은 BTN/SB)
+  node_key?: string | null;         // 추천이 쓴 노드의 action_seq (UTG RFI는 "")
+  approx?: boolean;                 // 간단 라벨 예비 결과 → "(근사)" (ADR 0035)
+  situation?: string;               // "BTN RFI"
+  hand?: string | null;             // "AKs"
+  frequencies?: Record<string, number> | null; // 내 패 액션 빈도
 }
 
 export interface GtoRange {
@@ -109,9 +114,7 @@ export interface GtoRange {
   raise_size?: number | null; // 실측 bb(REAL) 단위 raise-to, 없으면 null — server/main.py::raise_size
   summary?: Record<string, number>; // {fold:0.48, raise:0.52}
   hands?: Record<string, Record<string, number>>; // {AA:{raise:1.0}, K7o:{raise:0.21,fold:0.79}}
-  position?: string;
-  vs_position?: string | null;
-  range_type?: string;
+  action_seq?: string;
 }
 
 export interface SetupConfig {

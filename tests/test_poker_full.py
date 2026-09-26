@@ -1826,6 +1826,96 @@ def test_7_14_migration_v13_preserves_data():
         assert "action_seq" in str(e), e
 
 
+def _panel_range(node_key):
+    """GTO 패널이 부르는 경로 그대로: GET /gto/preflop/range?action_seq=<node_key>."""
+    r = _save_client().get("/gto/preflop/range", params={"action_seq": node_key})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _assert_panel_matches_hint(state, want_key, want_approx=False):
+    """게임 상태 gto(=advisor 추천)와 패널이 조회하는 레인지가 같은 노드인지."""
+    gto = state["gto"]
+    assert gto is not None and gto["found"], f"GTO 패널 데이터 없음: {gto}"
+    assert gto["node_key"] == want_key, f"node_key {gto['node_key']!r} != {want_key!r}"
+    assert gto["approx"] is want_approx, gto
+    rng = _panel_range(gto["node_key"])
+    assert rng["found"], f"패널 레인지 조회 실패: {rng}"
+    assert rng["situation"] == gto["situation"], (rng["situation"], gto["situation"])
+    assert rng["hands"][gto["hand"]] == gto["frequencies"], (rng["hands"].get(gto["hand"]), gto)
+    return gto, rng
+
+
+def test_7_15_panel_is_bound_to_advisor_node_key():
+    """T-013: GTO 패널은 advisor 추천의 node_key로 레인지를 조회한다 — 힌트와 같은 노드.
+    ① 시퀀스로만 수집된 콜러 노드(3벳에 콜드콜)도 패널에 보인다(라벨 노드로 새지 않음)
+    ② 4벳을 받는 결정(라벨 경로 없음)도 패널에 보인다
+    ③ 게임 상태에 한글 로그 판정 키(gto_key)·중복 문자열(gto_hint)이 없다(ADR 0007)."""
+    # ① 사람=UTG(dealer_index=3). UTG 2.5bb → HJ 3벳 8bb → CO 콜 → 나머지 폴드 → 사람
+    _seed_situation("UTG", "UTG/HJ", "vs_3bet", 20.0, "UTG vs HJ 3bet",
+                    {"AKs": {"raise": 1.0}}, "R2.5-R8-F-F-F-F")
+    _seed_situation("UTG", "UTG/HJ", "vs_3bet", 22.0, "UTG vs HJ 3bet (CO call)",
+                    {"AKs": {"call": 1.0}}, "R2.5-R8-C-F-F-F")
+    sess, _ = _scripted_session(5, dealer_index=3, scripts={
+        "🤖 Alpha": [(Action.RAISE, 160)], "🤖 Beta": [(Action.CALL, 160)],
+        "🤖 Gamma": [(Action.FOLD, 0)], "🤖 Delta": [(Action.FOLD, 0)],
+        "🤖 Epsilon": [(Action.FOLD, 0)]})
+    assert sess.game.get_positions()[sess.human.name] == "UTG"
+    sess.human.hole_cards = [c("A", "S"), c("K", "S")]
+    sess.submit_action("raise", 50)
+    state = sess.get_state()
+    assert state["waiting_for_action"] and state["street"] == "프리플랍", state["street"]
+    assert "gto_key" not in state and "gto_hint" not in state, sorted(state)
+    gto, _ = _assert_panel_matches_hint(state, "R2.5-R8-C-F-F-F")
+    assert gto["frequencies"] == {"call": 1.0}, gto
+
+    # ② 사람=HJ(dealer_index=2). UTG 2.5bb → 사람 3벳 8bb → 폴드 4명 → UTG 4벳 20bb → 사람
+    _seed_situation("HJ", "UTG/HJ/UTG", "vs_4bet", None, "HJ vs UTG 4bet",
+                    {"AKs": {"call": 0.7, "allin": 0.3}}, "R2.5-R8-F-F-F-F-R20")
+    sess, _ = _scripted_session(5, dealer_index=2, scripts={
+        "🤖 Epsilon": [(Action.RAISE, 50), (Action.RAISE, 400)],
+        "🤖 Alpha": [(Action.FOLD, 0)], "🤖 Beta": [(Action.FOLD, 0)],
+        "🤖 Gamma": [(Action.FOLD, 0)], "🤖 Delta": [(Action.FOLD, 0)]})
+    assert sess.game.get_positions()[sess.human.name] == "HJ"
+    sess.human.hole_cards = [c("A", "S"), c("K", "S")]
+    sess.submit_action("raise", 160)
+    state = sess.get_state()
+    assert state["waiting_for_action"] and state["current_bet"] == 400, state["current_bet"]
+    _assert_panel_matches_hint(state, "R2.5-R8-F-F-F-F-R20")
+
+
+def test_7_16_headsup_first_decision_panel_shows_range():
+    """T-013(T-019 화면 쪽): 헤즈업 BTN/SB 첫 결정에서 패널이 6-max SB RFI 노드(F-F-F-F)
+    레인지를 보여준다. 예전 패널은 'BTN/SB' 라벨로 조회해 "데이터 없음"이었다."""
+    _seed_situation("SB", None, "open", 3.0, "SB RFI",
+                    {"AKs": {"raise": 1.0}, "72o": {"fold": 1.0}}, "F-F-F-F")
+    sess, _ = _scripted_session(1, dealer_index=0)
+    sess.human.hole_cards = [c("A", "S"), c("K", "S")]
+    state = sess.get_state()
+    assert state["waiting_for_action"]
+    gto, rng = _assert_panel_matches_hint(state, "F-F-F-F")
+    assert gto["position"] == "BTN/SB" and rng["summary"], (gto, rng)
+
+
+def test_7_17_label_fallback_panel_marked_approx():
+    """T-013 + ADR 0035: 라벨 예비로 답한 추천은 패널에도 근사(approx=True)로 실리고,
+    패널은 그 라벨이 가리키는 노드(콜러 없는 노드)의 레인지를 받는다. 3~5인 테이블은
+    시퀀스 경로가 없어 항상 라벨 예비다(4인: 사람=UTG, 딜러=Alpha). UTG RFI 노드 키는
+    빈 문자열이다(`?action_seq=`)."""
+    _seed_situation("UTG", None, "open", 2.5, "UTG RFI",
+                    {"AKs": {"raise": 1.0}}, "")
+    sess, _ = _scripted_session(3, dealer_index=1)
+    assert sess.game.get_positions()[sess.human.name] == "UTG", sess.game.get_positions()
+    sess.human.hole_cards = [c("A", "S"), c("K", "S")]
+    state = sess.get_state()
+    _assert_panel_matches_hint(state, "", want_approx=True)
+
+    # 추천이 없으면 found=False(패널 "GTO 데이터 없음"), 포스트플랍·폴드 후엔 None
+    sess.human.hole_cards = [c("7", "H"), c("2", "C")]
+    assert sess.get_state()["gto"] == {"found": False, "position": "UTG"}
+    assert _panel_range("R9-R9")["found"] is False
+
+
 # ═════════════════════════════════════════════════════════════
 # 영역 8 — 세션 경로 룰 (WebGameSession 실제 실행 경로)
 #   core 헬퍼(_betting_order, apply_action)만 부르는 테스트는 웹 경로의 버그를
@@ -1953,7 +2043,9 @@ def test_8_5_headsup_btnsb_first_decision_has_gto_hint():
         f"BTN/SB 첫 결정 전 시퀀스가 비어 있지 않음: {sess.game.preflop_action_seq()}"
     state = sess.get_state()
     assert state["waiting_for_action"]
-    assert state["gto_hint"], f"헤즈업 BTN/SB 첫 결정에 GTO 힌트가 없음: {state['gto_hint']}"
+    gto = state["gto"]
+    assert gto and gto["found"] and gto["node_key"] == "F-F-F-F", \
+        f"헤즈업 BTN/SB 첫 결정에 GTO 힌트가 없음: {gto}"
 
 
 def _flop_bet_scenario(beta_stack):
@@ -2758,6 +2850,9 @@ ALL_TESTS = [
     ("7-12 헤즈업 팟에 콜러 노드 안 줌(T-001)",    test_7_12_headsup_pot_not_given_caller_node),
     ("7-13 헤즈업은 UTG 트리로 스냅 안 됨(T-001)", test_7_13_headsup_not_snapped_to_utg_tree),
     ("7-14 v13 마이그레이션 데이터 보존(T-001)",   test_7_14_migration_v13_preserves_data),
+    ("7-15 패널 = advisor node_key(콜러·4벳)(T-013)", test_7_15_panel_is_bound_to_advisor_node_key),
+    ("7-16 헤즈업 첫 결정 패널 레인지(T-013)",     test_7_16_headsup_first_decision_panel_shows_range),
+    ("7-17 라벨 예비는 패널도 근사(T-013)",        test_7_17_label_fallback_panel_marked_approx),
     # 영역 8 — 세션 경로 룰
     ("8-1  next_hand 연타 → 한 핸드만, 칩 보존",  test_8_1_next_hand_double_call_keeps_chips),
     ("8-2  핸드 중 next_hand 무시",              test_8_2_next_hand_during_hand_ignored),

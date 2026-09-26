@@ -6,7 +6,7 @@
 ## 무엇을 하는가
 
 GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 노드(히어로 결정 지점) 단위로 긁어 SQLite(`poker.db`)에 169핸드 액션 빈도로 저장한다.
-게임 중에는 현재 프리플랍 상황을 저장된 노드에 대응시켜 **사람 힌트**(`gto_hint`, GTO 패널), **봇 프리플랍 액션**(`gto_compliance` 확률), **플레이 평가**(`gto_freq`, Play Grader)에 쓴다.
+게임 중에는 현재 프리플랍 상황을 저장된 노드에 대응시켜 **사람 힌트**(GTO 패널, 게임 상태 `gto`), **봇 프리플랍 액션**(`gto_compliance` 확률), **플레이 평가**(`gto_freq`, Play Grader)에 쓴다.
 대응 노드가 없거나 데이터가 손상됐으면 추측하지 않고 `None` → 상위(봇·힌트)는 휴리스틱 폴백 또는 힌트 없음.
 포스트플랍 GTO는 이 도메인이 아니다(없음).
 
@@ -31,8 +31,9 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 ### 게임 중 조회 (`gto/advisor.py`)
 - 입력은 `core/game.py::preflop_action_seq()`가 만든 구조화 시퀀스(`game_state["preflop_seq"]`, 포지션·액션·to-amount bb). 한글 `action_log` 파싱이 아니다 — 근거: [0007](../decisions/0007-structured-preflop-seq.md) · 강제 장치: `tests/test_poker_full.py::test_6_10_squeeze_seq_includes_call`, `::test_6_11_headsup_seq_labels_btnSB`
 - 조회 순서(`get_recommendation`): ① **액션 순서 키로 정확한 노드**(결과 `approx=False`) → ② 없을 때만 **간단 라벨**(RFI / vs_open / vs_3bet, `(position, vs_position, range_type)`)로 찾고 결과에 `approx=True` → ③ 둘 다 없으면 `None`(힌트 없음·봇 휴리스틱)이고 정확한 노드 키를 미수집 큐에 넣는다. 결과에는 쓰인 노드의 `node_key`가 실린다 — 근거: [0035](../decisions/0035-gto-lookup-sequence-first.md) · 강제 장치: `tests/test_poker_full.py::test_7_10_exact_node_preferred_over_label`, `::test_7_11_label_fallback_is_marked_approx`, `::test_6_12_vs_open_routing_via_seq`
-- 근사 표시: `approx=True`면 힌트 문자열에 `"(근사)"`(예 "📊 GTO [AKs] BB vs HJ open (근사): …"), 플레이 평가 사유 앞에 `"(근사) "`가 붙는다 — 근거: [0035](../decisions/0035-gto-lookup-sequence-first.md) · 강제 장치: `tests/test_poker_full.py::test_7_11_label_fallback_is_marked_approx`
-- 간단 라벨은 그 라벨의 **콜러 없는 노드**(노드 키에 `C` 토큰 없음)만 가리킨다. 콜러 없는 노드가 없으면 라벨 조회는 `None`이다(콜러 노드를 헤즈업 팟에 내주지 않는다). 같은 라벨의 콜러 없는 노드가 둘 이상이면 먼저 저장된 행(id 작은 쪽)을 쓰고 경고 로그를 남긴다. `/gto/preflop/range`, `get_raise_range`/`get_call_range`(봇 상대 레인지)도 이 라벨 캐시를 쓴다 — 근거: [0044](../decisions/0044-node-row-key-is-action-seq.md) · 강제 장치: `tests/test_poker_full.py::test_7_12_headsup_pot_not_given_caller_node`
+- 근사 표시: `approx=True`면 GTO 패널 제목 뒤에 `"(근사)"`(예 "BB vs HJ open (근사)"), 힌트 문자열(`format_hint`, CLI)에 `"(근사)"`, 플레이 평가 사유 앞에 `"(근사) "`가 붙는다 — 근거: [0035](../decisions/0035-gto-lookup-sequence-first.md) · 강제 장치: `tests/test_poker_full.py::test_7_11_label_fallback_is_marked_approx`, `::test_7_17_label_fallback_panel_marked_approx`(세션 → 패널), `web/src/components/__tests__/gtoPanelLogic.test.ts`(제목 표기)
+- **GTO 패널은 advisor 추천 하나에 묶인다**(T-013): 사람의 프리플랍 차례마다 `server/session.py::_get_gto_panel`이 `get_recommendation`을 한 번 불러 게임 상태 `gto` = `{found, position, node_key, approx, situation, hand, frequencies}`를 싣는다(추천이 없으면 `{found: false, position}`, 포스트플랍·폴드 후엔 `null`). 패널은 `node_key`로 `GET /gto/preflop/range?action_seq=`를 조회하고, 응답의 `action_seq`가 지금 노드와 다르면 쓰지 않는다. 내 패 빈도는 추천의 `frequencies` 그대로다. 그래서 힌트·평가·패널이 항상 같은 노드다(헤즈업 `F-F-F-F…`, 콜러 노드, 4벳+ 포함). 한글 `action_log`로 따로 판정하던 `gto_key`와 UI가 쓰지 않던 `gto_hint` 문자열은 없다 — 근거: [0007](../decisions/0007-structured-preflop-seq.md), [0035](../decisions/0035-gto-lookup-sequence-first.md) · 강제 장치: `tests/test_poker_full.py::test_7_15_panel_is_bound_to_advisor_node_key`(시퀀스 전용 콜러 노드·4벳, `gto_key`/`gto_hint` 부재), `::test_7_16_headsup_first_decision_panel_shows_range`, `::test_8_5_headsup_btnsb_first_decision_has_gto_hint`, `web/src/components/__tests__/gtoPanelLogic.test.ts`(다른 노드 응답 무시)
+- 간단 라벨은 그 라벨의 **콜러 없는 노드**(노드 키에 `C` 토큰 없음)만 가리킨다. 콜러 없는 노드가 없으면 라벨 조회는 `None`이다(콜러 노드를 헤즈업 팟에 내주지 않는다). 같은 라벨의 콜러 없는 노드가 둘 이상이면 먼저 저장된 행(id 작은 쪽)을 쓰고 경고 로그를 남긴다. `get_raise_range`/`get_call_range`(봇 상대 레인지)도 이 라벨 캐시를 쓴다 — 근거: [0044](../decisions/0044-node-row-key-is-action-seq.md) · 강제 장치: `tests/test_poker_full.py::test_7_12_headsup_pot_not_given_caller_node`
 - 헤즈업(히어로·시퀀스·`positions`에 딜러 라벨 `BTN/SB`가 있음): 라이브 시퀀스 앞에 `F-F-F-F`를 붙여 6-max SB vs BB 트리의 노드 키로 조회하고, 라벨 경로는 `BTN/SB`를 `SB`로 치환한다(게임·UI 라벨은 `BTN/SB` 유지) — 근거: [0005](../decisions/0005-100bb-and-headsup-sb.md) · 강제 장치: `tests/test_poker_full.py::test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi`, `::test_7_13_headsup_not_snapped_to_utg_tree`, `::test_7_12_headsup_pot_not_given_caller_node`, `::test_6_11_headsup_seq_labels_btnSB`
 - 3~5인 테이블(`positions` 3~5명)은 액션 순서 키 경로를 쓰지 않는다(포지션 구성이 달라 트리에 대응시키지 않음). 라벨 경로만 돌고 결과는 근사로 표시된다 — 근거: [0005](../decisions/0005-100bb-and-headsup-sb.md) · 강제 장치: 장치 없음
 - 노드 키가 가리키는 히어로(`derive_node_meta`)가 실제 히어로와 다르면(시퀀스 오염 등) 그 노드를 쓰지도, 큐에 넣지도 않는다 — 근거: [0044](../decisions/0044-node-row-key-is-action-seq.md) · 강제 장치: 장치 없음(간접: `::test_6_17_uncollected_branch_returns_none_and_queues`는 히어로가 맞는 완전한 시퀀스로만 큐 기록)
@@ -67,10 +68,9 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 | `gto_preflop_hands` | 노드×핸드 `freq_fold/call/raise/allin` | FK CASCADE |
 | `gto_missing_spots_preflop` | 미수집 노드 큐(`range_type='seq'` 행. 옛 enum 행이 남아 있을 수 있음) | `collected`를 1로 바꾸는 코드는 없다 |
 | `POST /gto/preflop/save` | 노드 저장. 본문 `action_seq`(필수)·`hands`·`raise_size`, 선택 `position`/`vs_position`/`range_type`(대조용)·`situation_label`. 행은 **`action_seq`로 찾는다**. 핸드 전부 삭제 후 재삽입, 캐시 무효화. 거부 422: `action_seq` 없음·결정 노드 아님·3종 키 불일치·빈도합 불량·핸드 0개 | 호출자: 수집 워커, 브라우저 수동 저장 |
-| `GET /gto/preflop/range` | 3종 키(라벨)로 레인지 + 콤보가중 요약 — 콜러 없는 노드만 | `action_seq`로는 조회 불가(T-013) |
+| `GET /gto/preflop/range?action_seq=` | 노드 키로 레인지(전체 핸드) + 콤보가중 요약, 응답에 `action_seq` 포함. 없으면 `{found: false}`. UTG RFI는 빈 문자열 | 호출자: GTO 패널(게임 상태 `gto.node_key`) |
 | `GET /gto/preflop/situations` | 저장 노드 목록 | |
-| 게임 상태 `gto_hint` | advisor 추천 문자열("📊 GTO [AKs] BTN RFI: 레이즈 100%", 라벨 예비면 "… (근사): …") | `server/session.py::_get_gto_hint` |
-| 게임 상태 `gto_key` → GTO 패널 | `server/session.py::_get_gto_key`가 한글 `action_log`로 따로 판정한 enum 키 → `/gto/preflop/range` | advisor와 판정 로직이 별개 |
+| 게임 상태 `gto` → GTO 패널 | advisor 추천의 노드 키·근사 여부·상황 라벨·내 패 빈도(`server/session.py::_get_gto_panel`) → `/gto/preflop/range?action_seq=` | 프리플랍 사람 차례에만 |
 | CORS | `https://*.gtowizard.com` 허용, 백엔드 HTTPS(8765) | 브라우저 수동 저장용(Mixed Content 방지) |
 
 ### 운영 방법
@@ -97,7 +97,7 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 - 라이브 사이즈는 수집된 형제로 스냅되므로 사이즈 오차가 근사로 남는다. 형제가 하나면 거리 제한 없이 매칭한다(단, 라이브 올인은 올인 형제로만 좁혀 스냅 — 아래 "수집" 절 참고).
 - 옛 저장 API(3종 키로 행을 찾던 시절)가 덮어쓴 노드는 DB에 없다. 2026-09-26 운영 DB는 vs_open 13행이 전부 콜러 있는 노드라, 그 라벨들(예 "BB vs BTN open")의 간단 라벨 조회는 콜러 없는 노드가 다시 수집될 때까지 `None`이다(힌트·봇 GTO 공백). 사라진 노드는 백필(v12)로 생긴 키라 체크포인트 `visited`에 없었다 — 그중 `F-F-F-R2.5-F`, `R2.5-F`, `F-R2.5-F`는 이미 frontier에 있고, 나머지(예 `R2.5-F-F-F-F`)는 그 조상이 수집되면 트리 확장으로 다시 발견된다.
 - v13 마이그레이션은 앱이 운영 `poker.db`에 처음 연결할 때 자동으로 돈다(테이블 재생성, 58행·7,126핸드 규모). `action_seq`가 NULL인 행이 있으면 앱 시작이 실패한다(운영 DB는 0행).
-- GTO 패널(`gto_key`)은 advisor와 별개로 한글 로그를 판정하고 라벨 키만 조회한다 — 시퀀스로만 있는 노드(4벳+ 등, 콜러 있는 노드)는 패널에 안 나오고, 힌트와 패널이 다른 노드를 가리킬 수 있다. advisor 결과에는 이제 `node_key`가 실린다 — T-013
+- 노드는 있는데 그 핸드만 없는 경우(예: 오픈 레인지 밖 핸드로 3벳을 받음) advisor는 추천을 내지 않으므로 패널도 "GTO 데이터 없음"이다(그 노드의 레인지를 보여주지 않는다).
 - 미수집 큐는 쌓이기만 한다 — 워커가 읽지 않고 `collected`도 갱신되지 않는다 — T-015
 - 림프 노드(SB 림프 후 BB)가 `open`/"BB RFI"로 저장된다 — T-016
 - `num_active`(= 6 − 폴드 토큰 수)는 아직 소비자가 없다. 멀티웨이 조회에 쓰기 시작할 때 정의가 충분한지 다시 본다.

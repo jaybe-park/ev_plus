@@ -242,5 +242,3 @@ GTO 관리 API(`/gto/preflop/*`)는 이 문서 담당이 아니다 — 규칙은
   에퀴티 캐시 폐기(T-036)에서 버퍼 자체가 사라질 예정이라 여기서 따로 잠그지 않았다.
 - CLI(`cli/main.py`)는 아직 core `showdown()`의 인덱스 기반 `_advance_dealer()` 후 파산자를
   지우는 옛 버튼 방식이다(무빙 버튼은 웹 세션만). core 단일화 T-024에서 함께 정리한다.
-- `GameState.gto_hint`/`gto_key`는 서로 다른 판정 경로(advisor vs `action_log` 문자열
-  매칭)를 쓴다 — GTO 도메인 사안이라 `docs/spec/gto-preflop.md`의 한계로 다룬다.

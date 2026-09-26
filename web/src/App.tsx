@@ -127,35 +127,28 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // GTO 레인지 페치 — gto_key가 바뀔 때마다.
-  // key가 없을 때는 fetch 자체를 하지 않고 렌더 시점에 gtoRange를 무시한다
-  // (effectiveGtoRange, 아래) — effect 안에서 곧장 setGtoRange(null)을 부르면
-  // set-state-in-effect 린트 위반(파생 상태를 effect로 리셋하는 패턴)이라 대신
-  // "key 없으면 렌더에서 null 취급"으로 옮겼다. 화면 결과는 동일하다.
+  // GTO 레인지 페치 — 게임 상태의 gto.node_key(advisor 추천이 쓴 노드)가 바뀔 때마다(T-013).
+  // 힌트(내 패 빈도)와 레인지가 같은 노드에서 온다. UTG RFI 노드 키는 ""이므로 null과 구분한다.
+  const gtoNodeKey = state?.gto?.found ? (state.gto.node_key ?? null) : null;
   useEffect(() => {
-    const key = state?.gto_key;
-    if (!key) return;
+    if (gtoNodeKey === null) return;
 
     let cancelled = false;
-    // 요청 시작을 알리는 로딩 플래그 — "prop이 바뀌면 파생 상태를 리셋"하는
-    // 안티패턴이 아니라 표준 데이터 페칭 idiom(react.dev 공식 예제와 동일 형태)이라
-    // 여기서는 억제한다. 아래 .then/.catch/.finally의 setGtoRange/setGtoLoading(false)는
-    // 비동기 콜백 안이라 애초에 이 규칙 대상이 아니다.
+    // 요청 시작을 알리는 로딩 플래그 — 표준 데이터 페칭 idiom(react.dev 공식 예제와 동일
+    // 형태)이라 여기서는 억제한다. .then/.catch/.finally 안의 setState는 이 규칙 대상이 아니다.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setGtoLoading(true);
-    api.getGtoRange(key)
+    api.getGtoRange(gtoNodeKey)
       .then(r => { if (!cancelled) setGtoRange(r); })
       .catch(() => { if (!cancelled) setGtoRange(null); })
       .finally(() => { if (!cancelled) setGtoLoading(false); });
 
     return () => { cancelled = true; };
-    // gto_key는 매 응답마다 새 객체 참조로 오므로 필드 단위로 비교한다
-    // (전체 객체를 deps에 넣으면 매번 재요청됨) — 의도적 누락.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.gto_key?.position, state?.gto_key?.vs_position, state?.gto_key?.range_type]);
+  }, [gtoNodeKey]);
 
-  // 프리플랍 액션이 없어 gto_key가 비면 gtoRange도 즉시 무시(위 주석 참고)
-  const effectiveGtoRange = state?.gto_key ? gtoRange : null;
+  // 지금 노드의 레인지만 쓴다 — 노드가 없거나(포스트플랍·데이터 없음) 아직 이전 노드의 응답이면 무시
+  const effectiveGtoRange =
+    gtoNodeKey !== null && gtoRange?.action_seq === gtoNodeKey ? gtoRange : null;
 
   // 핸드 종료 시마다 세션 평가 요약 페치
   useEffect(() => {
@@ -360,9 +353,9 @@ export default function App() {
               }`}
             >
               {t === "log" ? "📋 로그" : "💡 힌트"}
-              {t === "hint" && hintEnabled && state.gto_key && (
+              {t === "hint" && hintEnabled && state.gto && (
                 <span className="ml-1 text-[10px]">
-                  {effectiveGtoRange?.found ? "🟢" : "🔴"}
+                  {state.gto.found && effectiveGtoRange?.found ? "🟢" : "🔴"}
                 </span>
               )}
             </button>
@@ -391,7 +384,7 @@ export default function App() {
               </div>
               {/* GTO */}
               <GtoPanel
-                gtoKey={state.gto_key}
+                gto={state.gto}
                 gtoRange={effectiveGtoRange}
                 myHand={toGtoHand(
                   state.players.find(p => p.is_human)?.hole_cards ?? null

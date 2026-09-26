@@ -1,4 +1,4 @@
-import type { GameState, SetupConfig, GtoKey, GtoRange, SessionReview } from "./types";
+import type { GameState, SetupConfig, GtoRange, SessionReview } from "./types";
 
 const BASE = "https://localhost:8765";
 
@@ -68,13 +68,9 @@ export const api = {
   nextHand: (id: string): Promise<GameState> =>
     request(`/game/${id}/next-hand`, { method: "POST" }),
 
-  getGtoRange: (key: GtoKey): Promise<GtoRange> => {
-    const params = new URLSearchParams({ position: key.position, range_type: key.range_type });
-    if (key.vs_position !== null && key.vs_position !== undefined) {
-      params.set("vs_position", key.vs_position);
-    }
-    return request(`/gto/preflop/range?${params}`);
-  },
+  // 노드 키(action_seq)로 레인지 조회 — UTG RFI는 빈 문자열(T-013)
+  getGtoRange: (actionSeq: string): Promise<GtoRange> =>
+    request(`/gto/preflop/range?${new URLSearchParams({ action_seq: actionSeq })}`),
 
   getSessionReview: (id: string): Promise<SessionReview> =>
     request(`/session/${id}/review`),

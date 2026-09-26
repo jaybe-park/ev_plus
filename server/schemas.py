@@ -154,6 +154,17 @@ class SessionReviewResponse(BaseModel):
     gto_match_rate: Optional[float] = None    # 프리플랍 GTO 데이터 있는 액션 중 최선(✅) 비율
 
 
+class GtoPanelInfo(BaseModel):
+    """GTO 패널 — advisor 추천 하나에서 만든다(T-013). 레인지는 node_key로 /gto/preflop/range 조회."""
+    found: bool                                   # 추천(정확한 노드 또는 라벨 예비)이 있나
+    position: str = ""                            # 히어로 포지션(게임 라벨, 헤즈업은 BTN/SB)
+    node_key: Optional[str] = None                # 쓰인 노드의 action_seq (UTG RFI는 "")
+    approx: bool = False                          # 간단 라벨 예비 결과 → "(근사)" (ADR 0035)
+    situation: str = ""                           # "BTN RFI" 등
+    hand: Optional[str] = None                    # "AKs"
+    frequencies: Optional[Dict[str, float]] = None  # 내 패의 액션 빈도
+
+
 class GameStateResponse(BaseModel):
     session_id: str
     hand_number: int
@@ -169,12 +180,11 @@ class GameStateResponse(BaseModel):
     game_over: bool
     winners: List[str] = []
     showdown_hands: Dict[str, str] = {}
-    gto_hint: Optional[str] = None
     action_log: List[str] = []
     call_amount: int = 0
     min_raise_to: int = 0             # 레이즈 불가(액션 닫힘·스택 부족)면 0
     can_raise: bool = False           # 사람이 지금 레이즈/올인-레이즈를 할 수 있는가
     events: List[GameEvent] = []   # 이번 응답에서 발생한 이벤트 목록
-    gto_key: Optional[Dict[str, Any]] = None  # GTO 레인지 조회용 키 {position, vs_position, range_type}
+    gto: Optional[GtoPanelInfo] = None        # GTO 패널 (프리플랍 사람 차례일 때, advisor 추천에서)
     equity: Optional[EquityInfo] = None       # 에퀴티 패널 (waiting_for_action=true일 때)
     hand_review: Optional[List[HandReviewEntry]] = None  # 플레이 평가 (hand_over=true일 때)

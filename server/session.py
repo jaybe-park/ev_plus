@@ -221,8 +221,7 @@ class WebGameSession:
             "game_over": self.game_over,
             "winners": self.winners,
             "showdown_hands": self.showdown_hands,
-            "gto_hint": self._get_gto_hint() if waiting else None,
-            "gto_key": self._get_gto_key() if waiting else None,
+            "gto": self._get_gto_panel() if waiting else None,
             "action_log": self.action_log[-30:],
             "call_amount": call_amount,
             "min_raise_to": min_raise_to,
@@ -672,51 +671,15 @@ class WebGameSession:
             return f"{pos_str} {player.name}: 올인! ({amount})"
         return f"{pos_str} {player.name}: {action.value}"
 
-    def _get_gto_key(self) -> Optional[dict]:
-        """현재 프리플랍 상황의 GTO 레인지 조회 키 반환"""
-        if self.game.current_street != Street.PREFLOP:
-            return None
-        if self.human.is_folded:
-            return None
+    def _get_gto_panel(self) -> Optional[dict]:
+        """GTO 패널용 — advisor 추천(`get_recommendation`) 하나에서만 만든다(T-013, ADR 0007·0035).
 
-        positions = self.game.get_positions()
-        my_pos = positions.get(self.human.name, "")
-        if not my_pos:
-            return None
-
-        current_bet = self.game.current_bet
-        bb = self.game.big_blind
-
-        if current_bet <= bb:
-            # RFI: 아직 아무도 레이즈 안 함
-            return {"position": my_pos, "vs_position": None, "range_type": "open"}
-
-        # 레이즈가 있는 상황 — action_log에서 레이즈 횟수와 포지션 파악
-        raiser_positions = []
-        for entry in self.action_log:
-            if "──" in entry:  # 스트리트 구분선 = 프리플랍 끝
-                break
-            if "레이즈" in entry:
-                for p in self.game.players:
-                    if p.name in entry:
-                        pos = positions.get(p.name, "")
-                        if pos and pos not in raiser_positions:
-                            raiser_positions.append(pos)
-                        break
-
-        if not raiser_positions:
-            return None
-
-        opener_pos = raiser_positions[0]
-
-        if len(raiser_positions) == 1:
-            return {"position": my_pos, "vs_position": opener_pos, "range_type": "vs_open"}
-        else:
-            three_bettor_pos = raiser_positions[1]
-            vs_pos = f"{opener_pos}/{three_bettor_pos}"
-            return {"position": my_pos, "vs_position": vs_pos, "range_type": "vs_3bet"}
-
-    def _get_gto_hint(self) -> Optional[str]:
+        패널·플레이 평가·봇이 모두 같은 판정기(구조화 시퀀스 → 노드 키)를 쓴다. 패널은
+        `node_key`로 `/gto/preflop/range?action_seq=`를 조회하므로 힌트와 레인지가 항상 같은 노드다.
+        - 프리플랍이 아니거나 사람이 폴드했으면 None(패널 안내 문구)
+        - 추천이 없으면 {"found": False, "position"} — 정확한 노드·간단 라벨 모두 없음
+        - 있으면 {"found": True, node_key, approx(라벨 예비 = "(근사)"), situation, hand, frequencies}
+        """
         if self.human.is_folded or self.game.current_street != Street.PREFLOP:
             return None
         state = self.game._get_game_state()
@@ -725,7 +688,17 @@ class WebGameSession:
         rec = self.gto.get_recommendation(
             self.human.hole_cards, my_pos, positions, state, self.game.big_blind
         )
-        return self.gto.format_hint(rec)
+        if rec is None or rec.get("node_key") is None:
+            return {"found": False, "position": my_pos}
+        return {
+            "found": True,
+            "position": my_pos,
+            "node_key": rec["node_key"],
+            "approx": bool(rec.get("approx")),
+            "situation": rec.get("situation", ""),
+            "hand": rec["hand"],
+            "frequencies": rec["frequencies"],
+        }
 
     # ──────────────────────────────────────────
     # 에퀴티 패널 (Feature A)
