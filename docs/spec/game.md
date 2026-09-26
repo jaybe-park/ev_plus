@@ -1,6 +1,6 @@
 # 게임 엔진 / 웹 게임 흐름 — 현재 사양
 
-> 최종 갱신: 2026-09-26 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md)
+> 최종 갱신: 2026-09-26 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md), [0034](../decisions/0034-action-validation-and-real-amounts.md)
 
 ## 무엇을 하는가
 
@@ -47,7 +47,19 @@
   `tests/test_poker_full.py::test_8_9_raise_over_stack_becomes_allin`(세션 경로),
   `::test_4_6_minimum_raise_rule`, `::test_5_5_raise_amount_enforced`(core)
 - 액션 판정은 core `TexasHoldem.normalize_action`/`execute_action` 한 곳에서 하고
-  (`ActionResult`: 실제 액션·이동 칩·도달 베팅·재오픈 여부), 웹 세션과 core 베팅 루프가 같이 쓴다.
+  (`ActionResult`: 실제 액션·이동 칩·도달 베팅·재오픈 여부), 웹 세션과 core 베팅 루프가 같이 쓴다
+  — 근거: [0034](../decisions/0034-action-validation-and-real-amounts.md)
+- 액션 유효성: 벳을 마주한 체크, 액션이 닫힌 사람의 레이즈, 폴드·올인한 사람의 액션은 불법이다.
+  콜할 금액이 없는 콜은 체크로 적용된다. 사람의 불법 액션은 상태를 바꾸기 전에 거절되고
+  (API 400) 로그·이벤트·RL 기록·플레이 평가에 남지 않는다. 봇의 불법 액션은 경고 로그
+  (`server.session` 로거)를 남기고 안전한 액션으로 대체된다: 막힌 레이즈/올인 → 콜(콜할 금액
+  없으면 체크), 불법 체크 → 폴드 — 강제 장치: `tests/test_poker_full.py::test_8_10_illegal_check_rejected_not_recorded`,
+  `::test_8_11_bot_illegal_action_falls_back`
+- 금액 불변식: 로그·`action`/`blind` 이벤트·RL 기록의 금액은 실제 칩 이동에서 만든다 —
+  콜 = 이동액, 레이즈/올인 = 도달 베팅(이전 베팅 + 이동액, 로그 "레이즈 → X"/"올인! (X)"),
+  폴드/체크 = 0, 블라인드 = 실제로 낸 칩(숏스택이면 블라인드보다 적음) — 강제 장치:
+  `tests/test_poker_full.py::test_8_12_session_fuzz_event_amounts_and_conservation`
+  (시드 고정 세션 퍼저 250핸드: 금액 불변식·칩 보존·사람 불법 액션 무변경)
 - 사이드팟: `total_bet_this_round` 오름차순으로 계층을 나누고, 각 계층은 그 금액을 낸
   플레이어(eligible)끼리만 나눈다. **eligible이 1명뿐인 계층(초과 베팅 반환)은 승자 집계에서
   제외**한다 — 강제 장치: `tests/test_poker_full.py::test_6_5_sidepot_shortstack_wins_mainpot_only`,
@@ -123,7 +135,7 @@ GTO 관리 API(`/gto/preflop/*`)는 이 문서 담당이 아니다 — 규칙은
 - 불완전 올인으로 액션이 닫힌 사람에게도 프론트 `ActionBar`의 "올인" 버튼은 보인다
   (레이즈 UI는 `min_raise_to=0`으로 꺼짐). 누르면 서버가 400으로 거절하고 오류 배너가 뜬다 —
   버튼을 `can_raise`로 숨기는 것은 UI 변경이라 별도 확인 필요.
-- 이벤트 순서·카드 공개 규칙은 코드 동작으로만 보장되고(위 규칙들), 이벤트 스키마
-  전체에 대한 전수 불변식 테스트는 없다.
+- 이벤트 금액·칩 보존은 세션 퍼저(`test_8_12`)가 검사하지만, 이벤트 종류 순서·카드 공개
+  규칙 전체에 대한 전수 불변식 테스트는 없다(T-024 퍼저 확장 대상).
 - `GameState.gto_hint`/`gto_key`는 서로 다른 판정 경로(advisor vs `action_log` 문자열
   매칭)를 쓴다 — GTO 도메인 사안이라 `docs/spec/gto-preflop.md`의 한계로 다룬다.

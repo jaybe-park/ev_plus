@@ -34,3 +34,4 @@
 | [0031](0031-bot-hand-archive-human-hand-retain.md) | 봇 전용 핸드는 아카이브 후 삭제, 사람 참여 핸드는 영구 보존 | 유효 | db |
 | [0032](0032-partial-index-only-for-pending-queues.md) | 대기 큐 인덱스는 부분 인덱스로만, 인덱스 삭제 전 EXPLAIN QUERY PLAN 확인 | 유효 | db |
 | [0033](0033-no-direct-writes-to-shared-db.md) | 공유 운영 DB에 직접 쓰지 않는다 — 스크립트 경유 | 유효 | db |
+| [0034](0034-action-validation-and-real-amounts.md) | 액션 판정은 core 한 곳 — 사람 불법 액션은 거절, 봇은 안전 폴백, 금액은 실제 칩 이동 | 유효 | game |

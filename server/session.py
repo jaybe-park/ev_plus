@@ -262,25 +262,22 @@ class WebGameSession:
                     "street": "프리플랍",
                 })
 
-        # 2. 블라인드 이벤트 + 로그 (딜링 이후)
+        # 2. 블라인드 이벤트 + 로그 (딜링 이후). 금액은 실제로 낸 칩(숏스택이면 블라인드보다 적음)
         for p in self.game.players:
             pos = positions.get(p.name, "")
-            if pos in ("SB", "BTN/SB") and p.current_bet > 0:
-                log_text = f"[{pos}] {p.name}: 스몰 블라인드 ({self.game.small_blind})"
-                self.action_log.append(log_text)
-                self._emit({
-                    "type": "blind", "player": p.name, "position": pos,
-                    "amount": self.game.small_blind, "street": "프리플랍",
-                    "log": log_text, "chips_after": p.chips,
-                })
-            elif pos == "BB" and p.current_bet > 0:
-                log_text = f"[{pos}] {p.name}: 빅 블라인드 ({self.game.big_blind})"
-                self.action_log.append(log_text)
-                self._emit({
-                    "type": "blind", "player": p.name, "position": pos,
-                    "amount": self.game.big_blind, "street": "프리플랍",
-                    "log": log_text, "chips_after": p.chips,
-                })
+            posted = p.current_bet  # 핸드 시작 직후 current_bet = 포스팅한 칩
+            if pos in ("SB", "BTN/SB") and posted > 0:
+                log_text = f"[{pos}] {p.name}: 스몰 블라인드 ({posted})"
+            elif pos == "BB" and posted > 0:
+                log_text = f"[{pos}] {p.name}: 빅 블라인드 ({posted})"
+            else:
+                continue
+            self.action_log.append(log_text)
+            self._emit({
+                "type": "blind", "player": p.name, "position": pos,
+                "amount": posted, "street": "프리플랍",
+                "log": log_text, "chips_after": p.chips,
+            })
 
         self._setup_round(Street.PREFLOP)
         self._run_until_human()
@@ -378,11 +375,14 @@ class WebGameSession:
 
         result = self.game.execute_action(player, action, amount, can_raise)
         action = result.action
+        # 로그·이벤트·RL 기록의 금액은 요청값이 아니라 실제 칩 이동에서 만든다:
+        # 콜 = 이동액, 레이즈/올인 = 도달 베팅(to_amount = 이전 베팅 + 이동액), 폴드/체크 = 0
+        real_amount = self._event_amount(result)
 
         try:
             self.recorder.record_action(
                 positions.get(player.name, "BTN"), player.is_human,
-                self.game.current_street, _ctx, action, amount,
+                self.game.current_street, _ctx, action, real_amount,
                 call_amount=call_amt, equity=_equity,
                 bot_profile=_profile, players_state=_players_state,
                 gto=_gto_for_record,
@@ -398,17 +398,16 @@ class WebGameSession:
         else:
             self._round_i += 1
 
-        log_text = self._fmt_log(player, action, call_amt, amount)
+        log_text = self._fmt_log(player, action, real_amount)
         self.action_log.append(log_text)
 
         # 액션 이벤트 발행
-        event_amount = amount if action in (Action.RAISE,) else call_amt
         self._emit({
             "type": "action",
             "player": player.name,
             "position": positions.get(player.name, ""),
             "action": action.value,
-            "amount": event_amount,
+            "amount": real_amount,
             "street": street,
             "log": log_text,
             "chips_after": player.chips,
@@ -612,7 +611,17 @@ class WebGameSession:
     # 헬퍼
     # ──────────────────────────────────────────
 
-    def _fmt_log(self, player: Player, action: Action, call_amt: int, amount: int) -> str:
+    @staticmethod
+    def _event_amount(result) -> int:
+        """ActionResult → 로그·이벤트 금액(콜=이동액, 레이즈/올인=도달 베팅, 그 외 0)."""
+        if result.action == Action.CALL:
+            return result.moved
+        if result.action in (Action.RAISE, Action.ALL_IN):
+            return result.to_amount
+        return 0
+
+    def _fmt_log(self, player: Player, action: Action, amount: int) -> str:
+        """amount는 _event_amount() 값(실제 칩 이동 기준)."""
         positions = self.game.get_positions()
         pos = positions.get(player.name, "")
         pos_str = f"[{pos}]" if pos else ""
@@ -621,11 +630,11 @@ class WebGameSession:
         elif action == Action.CHECK:
             return f"{pos_str} {player.name}: 체크"
         elif action == Action.CALL:
-            return f"{pos_str} {player.name}: 콜 ({call_amt})"
+            return f"{pos_str} {player.name}: 콜 ({amount})"
         elif action == Action.RAISE:
             return f"{pos_str} {player.name}: 레이즈 → {amount}"
         elif action == Action.ALL_IN:
-            return f"{pos_str} {player.name}: 올인!"
+            return f"{pos_str} {player.name}: 올인! ({amount})"
         return f"{pos_str} {player.name}: {action.value}"
 
     def _get_gto_key(self) -> Optional[dict]:

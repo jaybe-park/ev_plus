@@ -1728,6 +1728,180 @@ def test_8_9_raise_over_stack_becomes_allin():
         assert call["chips_after"] == 700, f"{name}은 300까지만 콜해야 함: {call}"
 
 
+def test_8_10_illegal_check_rejected_not_recorded():
+    """T-021: 벳을 마주한 체크 요청은 거절되고(API 400) 로그·이벤트·RL 기록에 남지 않는다."""
+    from core.game import IllegalActionError
+    # 세션 경로: 딜러=사람(3인 UTG) → 첫 결정에서 콜 20을 마주함
+    sess, _ = _scripted_session(2, dealer_index=0)
+    assert sess.get_state()["call_amount"] == 20
+    log_before = list(sess.action_log)
+    rec_before = len(sess.recorder._pending_preflop)
+    total = _total_chips(sess)
+    try:
+        sess.submit_action("check", 0)
+        raise AssertionError("벳을 마주한 체크가 거절되지 않음")
+    except IllegalActionError:
+        pass
+    state = sess.get_state()
+    assert state["events"] == [], f"거절된 액션이 이벤트를 남김: {state['events']}"
+    assert sess.action_log == log_before, "거절된 체크가 액션 로그에 남음"
+    assert len(sess.recorder._pending_preflop) == rec_before, "거절된 체크가 RL 기록에 남음"
+    assert _total_chips(sess) == total and state["waiting_for_action"]
+
+    # API 경로: 400 + 상태 무변경
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from fastapi.testclient import TestClient
+        from server.main import app, sessions
+    client = TestClient(app)
+    sessions["api-t021"] = sess
+    res = client.post("/game/api-t021/action", json={"action": "check", "amount": 0})
+    assert res.status_code == 400, f"불법 체크는 400이어야 함: {res.status_code} {res.text}"
+    assert "체크" in res.json()["detail"]
+    assert sess.action_log == log_before
+    sessions.pop("api-t021", None)
+
+
+def test_8_11_bot_illegal_action_falls_back():
+    """T-021: 봇이 불법 액션을 내면 경고 로그를 남기고 안전한 액션으로 대체된다
+    (불법 체크 → 폴드, 막힌 레이즈/올인 → 콜, 콜할 금액 없으면 체크)."""
+    import logging
+    records = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    lg = logging.getLogger("server.session")
+    h = _H(level=logging.WARNING)
+    lg.addHandler(h)
+    try:
+        # 딜러=사람(UTG). 사람 레이즈 60 → Alpha(SB)가 불법 체크 → 폴드로 대체
+        sess, _ = _scripted_session(2, dealer_index=0,
+                                    scripts={"🤖 Alpha": [(Action.CHECK, 0)]})
+        sess.submit_action("raise", 60)
+        acts = _action_events(sess.get_state()["events"])
+        alpha = next(a for a in acts if a["player"] == "🤖 Alpha")
+        assert alpha["action"] == "fold", f"불법 체크는 폴드로 대체: {alpha}"
+        assert any("Alpha" in m and "불법" in m for m in records), f"경고 로그 없음: {records}"
+    finally:
+        lg.removeHandler(h)
+
+    game, players = make_game(3)
+    game.start_hand()
+    p0 = players[0]  # BTN(UTG), 콜 20 마주함
+    assert game.fallback_action(p0, Action.CHECK) == Action.FOLD
+    assert game.fallback_action(p0, Action.RAISE) == Action.CALL
+    assert game.fallback_action(p0, Action.ALL_IN) == Action.CALL
+    game.current_bet = 0
+    assert game.fallback_action(p0, Action.RAISE) == Action.CHECK
+
+
+class _RandomBot(StubBot):
+    """퍼저용: 합법·불법을 가리지 않고 무작위 액션을 낸다(불법이면 세션이 폴백)."""
+
+    def __init__(self, player, rng):
+        super().__init__(player)
+        self._rng = rng
+
+    def decide_action(self, game_state):
+        r = self._rng.random()
+        cb = game_state["current_bet"]
+        if r < 0.15:
+            return Action.FOLD, 0
+        if r < 0.35:
+            return Action.CHECK, 0
+        if r < 0.70:
+            return Action.CALL, 0
+        if r < 0.93:
+            return Action.RAISE, self._rng.randint(0, max(1, cb * 4 + 100))
+        return Action.ALL_IN, 0
+
+
+def _walk_events(events, chips, bets):
+    """이벤트 금액 = 실제 칩 이동 불변식 검사. chips/bets는 호출 간 유지되는 추적 상태."""
+    for e in events:
+        t = e["type"]
+        if t == "street_start":
+            for k in bets:
+                bets[k] = 0
+        elif t in ("blind", "action"):
+            p = e["player"]
+            moved = chips[p] - e["chips_after"]
+            assert moved >= 0, f"칩이 늘어나는 {t} 이벤트: {e}"
+            if t == "blind":
+                assert moved > 0 and e["amount"] == moved, f"블라인드 금액≠실제 포스팅: {e} moved={moved}"
+            elif e["action"] in ("fold", "check"):
+                assert moved == 0 and e["amount"] == 0, f"{e['action']}인데 칩 이동: {e}"
+            elif e["action"] == "call":
+                assert e["amount"] == moved, f"콜 금액≠이동액: {e} moved={moved}"
+            else:
+                assert e["amount"] == bets[p] + moved, \
+                    f"{e['action']} 금액≠도달 베팅: {e} bet_before={bets[p]} moved={moved}"
+            if e.get("action") not in ("fold", "check"):
+                assert f"{e['amount']}" in e["log"], f"로그 금액 불일치: {e}"
+            bets[p] += moved
+            chips[p] = e["chips_after"]
+        elif t == "winner":
+            chips.update(e.get("winner_chips") or {})
+
+
+def test_8_12_session_fuzz_event_amounts_and_conservation():
+    """T-021 퍼저(시드 고정, 세션 경로): 무작위 스택·인원·액션(불법 포함)으로 수백 핸드를
+    돌려 ① 이벤트·로그 금액 = 실제 칩 이동(블라인드 포함) ② 칩 보존 ③ 사람 불법 액션은
+    상태를 바꾸지 않음을 검사한다."""
+    import random
+    import logging
+    from core.game import IllegalActionError
+    rng = random.Random(20260926)
+    lg = logging.getLogger("server.session")
+    old_level = lg.level
+    lg.setLevel(logging.ERROR)  # 봇 폴백 경고는 여기서 의도된 것
+    hands = 0
+    try:
+        while hands < 250:
+            n_bots = rng.randint(1, 5)
+            stacks = [rng.choice([rng.randint(5, 60), rng.randint(100, 2000)])
+                      for _ in range(n_bots + 1)]
+            sess, events = _scripted_session(n_bots, chips=stacks,
+                                             dealer_index=rng.randint(0, n_bots))
+            for name, bot in list(sess.bots.items()):
+                sess.bots[name] = _RandomBot(bot.player, rng)
+            total = sum(stacks)
+            for _ in range(15):  # 세션당 최대 15핸드
+                if sess.game_over:
+                    break
+                chips = dict(sess._hand_start_chips)
+                bets = {k: 0 for k in chips}
+                _walk_events(events, chips, bets)
+                guard = 0
+                while not sess.hand_over:
+                    guard += 1
+                    assert guard < 60, "핸드가 끝나지 않음"
+                    st = sess.get_state()
+                    _walk_events(st["events"], chips, bets)
+                    assert _total_chips(sess) == total, "칩 보존 위반"
+                    if not st["waiting_for_action"]:
+                        break
+                    act = rng.choice(["fold", "check", "call", "raise", "allin"])
+                    amt = rng.randint(0, st["current_bet"] * 4 + 100)
+                    log_len = len(sess.action_log)
+                    try:
+                        sess.submit_action(act, amt)
+                    except IllegalActionError:
+                        assert len(sess.action_log) == log_len and _total_chips(sess) == total
+                        sess.submit_action("call" if st["call_amount"] > 0 else "check", 0)
+                st = sess.get_state()
+                _walk_events(st["events"], chips, bets)
+                assert _total_chips(sess) == total, "칩 보존 위반(핸드 종료)"
+                hands += 1
+                sess.next_hand()
+                events = sess.get_state()["events"]
+    finally:
+        lg.setLevel(old_level)
+
+
 # ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
@@ -1819,6 +1993,9 @@ ALL_TESTS = [
     ("8-7  불완전 레이즈 올인 → 콜/폴드만",       test_8_7_incomplete_raise_allin_call_or_fold_only),
     ("8-8  풀 레이즈 올인이 min_raise 갱신",      test_8_8_full_allin_updates_min_raise),
     ("8-9  스택 초과 레이즈 → 올인",              test_8_9_raise_over_stack_becomes_allin),
+    ("8-10 불법 체크 거절(400)·기록 없음",        test_8_10_illegal_check_rejected_not_recorded),
+    ("8-11 봇 불법 액션 → 로그+안전 폴백",        test_8_11_bot_illegal_action_falls_back),
+    ("8-12 세션 퍼저: 이벤트 금액=칩 이동·보존",  test_8_12_session_fuzz_event_amounts_and_conservation),
 ]
 
 
