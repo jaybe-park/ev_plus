@@ -37,3 +37,4 @@
 | [0034](0034-abolish-equity-cache.md) | 에퀴티 캐시 폐기 — 프리플랍 상수 테이블 + 실시간 계산, 정밀도 목표 ±0.5%p | 유효 | equity |
 | [0035](0035-gto-lookup-sequence-first.md) | GTO 조회는 액션 순서 키 먼저, 간단 라벨은 "근사" 예비 | 유효 | gto-preflop |
 | [0036](0036-moving-button.md) | 파산으로 좌석이 빠질 때는 무빙 버튼 | 유효 | game |
+| [0037](0037-allin-only-snaps-to-allin-sibling.md) | 라이브 올인은 올인 형제에만 스냅한다(레이즈 형제와 구분) | 유효 | gto-preflop |

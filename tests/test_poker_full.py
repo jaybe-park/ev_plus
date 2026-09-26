@@ -1378,6 +1378,51 @@ def test_6_18_two_siblings_snap_to_nearest_bb():
     assert key_for(10.5) == "R2.5-R12-F-F-F-F", key_for(10.5)
 
 
+def test_6_19_allin_snaps_to_allin_sibling_not_nearest_raise():
+    """②' (d, T-014/ADR 0010 확장): 라이브 올인은 bb 절대거리 최소가 아니라
+    "올인 형제"에만 스냅해야 한다. 프리픽스 ""(UTG RFI, 자신의 raise_size=2.5)에
+    레이즈 형제 R2.5와 올인 형제 R99가 둘 다 수집돼 있을 때, 숏스택 올인 45bb는
+    산술적으로는 R2.5(|45-2.5|=42.5)가 R99(|45-99|=54)보다 가깝지만 "올인
+    형제"인 R99로 스냅돼야 한다(레이즈 사이즈는 이 프리픽스 노드 자신의 저장된
+    raise_size로 확정해 후보에서 제외 — 추측 아니라 저장된 값과의 일치 확인)."""
+    from gto.advisor import canonical_node_key
+
+    # (position, vs_position, range_type) UNIQUE라 두 형제는 서로 다른 vs_position을 쓴다
+    # (실제 라벨 의미는 중요하지 않음 — action_seq/raise_size만 canonical_node_key가 본다).
+    _seed_situation("UTG", None, "open", 2.5, "UTG RFI(올인 스냅 테스트)",
+                    {"AA": {"raise": 0.3, "allin": 0.7}}, "")
+    _seed_situation("UTG", "UTG-raise", "vs_open", 8.0, "UTG RFI 후 레이즈 형제",
+                    {"AA": {"raise": 1.0}}, "R2.5-F-F-F-F-F")
+    _seed_situation("UTG", "UTG-allin", "vs_open", 99.0, "UTG 올인(테스트 전용 올인 형제)",
+                    {"AA": {"raise": 1.0}}, "R99-F-F-F-F-F")
+
+    seq = [{"position": "UTG", "action": "allin", "amount_bb": 45.0}]
+    assert canonical_node_key(seq) == "R99", canonical_node_key(seq)
+
+
+def test_6_20_allin_with_no_allin_sibling_returns_none():
+    """②' (e, T-014): 이 프리픽스에 "레이즈" 형제만 수집돼 있고(올인 데이터 없음),
+    라이브 올인이 들어오면 그 레이즈 형제로 억지 스냅하지 않고 None을 반환해야
+    한다(숏스택 올인이 일반 레이즈 노드로 매핑되지 않는다 — ADR 0010 원칙).
+    6_13/6_14 등이 이미 쓴 "R2.5" 브랜치(레이즈 형제가 여러 개라 오염됨)를
+    피해, 완전히 새 브랜치("R4" 오픈)에서 검증한다."""
+    from gto.advisor import canonical_node_key
+
+    # UTG가 4bb로 오픈(신규 브랜치) → HJ가 이 오픈에 대응(프리픽스 "R4").
+    # HJ 자신의 raise_size=8.5만 알려져 있고(vs_open 노드 자신), 그 레이즈
+    # 형제("R4-R8.5-...")만 수집돼 있다 — 올인 형제는 없음.
+    _seed_situation("HJ", "UTG", "vs_open", 8.5, "HJ vs UTG open(4bb, 올인 미수집 테스트)",
+                    {"AA": {"raise": 1.0}}, "R4")
+    _seed_situation("UTG", "UTG/HJ", "vs_3bet", 21.0, "UTG vs HJ 3bet(올인 미수집 테스트)",
+                    {"AA": {"raise": 1.0}}, "R4-R8.5-F-F-F-F")
+
+    seq = [
+        {"position": "UTG", "action": "raise", "amount_bb": 4.2},   # 신규 브랜치 R4로 스냅
+        {"position": "HJ", "action": "allin", "amount_bb": 45.0},   # 올인 형제 없음 → None
+    ]
+    assert canonical_node_key(seq) is None, canonical_node_key(seq)
+
+
 # ═════════════════════════════════════════════════════════════
 # 영역 7 — 프리플랍 GTO 원칙
 #   배경: /private/tmp/.../scratchpad/gto-findings.md "절대 규칙 중 장치 없는 것"
@@ -1590,6 +1635,8 @@ ALL_TESTS = [
     ("6-16 실측 사이즈 노드 형제 스냅",         test_6_16_realsize_node_snaps_to_collected_sibling),
     ("6-17 미수집 브랜치 None+큐 등록",         test_6_17_uncollected_branch_returns_none_and_queues),
     ("6-18 형제 2개 bb 최소거리 스냅",          test_6_18_two_siblings_snap_to_nearest_bb),
+    ("6-19 올인은 올인 형제로만 스냅(T-014)",   test_6_19_allin_snaps_to_allin_sibling_not_nearest_raise),
+    ("6-20 올인 형제 미수집 시 None(T-014)",    test_6_20_allin_with_no_allin_sibling_returns_none),
     # 영역 7 — 프리플랍 GTO 원칙
     ("7-1  save 후 로더 캐시 자동 무효화(G2)",   test_7_1_save_invalidates_loader_cache),
     ("7-2  손상 핸드 스킵(fold 채움 아님)(G4)",  test_7_2_corrupt_hand_skipped_not_folded),

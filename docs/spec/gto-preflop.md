@@ -1,6 +1,6 @@
 # 프리플랍 GTO — 현재 사양
 
-> 최종 갱신: 2026-09-26 · 관련 결정: [0005](../decisions/0005-100bb-and-headsup-sb.md), [0005](../decisions/0005-100bb-and-headsup-sb.md), [0003](../decisions/0003-layered-css-parser.md), [0004](../decisions/0004-raise-size-measured.md), [0008](../decisions/0008-node-key-action-seq.md), [0009](../decisions/0009-measured-size-node-key.md), [0010](../decisions/0010-runtime-sibling-snap.md), [0011](../decisions/0011-data-driven-tree-collection.md), [0002](../decisions/0002-gto-values-verbatim.md), [0006](../decisions/0006-enum-first-and-model-guards.md), [0012](../decisions/0012-collector-operational-safety.md), [0013](../decisions/0013-no-arena-gate-collection-as-routine.md)
+> 최종 갱신: 2026-09-26 · 관련 결정: [0005](../decisions/0005-100bb-and-headsup-sb.md), [0005](../decisions/0005-100bb-and-headsup-sb.md), [0003](../decisions/0003-layered-css-parser.md), [0004](../decisions/0004-raise-size-measured.md), [0008](../decisions/0008-node-key-action-seq.md), [0009](../decisions/0009-measured-size-node-key.md), [0010](../decisions/0010-runtime-sibling-snap.md), [0011](../decisions/0011-data-driven-tree-collection.md), [0002](../decisions/0002-gto-values-verbatim.md), [0006](../decisions/0006-enum-first-and-model-guards.md), [0012](../decisions/0012-collector-operational-safety.md), [0013](../decisions/0013-no-arena-gate-collection-as-routine.md), [0037](../decisions/0037-allin-only-snaps-to-allin-sibling.md)
 > 수집 현황: `python3 scripts/gto_tree_report.py` → `docs/gto-preflop-progress.md`(로컬 DB·체크포인트에서 생성, git 제외)
 
 ## 무엇을 하는가
@@ -33,8 +33,9 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 - enum 경로의 데이터 모델 밖 가드(조회도 큐 기록도 하지 않고 `None`): BB는 RFI 불가 / vs_open에서 오프너가 히어로보다 뒤 좌석 / vs_3bet에서 히어로 ≠ 오프너 — 근거: [0006](../decisions/0006-enum-first-and-model-guards.md) · 강제 장치: `tests/test_poker_full.py::test_6_10_squeeze_seq_includes_call`, `tests/test_poker_full.py::test_7_4_bb_never_rfi_and_no_queue`, `tests/test_poker_full.py::test_7_5_vs_open_opener_after_hero_is_none`
 - 헤즈업 딜러 라벨 `BTN/SB`는 enum 경로에서만 `SB`로 치환해 6-max SB 데이터를 재사용한다(게임·UI 라벨은 `BTN/SB` 유지) — 근거: [0005](../decisions/0005-100bb-and-headsup-sb.md) · 강제 장치: `tests/test_poker_full.py::test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi`, `::test_6_11_headsup_seq_labels_btnSB`
 - 시퀀스 경로 스냅: 라이브 레이즈마다 그 프리픽스에서 **수집된 레이즈 형제**(`loader.get_children_by_prefix`) 중 bb 절대거리 최소로 스냅한다. 형제가 하나면 거리와 무관하게 그것. 사이즈 미상 레이즈는 형제가 하나일 때만. 형제가 없으면 `None` — 근거: [0010](../decisions/0010-runtime-sibling-snap.md) · 강제 장치: `tests/test_poker_full.py::test_6_14_runtime_snap_maps_near_size_to_node`, `::test_6_16_realsize_node_snaps_to_collected_sibling`, `::test_6_18_two_siblings_snap_to_nearest_bb`
+- 라이브 **올인**은 위 규칙을 그대로 쓰지 않고 "올인 형제"로 후보를 좁힌다: 이 프리픽스 노드 자신의 저장된 `raise_size`(수집 당시 "레이즈" 액션 실측 사이즈)와 정확히 일치하는 형제는 "레이즈" 토큰임이 확정되므로 제외하고, 남는 형제(있다면)만 대상으로 스냅한다(숏스택 올인이 산술적으로 가깝다는 이유로 일반 레이즈 노드에 스냅되는 것 방지). 남는 형제가 없으면(올인 데이터 미수집, 혹은 이 프리픽스의 raise_size를 몰라 구분 불가) `None` — 근거: [0037](../decisions/0037-allin-only-snaps-to-allin-sibling.md) · 강제 장치: `tests/test_poker_full.py::test_6_19_allin_snaps_to_allin_sibling_not_nearest_raise`, `::test_6_20_allin_with_no_allin_sibling_returns_none`
 - 스냅 실패 시 실측 라이브 키를 큐(`gto_missing_spots_preflop`, `range_type='seq'`, 노드 키는 `vs_position` 칸)에 넣고 `None`. 빈 키는 넣지 않는다. enum 경로 미수집은 `open`/`vs_open`/`vs_3bet` 행으로 큐에 넣는다 — 강제 장치: `tests/test_poker_full.py::test_6_17_uncollected_branch_returns_none_and_queues`(seq만)
-- 봇: `random() > gto_compliance`면 GTO를 쓰지 않는다. 샘플된 `fold`인데 콜 비용 0이면 체크. `raise`면 `raise_size`(실측)를 쓰고, NULL이면 폴백 공식(오픈 2.5bb / 오픈 상대 ×3 / 그 이상 ×2.5, 스택 70%↑ 올인). GTO가 `None`이고 raise 3회 이상이면 강한 패만 올인·나머지 폴드 — 강제 장치: 장치 없음
+- 봇: `random() > gto_compliance`면 GTO를 쓰지 않는다. 샘플된 `fold`인데 콜 비용 0이면 체크. `raise`면 `raise_size`(실측)를 쓰고, NULL이면 폴백 공식(오픈 2.5bb / 오픈 상대 ×3 / 그 이상 ×2.5, 스택 70%↑ 올인). 샘플된 `allin`은 `Action.ALL_IN`을 그대로 실행한다(레이즈로 뭉개거나 휴리스틱으로 떨어지지 않음). GTO가 `None`이고 raise 3회 이상이면 강한 패만 올인·나머지 폴드 — 근거: T-014 · 강제 장치: `tests/test_equity.py::test_gto_allin_action_and_hint`
 - 로더 캐시는 프로세스당 1회 로드. `/gto/preflop/save`가 저장 후 캐시를 비운다. DB를 다른 경로로 바꾸면 서버 재시작 전까지 반영 안 됨 — 강제 장치: `tests/test_poker_full.py::test_7_1_save_invalidates_loader_cache`
 
 ### 수집 (`scripts/collect_gto_tree.py` + `scripts/gto_tree_worker.py`)
@@ -45,7 +46,8 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 - 실측 사이즈는 히어로 Actions 패널(`[data-tst="study_action_btns"] [data-tst^="action_"]`)에서만 읽는다(`action_R<size>_n`=레이즈, `action_RAI_n`=올인·텍스트에서 사이즈, 못 읽으면 100). 레이즈 사이즈는 첫 번째 것 하나만 쓴다(노드당 1개 전제). 사이즈를 못 읽은 레이즈·올인 가지는 만들지 않는다 — 강제 장치: `tests/test_gto_tree.py::test_compute_children_uses_measured_size`(가지 생성만. DOM 읽기는 장치 없음)
 - 렌더 완료 = 색칠된 셀 수가 600ms 이상 변하지 않음(절대 개수 임계값 아님) — 강제 장치: 장치 없음
 - 일일 한도 판단은 상단 `X/100` 카운터만 권위로 본다(항시 떠 있는 안내 문구는 카운터를 못 읽을 때만 폴백). 남은 여유 ≤ `--safety-margin`(5)이면 다음 이동 전에 멈춘다. 한도에 걸린 노드는 frontier로 되돌린다 — 근거: [0012](../decisions/0012-collector-operational-safety.md) · 강제 장치: `tests/test_gto_tree.py::test_limit_hit_counter_authority`, `tests/test_gto_tree.py::test_run_requeues_node_on_limit_and_env_failure`
-- 환경 오류(navigate 실패·렌더 대기 타임아웃·추출 JS 실패·로컬 저장 실패)는 `failed`에 넣지 않고 frontier로 되돌린다. 연속 2회면 탭 재생성, 연속 6회면 안전 중단. 저장 25건마다 예방적 탭 재생성 — 근거: [0012](../decisions/0012-collector-operational-safety.md) · 강제 장치: `tests/test_gto_tree.py::test_env_failure_classification`, `tests/test_gto_tree.py::test_run_requeues_node_on_limit_and_env_failure`
+- 추출 환경 오류(navigate 실패·렌더 대기 타임아웃·추출 JS 실패)는 `failed`에 넣지 않고 frontier로 되돌린다. 연속 2회면 탭 재생성, 연속 6회(`CONSEC_ENV_ABORT_THRESHOLD`)면 안전 중단. 저장 25건마다 예방적 탭 재생성 — 근거: [0012](../decisions/0012-collector-operational-safety.md) · 강제 장치: `tests/test_gto_tree.py::test_env_failure_classification`, `tests/test_gto_tree.py::test_run_requeues_node_on_limit_and_env_failure`
+- `/gto/preflop/save` POST 실패(로컬 백엔드가 꺼져 있는 등)도 `failed`에 넣지 않고 frontier로 되돌리되, 탭 재생성과는 별도의 연속 실패 카운터(`consec_save_fail`)로 센다. 같은 노드를 무한 재시도하며 GTO Wizard 일일 한도를 헛되이 소진하지 않도록, 추출 환경 오류와 동일한 기준(`CONSEC_ENV_ABORT_THRESHOLD`=6)에 도달하면 "서버 확인" 메시지와 함께 안전 중단한다(성공 시 카운터 리셋) — 근거: T-012 · 강제 장치: `tests/test_gto_tree.py::test_run_aborts_on_persistent_save_failure`
 - 노드 사이 2~5초 균등 랜덤 지연. 로그인은 대행하지 않는다(사용자가 로그인해 둔 디버그 크롬에 CDP로 붙음) — 강제 장치: 장치 없음
 - 저장 라벨은 `derive_node_meta`가 노드 키에서 유도: 레이저 0명=`open`("{H} RFI"), 1명=`vs_open`, 2명=`vs_3bet`, n명=`vs_{n+1}bet`, `vs_position`은 레이저 좌석을 `/`로 연결 — 강제 장치: `tests/test_gto_tree.py::test_derive_node_meta_labels`(림프 노드 제외 — T-016)
 
@@ -83,12 +85,11 @@ GTO Wizard(6-max, `Cash6mGeneral_6mNL25R25`, 100bb) 프리플랍 솔루션을 �
 ## 알려진 한계
 
 - 100bb 고정 — 딥/숏/헤즈업 모두 100bb 6-max 트리로 근사한다.
-- 라이브 사이즈는 수집된 형제로 스냅되므로 사이즈 오차가 근사로 남는다. 형제가 하나면 거리 제한 없이 매칭한다(라이브 올인이 비올인 레이즈 형제로 스냅될 수 있음).
+- 라이브 사이즈는 수집된 형제로 스냅되므로 사이즈 오차가 근사로 남는다. 형제가 하나면 거리 제한 없이 매칭한다(단, 라이브 올인은 올인 형제로만 좁혀 스냅 — 아래 "수집" 절 참고).
 - enum 경로는 콜러·중간 액션을 구분하지 않는다(예: "BB vs BTN open"은 SB가 콜했든 폴드했든 같은 행). 멀티웨이·헤즈업 팟이 같은 데이터를 받는다 — D-02, T-001
 - **저장 API가 `(position, vs_position, range_type)`으로 행을 찾으므로 이 3개가 같은 서로 다른 노드(예 `R2.5-F`와 `R2.5-C`)는 한 행에 덮어써진다** — 한 쪽만 남는다. 현재 vs_open 13행이 전부 콜러 있는 노드다. 수정 전에는 수집 워커를 돌리지 않는다 — T-001
 - 헤즈업 시퀀스에는 앞 4좌석 폴드가 없어서, 시퀀스 경로로 가면 6-max UTG부터 시작하는 노드로 스냅될 수 있다(enum 경로만 `BTN/SB`→`SB` 치환) — T-001
 - GTO 패널(`gto_key`)은 advisor와 별개로 한글 로그를 판정하고 enum 키만 조회한다 — 시퀀스로만 있는 노드(4벳+ 등)는 패널에 안 나오고, 힌트와 패널이 다른 노드를 가리킬 수 있다 — T-013
-- 봇은 샘플된 `allin`을 처리하지 않아 휴리스틱 폴백으로 넘어간다. 힌트 문자열에서 allin은 번역되지 않는다 — T-014
 - 미수집 큐는 쌓이기만 한다 — 워커가 읽지 않고 `collected`도 갱신되지 않는다 — T-015
 - 림프 노드(SB 림프 후 BB)가 `open`/"BB RFI"로 저장된다 — T-016
 - `num_active`(= 6 − 폴드 토큰 수)는 아직 소비자가 없다. 멀티웨이 조회에 쓰기 시작할 때 정의가 충분한지 다시 본다.

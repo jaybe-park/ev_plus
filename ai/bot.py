@@ -247,6 +247,11 @@ class PokerBot:
         elif action_str == "raise":
             return self._preflop_raise(game_state, raise_count, raise_size)
 
+        elif action_str == "allin":
+            # T-014: 샘플된 GTO 액션이 allin이면 그대로 실행한다(레이즈로 뭉개거나
+            # 휴리스틱으로 떨어지지 않음 — ADR 0002 "화면 그대로만" 원칙).
+            return Action.ALL_IN, 0
+
         return None
 
     def _preflop_raise(
