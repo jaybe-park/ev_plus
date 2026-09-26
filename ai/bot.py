@@ -5,6 +5,7 @@ from typing import Tuple, Optional, List
 from core.game import Action
 from core.player import Player
 from core.card import Card
+from core.pot_odds import effective_call_pot, pot_odds as calc_pot_odds
 from gto.advisor import GTOAdvisor
 from gto.loader import get_raise_range, get_call_range
 from ai.equity import smart_equity, made_hand_rank, ranged_equity, RangeSampler
@@ -65,6 +66,11 @@ class BotDifficulty(Enum):
     HARD   = "hard"
 
 
+def _range_pos(pos: str) -> str:
+    """GTO 레인지 조회용 포지션. 헤즈업 딜러 라벨 BTN/SB는 6-max SB 데이터를 쓴다(ADR 0005)."""
+    return "SB" if pos == "BTN/SB" else pos
+
+
 def opponent_range_info(state: dict, opponents: list) -> list:
     """
     프리플랍 액션 로그로 살아있는 상대들의 핸드 레인지 추정.
@@ -91,14 +97,14 @@ def opponent_range_info(state: dict, opponents: list) -> list:
                     callers.append((name, pos))
                 break
 
-    opener_pos = raisers[0][1] if raisers else None
+    opener_pos = _range_pos(raisers[0][1]) if raisers else None
     raiser_names = {n for n, _ in raisers}
     caller_names = {n for n, _ in callers}
 
     result = []
     for opp in opponents:
         name = opp["name"]
-        pos = positions.get(name, "")
+        pos = _range_pos(positions.get(name, ""))
         weights = None
         role = "unknown"
         if name in raiser_names:
@@ -115,6 +121,22 @@ def estimate_opponent_ranges(state: dict, opponents: list) -> Optional[list]:
     """상대 레인지 샘플러 목록 (공용 opponent_range_info의 얇은 래퍼).
     PokerBot._opponent_ranges와 server/session.py에서 공용으로 사용."""
     return [s for s, _ in opponent_range_info(state, opponents)]
+
+
+def facing_bet_ratio(pot: int, current_bet: int, street_bets: List[int]) -> float:
+    """
+    받은 벳/레이즈의 크기 ÷ 그 공격자가 액션하기 직전 팟 (어그레션 마진용, ADR 0015).
+
+    - 크기 = 공격자의 이번 스트리트 총 벳(current_bet). 공격자가 이 스트리트 첫 액션이라고 본다.
+    - 직전 팟 = 팟 − 이번 스트리트에 current_bet만큼 넣은 사람들(공격자 + 그 뒤 콜러)의 벳.
+      current_bet보다 적게 넣은 사람(나의 벳, 먼저 벳했다가 레이즈당한 사람)은 공격자 이전 액션이므로 포함.
+    예: 팟 100에 내가 50 벳, 상대 150으로 레이즈 → 150 / (300 − 150) = 1.0.
+    (이전 공식 콜/(팟−콜)은 100/200 = 0.5로 레이즈를 절반 크기로 봤다.)
+    """
+    if current_bet <= 0:
+        return 0.0
+    matched = sum(b for b in street_bets if b >= current_bet)
+    return current_bet / max(pot - matched, 1)
 
 
 def board_wetness(board: List[Card]) -> float:
@@ -282,9 +304,8 @@ class PokerBot:
         """GTO 데이터 없는 프리플랍 스팟: 핸드 강도 휴리스틱"""
         strength = self._preflop_strength(self.player.hole_cards) \
             if len(self.player.hole_cards) >= 2 else 0.5
-        call_amount = state["current_bet"] - self.player.current_bet
-        pot = state["pot"]
-        pot_odds = call_amount / (pot + call_amount) if call_amount > 0 else 0.0
+        call_amount, pot = self._effective_call_pot(state)
+        pot_odds = calc_pot_odds(call_amount, pot)
 
         if strength > 0.75:
             return self._raise_action(state, pot_frac=0.75)
@@ -322,8 +343,8 @@ class PokerBot:
             if p["name"] != self.player.name and not p["is_folded"]
         ]
         n_opps = max(1, len(opponents))
-        call_amount = max(0, state["current_bet"] - self.player.current_bet)
-        pot = state["pot"]
+        # 숏스택 캡: 팟오즈는 유효 콜·유효 팟 기준 (T-033)
+        call_amount, pot = self._effective_call_pot(state)
         street = state["street"]  # "플랍" | "턴" | "리버"
 
         # 레인지 반영 (hard): 프리플랍 액션으로 상대 핸드 분포를 좁혀 시뮬레이션
@@ -360,11 +381,25 @@ class PokerBot:
             state, prof, equity, is_draw, pos, wet, street, n_opps, multiway_penalty,
         )
 
+    def _effective_call_pot(self, state: dict) -> Tuple[int, int]:
+        """
+        (유효 콜, 유효 팟) — core/pot_odds 공용 함수. game_state에는 이번 스트리트 기여
+        (players[].current_bet)만 있으므로 스트리트 기준으로 넘긴다(액션 중인 플레이어는
+        이전 스트리트를 모두 맞췄으므로 정확 — core/pot_odds 모듈 설명).
+        """
+        raw_call = max(0, state["current_bet"] - self.player.current_bet)
+        others = [p.get("current_bet", 0) for p in state.get("players", [])
+                  if p["name"] != self.player.name]
+        return effective_call_pot(
+            state["pot"], raw_call, self.player.chips, self.player.current_bet, others,
+        )
+
     def _facing_bet(
         self, state, prof, equity, is_draw, pos, wet,
         call_amount, pot, street, multiway_penalty,
     ) -> Tuple[Action, int]:
-        pot_odds = call_amount / (pot + call_amount)
+        """call_amount/pot은 유효 콜·유효 팟(숏스택 캡 적용)."""
+        pot_odds = calc_pot_odds(call_amount, pot)
 
         size_mult = prof.get("size_mult", 1.0)
 
@@ -382,7 +417,11 @@ class PokerBot:
         margin = prof["call_margin"]
         # 어그레션 마진: 상대가 벳했다 = 랜덤보다 강한 레인지.
         # 벳이 클수록 equity(vs 랜덤)의 과대평가가 심해지므로 기준 상향.
-        bet_ratio = call_amount / max(pot - call_amount, 1)
+        # (벳 크기 신호는 캡하지 않은 원래 금액 기준 — 레이즈를 받아도 실제 레이즈 크기, T-034)
+        bet_ratio = facing_bet_ratio(
+            state["pot"], state["current_bet"],
+            [p.get("current_bet", 0) for p in state.get("players", [])],
+        )
         margin += prof["aggression_margin"] * min(bet_ratio, 1.2)
         if is_draw:
             margin -= 0.04  # 임플라이드 오즈 (뜨면 더 딸 수 있음)

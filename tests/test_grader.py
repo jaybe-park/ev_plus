@@ -87,6 +87,84 @@ def test_postflop_call_grading():
           f"={r.ev_loss_bb}")
 
 
+def test_short_stack_effective_call():
+    print("\n[G-6] 숏스택 유효 콜·유효 팟 (T-033)")
+    from core.pot_odds import effective_call_pot, pot_odds, call_ev
+
+    # 리뷰 예시: 팟 100, 상대 1,000 올인, 내 스택 100, 에퀴티 40%
+    #   실제: 100을 내고 300을 다툼 → EV = 0.4×300 − 100 = +20
+    eff_call, eff_pot = effective_call_pot(1100, 1000, 100, 0, [1000])
+    check("유효 콜 = 남은 칩 100", eff_call == 100, f"={eff_call}")
+    check("유효 팟 = 200 (상대 초과분 900 제외)", eff_pot == 200, f"={eff_pot}")
+    check("유효 팟오즈 = 1/3", abs(pot_odds(eff_call, eff_pot) - 1 / 3) < 1e-9)
+    check("콜 EV = +20", abs(call_ev(0.4, eff_call, eff_pot) - 20) < 1e-9)
+    # 폴드한 상대의 데드 머니도 내 기여 한도까지만
+    check("데드 머니 캡", effective_call_pot(600, 300, 100, 0, [300, 300]) == (100, 200))
+    # 스택 충분하면 원값 그대로
+    check("딥스택 = 원값", effective_call_pot(300, 100, 5000, 0, [100]) == (100, 300))
+
+    r = grade_postflop_call(0.40, 1100, 1000, 20, stack=(100, 0, [1000]))
+    check("리뷰 예시 콜 = ✅", r.grade == "✅", f"={r.grade} {r.reason}")
+    check("리뷰 예시 EV +20 표기", "EV=20.0" in r.reason, f"={r.reason}")
+    r = grade_postflop_fold(0.40, 1100, 1000, 20, stack=(100, 0, [1000]))
+    check("같은 상황 폴드 = 놓친 EV 🔴 (+1bb)", r.grade == "🔴"
+          and r.ev_loss_bb is not None and abs(r.ev_loss_bb - 1.0) < 1e-9,
+          f"={r.grade} {r.ev_loss_bb}")
+
+    # 실제 세션 경로: 패널 팟오즈·콜 EV + 복기 판정이 유효값 기준인지
+    import tempfile
+    import ai.equity as eq
+    from server.session import WebGameSession
+    from core.game import Street, Action
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    prev_db, prev_env = eq.DB_PATH, os.environ.get("EV_PLUS_DB")
+    eq.DB_PATH = tmp
+    os.environ["EV_PLUS_DB"] = tmp
+    try:
+        random.seed(5)
+        s = WebGameSession(session_id="t033", human_name="Hero", chips=2000,
+                           num_bots=2, difficulty="easy", small_blind=10)
+        villain, folder = [p for p in s.game.players if p is not s.human][:2]
+        # 리버: 나 50 기여·스택 100, 상대 1,050 기여(이번 스트리트 1,000 올인), 한 명은 50 내고 폴드
+        s.human.hole_cards = cards("Ah", "Jd")  # vs 1명 리버 exact 0.352
+        s.game.community_cards = cards("Ks", "9d", "5c", "3h", "2s")
+        s.game.current_street = Street.RIVER
+        s.human.chips, s.human.total_bet_this_round, s.human.current_bet = 100, 50, 0
+        s.human.is_folded = s.human.is_all_in = False
+        villain.chips, villain.total_bet_this_round, villain.current_bet = 0, 1050, 1000
+        villain.is_folded, villain.is_all_in = False, True
+        folder.total_bet_this_round, folder.current_bet, folder.is_folded = 50, 0, True
+        for p in s.game.players[3:]:
+            p.is_folded, p.total_bet_this_round, p.current_bet = True, 0, 0
+        s.game.pot = sum(p.total_bet_this_round for p in s.game.players)  # 1,150
+        s.game.current_bet = 1000
+        s._equity_cache = {}
+        s.hand_reviews = []
+
+        info = s._get_equity_info()
+        eq_ = info["vs_random"]
+        check("세션 에퀴티 = exact 0.352", abs(eq_ - 0.352) < 0.001, f"={eq_}")
+        check("패널 팟오즈 = 100/350", abs(info["pot_odds"] - round(100 / 350, 4)) < 1e-9,
+              f"={info['pot_odds']}")
+        check("패널 콜 EV = (eq×350−100)/20 (양수)",
+              abs(info["call_ev_bb"] - round((eq_ * 350 - 100) / 20, 2)) < 0.011
+              and info["call_ev_bb"] > 0, f"={info['call_ev_bb']}")
+
+        s._grade_human_action(s.human, Action.CALL, 0, Street.RIVER, 1000)
+        rv = s.hand_reviews[-1] if s.hand_reviews else {}
+        check("복기: 숏스택 콜 = ✅", rv.get("grade") == "✅", f"={rv}")
+        check("복기 팟오즈 = 유효값", rv.get("pot_odds") == info["pot_odds"], f"={rv.get('pot_odds')}")
+    finally:
+        eq._flush_contributions()
+        eq.DB_PATH = prev_db
+        if prev_env is None:
+            os.environ.pop("EV_PLUS_DB", None)
+        else:
+            os.environ["EV_PLUS_DB"] = prev_env
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def test_postflop_fold_grading():
     print("\n[G-3] 포스트플랍 폴드 판정")
     # equity 15%, 팟오즈 33% → 정상 폴드
@@ -195,6 +273,7 @@ if __name__ == "__main__":
     test_postflop_call_grading()
     test_postflop_fold_grading()
     test_postflop_bet_grading()
+    test_short_stack_effective_call()
     test_session_equity_and_review()
 
     print(f"\n{'='*50}")
