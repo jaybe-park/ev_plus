@@ -1,13 +1,14 @@
 """
 프리플랍 vs 랜덤 핸드 에퀴티 상수 테이블 — 자동 생성, 수동 편집 금지
 
-생성: python3 scripts/export_preflop_equity.py --source <옛 poker.db>
-원천: 폐기된 equity_cache 프리플랍 845행 (poker.db.old-15gb, 읽기 전용)
+원천: 폐기된 equity_cache 프리플랍 845행(원천 DB 없음 — 이 값 그대로는 재현 불가)
+재생성: python3 scripts/gen_preflop_table.py (현재 엔진, 동률 지분 1/k, 1~2시간)
 샘플: 값마다 1,000,000회 이상 MC (표준오차 ≤ 0.05%p)
 
 PREFLOP_EQUITY[표기] = (vs1, vs2, vs3, vs4, vs5) — 표기는 'AA'/'AKs'/'AKo'.
-vs2 이상은 멀티웨이 동률을 1/2로 세던 시절(T-032 이전) 계산이라 동률 과대분
-(+0.05~0.15%p)이 섞여 있다 — 정밀도 목표 ±1%p(ADR 0045) 안이라 그대로 쓴다.
+vs2 이상은 멀티웨이 동률을 1/2로 센 계산이라 현재 엔진(1/k)보다 높다:
+평균 +0.13%p, 최대 +0.40%p(52o vs2) — 독립 MC 30값 × 20만 샘플 실측(2026-10-01).
+정밀도 목표 ±1%p(ADR 0045) 안이라 그대로 쓴다. vs1은 일치(평균 차 0.06%p, 3σ 이내).
 """
 
 PREFLOP_SAMPLES = 1000000
