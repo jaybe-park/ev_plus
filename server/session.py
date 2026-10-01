@@ -335,7 +335,7 @@ class WebGameSession:
                 logger.warning("봇 불법 액션 대체: %s %s(%s) → %s (%s)",
                                player.name, requested.value, req_amount, action.value, err)
 
-        # 콜 금액은 apply_action 전에 계산
+        # 콜 금액은 act 전에 계산
         call_amt = max(0, self.game.current_bet - player.current_bet)
 
         # RL 학습 데이터: 결정 직전 상태 캡처
@@ -642,13 +642,13 @@ class WebGameSession:
         big_blind = self.game.big_blind
 
         # vs_random: 프리플랍 = 상수 테이블, 리버 1:1 = 전수, 그 밖 = 적응형 MC (ADR 0034).
-        # 화면에는 보이지 않는다(ADR 0022/0034) — Play Grader·기록·레인지 없을 때의 vs_range.
+        # 화면에는 보이지 않는다(ADR 0022/0034) — 레인지 없을 때의 vs_range(그때는 Play Grader·기록도 이 값).
         detail = equity_detail(hole, community, n_opps)
         vs_random = detail.equity
 
-        # vs_range(패널이 보여주는 값): 살아있는 모든 상대 레인지 반영 종합 승률.
+        # vs_range(패널·Play Grader·기록이 쓰는 값, ADR 0049): 살아있는 모든 상대 레인지 반영 종합 승률.
         # 레인지 정보가 하나도 없으면(프리플랍 레이저 없음 등) vs_random과 같은 계산이다.
-        # source/samples는 이 값을 실제로 만든 경로·샘플 수다(T-006).
+        # source/samples는 이 값을 실제로 만든 경로·샘플 수다.
         gs = self._build_gs_for_ranges()
         opp_dicts = [{"name": p.name, "is_folded": p.is_folded} for p in opponents]
         samplers_with_roles = opponent_range_info(gs, opp_dicts)
@@ -679,7 +679,7 @@ class WebGameSession:
             })
         opponents_out.sort(key=lambda o: o["equity"])
 
-        # 숏스택 캡: 실제로 걸리는 칩(유효 콜)과 이길 수 있는 팟(유효 팟) 기준 (T-033)
+        # 숏스택 캡: 실제로 걸리는 칩(유효 콜)과 이길 수 있는 팟(유효 팟) 기준
         eff_call, eff_pot = effective_call_pot(pot, call_amount, *self._human_stack())
         pot_odds = calc_pot_odds(eff_call, eff_pot)
         call_ev_bb = None
@@ -694,8 +694,8 @@ class WebGameSession:
             "range_applied": range_applied,
             "source": shown.source,
             "samples": shown.samples,
-            # Play Grader 경계 판정용(ADR 0039) — 응답 스키마 밖(패널 비표시)
-            "vs_random_se": standard_error(detail),
+            # Play Grader 경계 판정용(ADR 0049) — vs_range를 만든 계산의 표준오차. 응답 스키마 밖(패널 비표시)
+            "vs_range_se": standard_error(shown),
             "num_opponents": n_opps,
             "opponents": opponents_out,
             "history": list(self.equity_history),
@@ -713,14 +713,18 @@ class WebGameSession:
         """
         사람 액션을 GTO 빈도(프리플랍) / equity 기반 EV(포스트플랍)로 평가해
         self.hand_reviews / self.session_reviews에 누적.
-        game.apply_action() 호출 '전'에 실행해야 한다 (팟/베팅이 액션 전 값이어야 함).
+        game.act() 호출 '전'에 실행해야 한다 (팟/베팅이 액션 전 값이어야 함).
+
+        판정 에퀴티는 패널과 같은 vs_range다(ADR 0049). 상대 레인지를 하나도 모르면
+        (`range_applied=False`) vs_random과 같은 값이고 grader가 사유에 그 사실을 붙인다.
 
         반환: (equity|None, gto_frequencies|None) — recorder.record_action에 채워 넣을 값.
         """
         try:
             equity_info = self._get_equity_info(call_amt)
-            vs_random = equity_info["vs_random"] if equity_info else None
-            se = equity_info.get("vs_random_se", 0.0) if equity_info else 0.0
+            equity = equity_info["vs_range"] if equity_info else None
+            se = equity_info.get("vs_range_se", 0.0) if equity_info else 0.0
+            range_known = bool(equity_info.get("range_applied")) if equity_info else False
             gto_freqs = None
             grade = None
 
@@ -734,30 +738,30 @@ class WebGameSession:
                 )
                 grade = grade_preflop_action(action.value, gto_rec)
                 gto_freqs = gto_rec["frequencies"] if gto_rec else None
-            elif vs_random is not None:
+            elif equity is not None:
                 pot = self.game.pot
                 big_blind = self.game.big_blind
-                stack = self._human_stack()  # 숏스택 캡 (T-033)
+                stack = self._human_stack()  # 숏스택 캡
                 if action == Action.CALL:
-                    grade = grade_postflop_call(vs_random, pot, call_amt, big_blind,
-                                                stack=stack, se=se)
+                    grade = grade_postflop_call(equity, pot, call_amt, big_blind,
+                                                stack=stack, se=se, range_known=range_known)
                 elif action == Action.FOLD:
-                    grade = grade_postflop_fold(vs_random, pot, call_amt, big_blind,
-                                                stack=stack, se=se)
+                    grade = grade_postflop_fold(equity, pot, call_amt, big_blind,
+                                                stack=stack, se=se, range_known=range_known)
                 else:
-                    grade = grade_postflop_bet_or_raise(vs_random, action.value)
+                    grade = grade_postflop_bet_or_raise(equity, action.value)
 
             if grade is not None:
                 review = grade.to_dict()
                 review["street"] = street.value
                 review["action"] = action.value
-                review["equity"] = vs_random
+                review["equity"] = equity  # 판정에 쓴 값(vs_range)
                 review["pot_odds"] = equity_info["pot_odds"] if equity_info else None
                 review["gto_freq"] = (gto_freqs or {}).get(
                     "raise" if action.value == "allin" else action.value
                 ) if gto_freqs else None
                 self.hand_reviews.append(review)
 
-            return vs_random, gto_freqs
+            return equity, gto_freqs
         except Exception:
             return None, None

@@ -20,7 +20,7 @@
     - 실측 평균 샘플: 플랍 vs1 약 2,100, vs2 약 1,850, vs5 약 1,200 — 근거: [0045](../decisions/0045-equity-precision-1pp-adaptive-mc.md) · 강제 장치: `tests/test_equity.py::test_mc_precision`(턴 1:1 반복 30회 표준편차 ≤ 1.4%p이고 평균이 전수값과 일치, 플랍 vs2 반복 20회 표준편차 ≤ 1.5%p), `tests/test_equity_verify.py` V-4(고정 시드 턴 1:1 10스팟 × 10회, 전수 대비 rmse ≤ 1.3%p, ±2%p 안 ≥ 93%)
   - 샘플 수를 주면 그 수만큼만 고정 MC다. easy 봇(40)이 해상도를 일부러 낮출 때 쓴다 — 근거: [0014](../decisions/0014-difficulty-is-mc-resolution.md) · 강제 장치: `tests/test_equity.py::test_mc_precision`(easy 40샘플 표준편차 > 3%p), `::test_equity_paths`
 - `equity_detail`은 `(equity, source, samples)`를 돌려준다. `source`는 실제로 탄 경로 `"preflop-table"` / `"exact"` / `"mc:N"`이고, `samples`는 테이블 샘플 수(1,000,000) / 전수 조합 수(990) / MC 샘플 수다 — 강제 장치: `tests/test_equity.py::test_equity_paths`
-- `standard_error(EquityResult)`는 그 추정의 표준오차(1σ)다: MC는 sqrt(p(1−p)/N)(지분 분산 상한이라 실제보다 같거나 크다), `exact`·`preflop-table`은 0. Play Grader 경계 구간(ADR 0039)이 쓴다. 세션 패널 정보에 `vs_random_se`로 싣되 응답 스키마 밖이다(화면 비표시) — 강제 장치: `tests/test_grader.py::test_borderline_band`
+- `standard_error(EquityResult)`는 그 추정의 표준오차(1σ)다: MC는 sqrt(p(1−p)/N)(지분 분산 상한이라 실제보다 같거나 크다), `exact`·`preflop-table`은 0. Play Grader 경계 구간(ADR 0039·0049)이 쓴다. 세션 패널 정보에 vs_range를 만든 계산의 표준오차를 `vs_range_se`로 싣되 응답 스키마 밖이다(화면 비표시) — 강제 장치: `tests/test_grader.py::test_borderline_band`, `::test_grader_uses_vs_range`
 - 에퀴티 계산은 DB를 열지 않는다. `ai/equity.py`는 DB 모듈을 import하지 않는다 — 근거: [0034](../decisions/0034-abolish-equity-cache.md) · 강제 장치: `tests/test_equity.py::test_no_db_writes`(계산·봇 판단 중 `sqlite3.connect` 0회, 세션 패널을 여러 번 계산한 새 DB에 에퀴티 테이블 없음)
 - 동률은 나눈 인원으로 나눈다: 나를 포함해 k명이 팟을 나누면 지분 1/k. 카운트 `(wins, ties, total)`와 `(wins + 0.5·ties)/total`을 그대로 쓰려고 ties에 `2/k`를 더한다(헤즈업은 +1). vs 랜덤·레인지 반영, 고정·적응형 MC 공통 — 강제 장치: `tests/test_equity.py::test_multiway_tie_share`(로열 보드 vs2 = 1/3, vs5 = 1/6, 일부만 동률 = 1/2, `smart_equity` 경로 포함)
 - 홀-보드 또는 보드 내부에 중복 카드가 있으면 `ValueError` — 강제 장치: `tests/test_guards.py::test_equity_duplicate_cards`, `tests/test_equity.py::test_equity_paths`
@@ -33,8 +33,8 @@
 
 ### 에퀴티 패널 (`server/session.py::_get_equity_info`)
 - 사람 차례(`waiting_for_action`)이고 `equity_enabled`일 때만 계산한다(아레나는 끔). 같은 결정 지점(스트리트 + 현재 벳)은 재계산하지 않는다 — 강제 장치: `tests/test_poker_full.py` 5-12(`equity_enabled=False`면 계산 안 함) · 같은 지점 재계산 안 함은 장치 없음
-- **패널은 vs_range 한 기준이다**: 큰 숫자·게이지·팟오즈 글자 색·콜 EV·스트리트별 추이(history)가 모두 `vs_range`다. `vs_random`은 응답에는 있지만 화면에 보이지 않는다(Play Grader·기록·레인지 없을 때의 값) — 근거: [0022](../decisions/0022-equity-cache-rebuildable-vsrandom-ui.md)(UI 부분), [0034](../decisions/0034-abolish-equity-cache.md) · 강제 장치: `tests/test_grader.py::test_panel_vs_range_basis`(콜 EV·history = vs_range), `web/src/components/__tests__/equityPanelLogic.test.ts`(게이지·색·추이가 vs_range)
-- `vs_random`: 살아 있는 상대 수만큼 랜덤 핸드 상대(`equity_detail`, 샘플 수 미지정 → 위 계산 경로). 표준오차는 `vs_random_se`(Play Grader용, 스키마 밖) — 강제 장치: `tests/test_equity.py::test_multiway_tie_share`(리버 3인), `::test_no_db_writes`
+- **패널은 vs_range 한 기준이다**: 큰 숫자·게이지·팟오즈 글자 색·콜 EV·스트리트별 추이(history)가 모두 `vs_range`다. `vs_random`은 응답에는 있지만 화면에 보이지 않는다(레인지 없을 때의 vs_range 값. Play Grader·기록도 vs_range를 쓴다 — ADR 0049) — 근거: [0022](../decisions/0022-equity-cache-rebuildable-vsrandom-ui.md)(UI 부분), [0034](../decisions/0034-abolish-equity-cache.md) · 강제 장치: `tests/test_grader.py::test_panel_vs_range_basis`(콜 EV·history = vs_range), `web/src/components/__tests__/equityPanelLogic.test.ts`(게이지·색·추이가 vs_range)
+- `vs_random`: 살아 있는 상대 수만큼 랜덤 핸드 상대(`equity_detail`, 샘플 수 미지정 → 위 계산 경로). 표준오차는 싣지 않는다(Play Grader는 `vs_range_se`를 쓴다) — 강제 장치: `tests/test_equity.py::test_multiway_tie_share`(리버 3인), `::test_no_db_writes`
 - `vs_range`: 상대별 추정 레인지 반영(`ranged_equity_detail` 적응형). 레인지 정보가 있는 상대가 하나도 없으면(`range_applied=false`) vs_random 계산 결과를 그대로 쓰고, 패널 라벨이 "상대 레인지 모름 → 랜덤 핸드"로 바뀐다. **`source`/`samples`는 vs_range를 실제로 만든 계산**이다: 레인지 반영이면 `mc:N`/N(500~2,500), 아니면 vs_random 경로(`preflop-table`/1,000,000 · `exact`/990 · `mc:N`/N). 화면 표기는 "프리플랍 표 · 샘플 1,000,000 · 상대 5명" 식. 상대별 1:1 브레이크다운은 레인지가 있으면 `ranged_equity`, 없으면 랜덤 1:1(`smart_equity`, 정보 없는 상대끼리 한 번만 계산해 공유) — 강제 장치: `tests/test_grader.py::test_panel_vs_range_basis`(레인지 반영 `mc:N`=샘플 수, 레인지 없음 = vs_random 경로), `::test_session_equity_and_review`, `tests/test_equity.py::test_headsup_range_uses_sb`
 - 스트리트별 추이는 그 스트리트 **첫 결정**의 vs_range를 한 번 기록한다(같은 스트리트의 두 번째 결정은 추이를 바꾸지 않는다) — 강제 장치: `tests/test_grader.py::test_panel_vs_range_basis`
 - 프리플랍에도 사람 차례마다 패널이 나온다(상수 테이블, 앞선 레이저가 있으면 레인지 반영 MC). 서버가 프리플랍에 에퀴티를 비우는 경로는 없다(폴드·홀카드 없음·사람 차례 아님만 `null`) — 강제 장치: `tests/test_grader.py::test_panel_vs_range_basis`(6인 프리플랍 사람 차례에 에퀴티 존재)
@@ -64,5 +64,4 @@
 
 - 프리플랍 테이블의 상대 2~5명 값은 멀티웨이 동률을 1/2로 센 계산이라 현재 엔진(1/k)보다 평균 +0.13%p, 최대 +0.40%p(52o vs2) 높다(독립 MC 30값 × 20만 샘플 실측, vs1은 일치). 정밀도 목표(±1%p) 안이라 그대로 쓴다. 원천 DB가 없어 이 값 그대로는 재현할 수 없고, `scripts/gen_preflop_table.py`를 돌리면(사람이 실행) 편향 없는 값으로 바뀐다.
 - 적응형 MC의 조기 종료는 추정한 표준오차로 판정하므로, 실제 1σ가 목표를 약간 넘는 스팟이 드물게 있을 수 있다(상한 2,500에서 끝나면 항상 목표 이내).
-- 패널(vs_range, 콜 EV 포함)과 Play Grader 판정(vs_random)은 아직 기준이 다르다 — T-005
 - vs_random은 상대가 아무 핸드나 든다는 가정이라 3벳팟 등에서 과대평가 — 봇은 어그레션 마진으로 보정(ADR 0015), 근본 해결은 E-2
