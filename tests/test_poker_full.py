@@ -2785,7 +2785,12 @@ class _RefTable:
     검사: 행동 순서(헤즈업 포함, 블라인드는 행동 아님, 런아웃), 최소 레이즈, 레이즈 권한
     (TDA Rule 47 누적 재오픈), 이벤트·로그 금액 = 실제 칩 이동, 봇 불법 액션 폴백,
     사람에게 보이는 call_amount·can_raise·min_raise_to, 사람 불법 액션 판정.
+    이벤트 종류 순서(_check_order: 딜 → 블라인드 → 액션 ⇄ 스트리트 전환·보드 → 쇼다운 → winner 1개)와
+    카드 공개 규칙·팟 계층(check_state)도 응답마다 대조한다.
     """
+
+    STREETS = ["프리플랍", "플랍", "턴", "리버"]
+    BOARD_CARDS = {"플랍": 3, "턴": 1, "리버": 1}
 
     def __init__(self, sess, requests):
         g = sess.game
@@ -2801,6 +2806,121 @@ class _RefTable:
         self.requests = requests
         self._new_street("프리플랍")
         self.level = self.bb                          # 블라인드 뒤 current_bet = BB(숏스택 BB여도)
+        # 이벤트 종류 순서: deal(딜러 왼쪽부터 라운드 1·2) → blind(SB → BB) → bet ⇄ board → showdown → done
+        d, n = self.dealer, self.n
+        self.expect_deals = [(self.seats[(d + 1 + i) % n], r) for r in (1, 2) for i in range(n)]
+        sb, bbp = ((self.seats[d], self.seats[(d + 1) % n]) if n == 2
+                   else (self.seats[(d + 1) % n], self.seats[(d + 2) % n]))
+        self.expect_blinds = [sb, bbp]
+        self.phase = "deal"
+        self.board_left = 0
+        self.board = []                               # community_card 이벤트로 받은 카드
+        self.shown = None                             # showdown 이벤트의 hands(쇼다운이 있었으면)
+        self.final_pot = None                         # winner 직전 팟 = 핸드 총 팟
+        self.winner_event = None
+
+    def _live(self):
+        return [p for p in self.seats if p not in self.folded]
+
+    def _check_order(self, e):
+        """이벤트 종류 순서 불변식(web-flow.md 이벤트 종류). feed가 상태를 바꾸기 전에 부른다."""
+        t = e["type"]
+        assert self.phase != "done", f"winner 뒤에 이벤트가 더 나옴: {e}"
+        if self.phase == "deal":
+            assert t == "deal_card", f"홀카드 딜이 끝나기 전에 {t}: {e}"
+            want = self.expect_deals.pop(0)
+            assert (e["player"], e["round"]) == want, f"딜 순서 위반: {e} 기대 {want}"
+            if not self.expect_deals:
+                self.phase = "blind"
+            return
+        if self.phase == "blind":
+            assert t == "blind", f"SB·BB 블라인드가 끝나기 전에 {t}: {e}"
+            want = self.expect_blinds.pop(0)
+            assert e["player"] == want, f"블라인드 순서 위반(SB → BB): {e} 기대 {want}"
+            if not self.expect_blinds:
+                self.phase = "bet"
+            return
+        if self.phase == "board":
+            assert t == "community_card", f"{self.street} 보드 카드가 다 나오기 전에 {t}: {e}"
+            assert e["street"] == self.street, f"community_card 스트리트 불일치: {e} ({self.street})"
+            self.board.append(e["card"])
+            self.board_left -= 1
+            if self.board_left == 0:
+                self.phase = "bet"
+            return
+        if self.phase == "showdown":
+            assert t == "winner", f"showdown 다음이 winner가 아님: {e}"
+            self.phase = "done"
+            return
+        # phase == "bet"
+        live = self._live()
+        if t == "action":
+            # 런아웃(행동 가능 1명·콜 없음)·라운드 종료 뒤의 액션은 _on_action의 차례 대조가 잡는다
+            return
+        if t == "street_start":
+            i = self.STREETS.index(self.street)
+            assert i + 1 < len(self.STREETS) and e["street"] == self.STREETS[i + 1], \
+                f"스트리트 순서 위반: {self.street} → {e['street']}"
+            assert len(live) >= 2, f"1명만 남았는데 스트리트 전환: {e}"
+            self.board_left = self.BOARD_CARDS[e["street"]]
+            self.phase = "board"
+        elif t == "showdown":
+            assert self.street == "리버" and len(self.board) == 5, \
+                f"리버 보드 전에 쇼다운: {self.street} 보드 {len(self.board)}장"
+            assert len(live) >= 2, f"1명만 남았는데 showdown: {e}"
+            bots_live = {p for p in live if p != self.human}
+            assert set(e["hands"]) == bots_live, \
+                f"showdown 공개 대상 ≠ 폴드 안 한 봇: {sorted(e['hands'])} vs {sorted(bots_live)}"
+            self.shown = e["hands"]
+            self.phase = "showdown"
+        elif t == "winner":
+            assert len(live) == 1, f"2명 이상 남았는데 showdown 없이 winner: {e} live={live}"
+            self.phase = "done"
+        else:
+            raise AssertionError(f"베팅 중 예상 밖 이벤트 {t}: {e}")
+
+    def check_state(self, st):
+        """응답 상태의 카드 공개 규칙·팟 계층 불변식(web-flow.md 카드 공개, game-rules.md 팟 결과)."""
+        over = st["hand_over"]
+        if over:
+            assert self.phase == "done", f"핸드가 끝났는데 이벤트가 winner까지 오지 않음(phase={self.phase})"
+        else:
+            assert self.phase == "bet", f"핸드 진행 중 응답이 이벤트 묶음 중간에서 끊김(phase={self.phase})"
+        contested = self.shown is not None
+        live = set(self._live())
+        for pl in st["players"]:
+            name, hc = pl["name"], pl["hole_cards"]
+            assert pl["is_folded"] == (name in self.folded), f"폴드 상태 불일치: {pl}"
+            if pl["is_human"]:
+                assert hc is not None and len(hc) == 2, f"사람 홀카드가 안 보임: {pl}"
+            elif over and contested and name in live:
+                assert hc == self.shown[name], f"쇼다운 봇 카드 미공개·불일치: {pl} vs {self.shown.get(name)}"
+            else:
+                assert hc is None, (f"봇 카드 노출(핸드 {'종료' if over else '진행 중'}, "
+                                    f"쇼다운 {contested}, 폴드 {pl['is_folded']}): {pl}")
+        if over and contested:
+            assert set(st["showdown_hands"]) == live, \
+                f"showdown_hands ≠ 폴드 안 한 플레이어: {sorted(st['showdown_hands'])} vs {sorted(live)}"
+        else:
+            assert st["showdown_hands"] == {}, f"쇼다운 없이 showdown_hands: {st['showdown_hands']}"
+        if not over:
+            assert st["pots"] is None, f"핸드 진행 중 pots가 실림: {st['pots']}"
+            assert st["community_cards"] == self.board, "보드 ≠ community_card 이벤트"
+            return
+        assert st["community_cards"] == self.board, \
+            f"보드 {st['community_cards']} ≠ community_card 이벤트 {self.board}"
+        pots = st["pots"]
+        assert pots, "핸드 종료인데 pots가 비어 있음"
+        assert sum(x["amount"] for x in pots) == self.final_pot, \
+            f"팟 계층 합계 {sum(x['amount'] for x in pots)} ≠ 핸드 총 팟 {self.final_pot}: {pots}"
+        ret = [i for i, x in enumerate(pots) if x["returned"]]
+        assert len(ret) <= 1 and (not ret or ret[0] == len(pots) - 1), f"returned 계층이 맨 끝 1개가 아님: {pots}"
+        for i in ret:
+            assert len(pots[i]["eligible"]) == 1, f"returned 계층 eligible ≠ 1명: {pots[i]}"
+        won = sum(x["amount"] for x in pots if not x["returned"])
+        assert self.winner_event["pot"] == won, f"winner pot {self.winner_event['pot']} ≠ 반환 뺀 수령 합 {won}"
+        if not contested:
+            assert len(pots) == 1 and not pots[0]["returned"], f"전원 폴드 종료인데 팟 계층이 1개가 아님: {pots}"
 
     def _new_street(self, street):
         self.street = street
@@ -2863,6 +2983,7 @@ class _RefTable:
     def feed(self, events):
         for e in events:
             t = e["type"]
+            self._check_order(e)
             if t == "blind":
                 p = e["player"]
                 moved = self.chips[p] - e["chips_after"]
@@ -2882,6 +3003,7 @@ class _RefTable:
             elif t in ("showdown", "winner"):
                 assert self.next_actor() is None, f"라운드가 끝나기 전에 {t} (남은 차례 {self.next_actor()})"
                 if t == "winner":
+                    self.final_pot, self.winner_event = self.pot, e
                     self.pot = 0
 
     def _check_replay_fields(self, e, p, moved):
@@ -3004,6 +3126,7 @@ def _run_session_fuzz(seed, target_hands):
                     assert st["events"] == [], "get_state가 이벤트를 내보냄(순수 조회 위반)"
                     assert _total_chips(sess) == total, "칩 보존 위반"
                     assert st["waiting_for_action"], "핸드 진행 중인데 사람 차례가 아님(멈춤)"
+                    ref.check_state(st)
                     ref.check_human_turn(st)
                     act = rng.choice(["fold", "check", "call", "raise", "allin"])
                     amt = rng.randint(0, st["current_bet"] * 4 + 100)
@@ -3020,6 +3143,7 @@ def _run_session_fuzz(seed, target_hands):
                     if not sess.hand_over:
                         assert ref.pot == sess.game.pot, f"재생 팟 {ref.pot} != 실제 {sess.game.pot}"
                 assert ref.next_actor() is None, "핸드가 끝났는데 참조 모델에 남은 차례가 있음"
+                ref.check_state(sess.get_state())          # 카드 공개·showdown_hands·pots 계층
                 assert not requests, f"적용되지 않은 봇 요청: {requests}"
                 assert _total_chips(sess) == total, "칩 보존 위반(핸드 종료)"
                 hands += 1
@@ -3046,7 +3170,8 @@ def test_8_12_session_fuzz_event_amounts_and_conservation():
     """세션 경로 퍼저(시드 고정, T-021·T-024): 무작위 인원(2~6)·스택(숏 포함)·액션(불법 포함)으로
     400핸드를 돌려 독립 참조 모델(_RefTable)과 대조한다 — 행동 순서(헤즈업·런아웃), 최소 레이즈,
     누적 재오픈(TDA 47), 이벤트·로그 금액 = 실제 칩 이동, 봇 폴백, 사람 화면 값·불법 판정,
-    칩 보존, 무빙 버튼(파산 전환 포함)."""
+    칩 보존, 무빙 버튼(파산 전환 포함), 이벤트 종류 순서(딜 → 블라인드 → 액션 ⇄ 스트리트·보드 →
+    쇼다운 → winner 1개), 카드 공개 규칙·showdown_hands·pots 계층."""
     hands = _run_session_fuzz(FUZZ_SEED, FUZZ_HANDS)
     assert hands >= FUZZ_HANDS
 

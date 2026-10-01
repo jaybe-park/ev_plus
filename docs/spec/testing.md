@@ -66,10 +66,9 @@ exit code 1.
 
 ## 알려진 한계
 
-- 이벤트 종류 순서(`docs/spec/web-flow.md`의 이벤트 불변식)에는 전용 테스트가 없다 —
-  코드 동작으로만 보장된다. 세션 퍼저 `test_8_12`는 테스트 쪽 참조 모델(`_RefTable`)로 행동
-  순서·최소 레이즈·재오픈·금액·폴백·사람 화면 값·칩 보존·무빙 버튼을 대조하지만(규칙은
-  `docs/spec/game-rules.md` '세션 퍼저'), 이벤트 종류 순서·카드 공개는 보지 않는다.
-- `test_poker_full.py`·`test_gto_tree.py`·`test_workflow.py`는 테스트를 함수 목록(`ALL_TESTS`
-  또는 `__main__` 호출)으로 직접 돌린다 — 함수를 정의하고 목록에 넣지 않으면 조용히 빠진다.
+- `test_poker_full.py`·`test_gto_tree.py`·`test_workflow.py`·`test_equity.py`·`test_grader.py`·
+  `test_equity_verify.py`·`test_guards.py`는 테스트를 함수 목록(`ALL_TESTS` 또는 `__main__` 호출)으로
+  직접 돌린다 — 함수를 정의하고 목록에 넣지 않으면 돌지 않는다 · 강제 장치:
+  `tests/test_guards.py::test_all_tests_registered`(AST로 모듈 최상위 `def test_*`가 실행 목록에서
+  참조되는지 검사, 빠진 함수 이름을 들어 실패)
 - 수집기의 브라우저 쪽(DOM 읽기·렌더 대기)과 `tools/gto_extract_and_save.js`에는 테스트가 없다.
