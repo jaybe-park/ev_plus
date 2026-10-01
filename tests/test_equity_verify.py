@@ -25,7 +25,10 @@ sys.path.insert(0, os.path.dirname(TESTS_DIR))
 sys.path.insert(0, TESTS_DIR)
 
 # 패널 측정이 세션을 만들므로 운영 poker.db 대신 임시 DB를 쓰게 한다
-os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+_TMP_DB = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+os.environ["EV_PLUS_DB"] = _TMP_DB
+import atexit  # noqa: E402
+atexit.register(lambda: [os.path.exists(_TMP_DB + sfx) and os.remove(_TMP_DB + sfx) for sfx in ("", "-wal", "-shm")])
 
 import indep_eval as ie  # noqa: E402
 from core.card import Card, Suit, Rank  # noqa: E402

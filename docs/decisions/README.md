@@ -21,7 +21,7 @@
 | [0015](0015-aggression-margin.md) | 어그레션 마진 — 벳을 받으면 콜 기준을 벳 크기에 비례해 올린다 | 유효 | bot |
 | [0016](0016-bot-validation-arena-legacy.md) | 봇 검증 = 아레나 bb/100 + legacy 베이스라인, 튜닝 결과는 사람이 반영 | 유효 | bot |
 | [0017](0017-equity-canonical-key-exact-protection.md) | equity_cache 키 = 수트 정규화, exact 값은 보호, 레인지 조건부 equity는 저장하지 않는다 | 대체됨 → 0034 | equity |
-| [0018](0018-equity-fast-paths.md) | 에퀴티 계산 고속화 경로 — 계산용 평가기, 스트리트 분해 DP, 보드 중심 리버 테이블, PyPy | 일부 대체됨 → 0034 (캐시·DP 메모 부분. 고속 평가기·board table은 유효) | equity |
+| [0018](0018-equity-fast-paths.md) | 에퀴티 계산 고속화 경로 — 계산용 평가기, 스트리트 분해 DP, 보드 중심 리버 테이블, PyPy | 일부 대체됨 → 0034 (캐시·DP 메모 부분) · board table은 2026-10-01 런타임 미사용으로 삭제(T-041). 고속 평가기 이원화만 유효 | equity |
 | [0019](0019-equity-worker-priority.md) | 에퀴티 워커 우선순위 — 게임에서 만난 스팟 먼저, 싼 스트리트 먼저, 스윕은 마지막 | 대체됨 → 0034 | equity |
 | [0020](0020-sqlite-single-writer.md) | SQLite 쓰기 원칙 — 쓰기는 메인 프로세스, 계산만 Pool, 짧은 트랜잭션, 멱등 저장 | 일부 대체됨 → 0034 (워커·계산 Pool 부분. 쓰기는 메인 프로세스 1개·짧은 트랜잭션·멱등 저장은 유효) | equity |
 | [0021](0021-equity-stats-incremental.md) | `--status`는 증분 통계 테이블을 읽는다 — 모든 쓰기가 같은 트랜잭션에서 델타 반영 | 대체됨 → 0034 | equity |

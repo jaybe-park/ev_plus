@@ -7,7 +7,8 @@
 
 카드 = 정수 0..51, 랭크 = 2 + (c >> 2) (2..14), 수트 = c & 3.
 rank7(cards) → (카테고리 1..10, 타이브레이크 튜플) — `core.evaluator.evaluate_rank`와
-같은 비교 포맷이라 값 자체로 동일성을 비교할 수 있다(계산 방식은 따로 작성).
+같은 비교 포맷이라 값 자체로 동일성을 비교할 수 있다. 계산은 5장 부분집합 전수(브루트포스)이고
+5장 판정은 정렬된 랭크 목록의 패턴으로만 한다(프로젝트의 비트마스크·카운트 방식과 다름).
 """
 import random
 from itertools import combinations
@@ -16,69 +17,49 @@ RANK_OF = [2 + (c >> 2) for c in range(52)]
 SUIT_OF = [c & 3 for c in range(52)]
 DECK = list(range(52))
 
-# 스트레이트 패턴: 비트 r = 랭크 r 존재 (A=14, 휠을 위해 A를 1로도 센다)
-_STRAIGHT_MASKS = [(sum(1 << (h - i) for i in range(5)), h) for h in range(14, 4, -1)]
-
-
-def _straight_high(mask):
-    if mask & (1 << 14):
-        mask |= 1 << 1
-    for m, h in _STRAIGHT_MASKS:
-        if mask & m == m:
-            return h
-    return 0
+def _rank5(ranks, suits):
+    """정확히 5장의 (카테고리, 타이브레이크). 정렬된 랭크 목록만으로 패턴을 읽는다
+    (비트마스크·카운트 배열을 쓰는 프로젝트 평가기와 다른 방식)."""
+    rs = sorted(ranks, reverse=True)
+    flush = len(set(suits)) == 1
+    distinct = sorted(set(rs), reverse=True)
+    straight_high = 0
+    if len(distinct) == 5:
+        if distinct[0] - distinct[4] == 4:
+            straight_high = distinct[0]
+        elif distinct == [14, 5, 4, 3, 2]:
+            straight_high = 5
+    # 같은 랭크 묶음: (장수, 랭크) 내림차순
+    groups = sorted(((rs.count(r), r) for r in distinct), reverse=True)
+    if flush and straight_high == 14:
+        return (10, (14,))
+    if flush and straight_high:
+        return (9, (straight_high,))
+    if groups[0][0] == 4:
+        return (8, (groups[0][1], groups[1][1]))
+    if groups[0][0] == 3 and groups[1][0] == 2:
+        return (7, (groups[0][1], groups[1][1]))
+    if flush:
+        return (6, tuple(rs))
+    if straight_high:
+        return (5, (straight_high,))
+    if groups[0][0] == 3:
+        return (4, (groups[0][1], groups[1][1], groups[2][1]))
+    if groups[0][0] == 2 and groups[1][0] == 2:
+        return (3, (groups[0][1], groups[1][1], groups[2][1]))
+    if groups[0][0] == 2:
+        return (2, (groups[0][1], groups[1][1], groups[2][1], groups[3][1]))
+    return (1, tuple(rs))
 
 
 def rank7(cards):
-    """5~7장 카드의 최고 핸드 랭크 (카테고리, 타이브레이크)."""
-    cnt = [0] * 15
-    by_suit = [[], [], [], []]
-    mask = 0
-    for c in cards:
-        r = RANK_OF[c]
-        cnt[r] += 1
-        by_suit[SUIT_OF[c]].append(r)
-        mask |= 1 << r
-    flush = None
-    for s in range(4):
-        if len(by_suit[s]) >= 5:
-            flush = sorted(by_suit[s], reverse=True)
-            break
-    if flush is not None:
-        fm = 0
-        for r in flush:
-            fm |= 1 << r
-        sh = _straight_high(fm)
-        if sh == 14:
-            return (10, (14,))
-        if sh:
-            return (9, (sh,))
-    groups = sorted(((n, r) for r, n in enumerate(cnt) if n), reverse=True)  # (장수, 랭크) 내림차순
-    if groups[0][0] == 4:
-        q = groups[0][1]
-        kicker = max(r for r in range(2, 15) if cnt[r] and r != q)
-        return (8, (q, kicker))
-    if groups[0][0] == 3 and groups[1][0] >= 2:
-        return (7, (groups[0][1], groups[1][1]))
-    if flush is not None:
-        return (6, tuple(flush[:5]))
-    sh = _straight_high(mask)
-    if sh:
-        return (5, (sh,))
-    if groups[0][0] == 3:
-        t = groups[0][1]
-        ks = sorted((r for r in range(2, 15) if cnt[r] and r != t), reverse=True)[:2]
-        return (4, (t,) + tuple(ks))
-    if groups[0][0] == 2 and groups[1][0] == 2:
-        p1, p2 = groups[0][1], groups[1][1]
-        k = max(r for r in range(2, 15) if cnt[r] and r not in (p1, p2))
-        return (3, (p1, p2, k))
-    if groups[0][0] == 2:
-        p = groups[0][1]
-        ks = sorted((r for r in range(2, 15) if cnt[r] and r != p), reverse=True)[:3]
-        return (2, (p,) + tuple(ks))
-    highs = sorted((r for r in range(2, 15) if cnt[r]), reverse=True)[:5]
-    return (1, tuple(highs))
+    """5~7장 중 최고 5장 핸드 (카테고리, 타이브레이크) — 모든 5장 부분집합을 평가하는 브루트포스."""
+    best = None
+    for combo in combinations(cards, 5):
+        r = _rank5([RANK_OF[c] for c in combo], [SUIT_OF[c] for c in combo])
+        if best is None or r > best:
+            best = r
+    return best
 
 
 def share(mine, opp_ranks):
