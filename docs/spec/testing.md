@@ -13,10 +13,9 @@ exit code 1.
 - `python3 tests/run_all.py`(= `--fast`)는 `FAST_FILES`, `--full`은 `FULL_FILES`를 돈다. 어떤
   파일이 어디에 들어가는지는 원본 `tests/run_all.py`의 두 상수가 정한다. 새 테스트 파일은
   두 상수에 등록해야 대표 명령에 포함된다 — 원본: `tests/run_all.py`
-- 실행 시간 실측(2026-10-01, 이 저장소의 로컬 맥): `--fast` 약 8~11초(`test_poker_full.py`가
-  대부분, 그중 `3-1` 100핸드 칩 보존이 약 7초), `--full` 약 25초(파이썬 약 21초 + 프론트 게이트
-  약 4초)
-- **`--full`은 파이썬 스위트 뒤에 프론트 품질 게이트도 돈다**: `run_all.py::WEB_STEPS` —
+- 실행 시간(2026-10-01, 로컬 맥): `--fast` 약 6초(`test_poker_full.py` 약 5초), `--full` 약 30~37초
+  (파이썬 약 30초 — `test_equity.py`·`test_equity_verify.py`가 각 5~9초 — + 프론트 게이트 약 5~7초)
+- **`--full`은 파이썬 스위트 뒤에 프론트 품질 게이트도 돈다**: `tests/run_all.py::WEB_STEPS` —
   `npm run build`(tsc -b + vite build) → `npm run lint`(eslint .) → `npm run test`(vitest run,
   `web/src/**/__tests__/*.test.ts`), `web/` 디렉터리에서 순차 실행하고 실패하면 통합 요약에
   ❌로 반영되어 전체 exit code 1이 된다. `npm`이 PATH에 없으면 세 단계를 건너뛰고 경고 한
@@ -41,8 +40,8 @@ exit code 1.
   강제 장치: `tests/test_poker_full.py` 상단의 `PokerBot.decide_action = _stub_decide_action` 패치
 - **EV_PLUS_DB 격리**: 테스트는 공유 `poker.db`를 열지 않는다. `db.connection.get_connection()`을
   인자 없이 부르는 모든 경로(`gto/loader.py`, `gto/advisor.py`, 세션 기록기 등)가 `EV_PLUS_DB`를
-  따르므로, 테스트 파일마다 모듈 임포트 시점에 `os.environ["EV_PLUS_DB"] = tempfile...`를
-  설정한다(`run_all.py`는 파일마다 별도 subprocess라 환경변수가 파일 간에 이어지지 않는다).
+  따르므로, DB를 여는 테스트 파일은 모듈 임포트 시점에 `os.environ["EV_PLUS_DB"] = tempfile...`를
+  설정한다(`test_workflow.py`는 DB를 열지 않아 설정하지 않는다)(`run_all.py`는 파일마다 별도 subprocess라 환경변수가 파일 간에 이어지지 않는다).
   `test_poker_full.py`의 `run()` 헬퍼는 테스트 함수마다 새 임시 DB로 바꿔, 한 테스트가 시딩한
   GTO 노드·미수집 큐 행·핸드 기록이 다음 테스트로 새지 않게 한다. GTO 로더 캐시는 프로세스
   안에 남으므로 GTO 데이터를 쓰는 테스트는 `_seed_situation`(시딩 후 `loader.invalidate()`)이나
@@ -67,10 +66,10 @@ exit code 1.
 
 ## 알려진 한계
 
-- 이벤트 종류 순서(`docs/spec/game.md`의 웹 게임 흐름 불변식)에는 전용 테스트가 없다 —
+- 이벤트 종류 순서(`docs/spec/web-flow.md`의 이벤트 불변식)에는 전용 테스트가 없다 —
   코드 동작으로만 보장된다. 세션 퍼저 `test_8_12`는 테스트 쪽 참조 모델(`_RefTable`)로 행동
   순서·최소 레이즈·재오픈·금액·폴백·사람 화면 값·칩 보존·무빙 버튼을 대조하지만(규칙은
-  `docs/spec/game.md` '세션 퍼저'), 이벤트 종류 순서·카드 공개는 보지 않는다.
+  `docs/spec/game-rules.md` '세션 퍼저'), 이벤트 종류 순서·카드 공개는 보지 않는다.
 - `test_poker_full.py`·`test_gto_tree.py`·`test_workflow.py`는 테스트를 함수 목록(`ALL_TESTS`
   또는 `__main__` 호출)으로 직접 돌린다 — 함수를 정의하고 목록에 넣지 않으면 조용히 빠진다.
 - 수집기의 브라우저 쪽(DOM 읽기·렌더 대기)과 `tools/gto_extract_and_save.js`에는 테스트가 없다.

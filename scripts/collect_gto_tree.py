@@ -897,6 +897,8 @@ def run_reseed(args) -> int:
     path = Path(args.checkpoint)
     ckpt = Checkpoint(path)
     existed = ckpt.load()
+    if existed and ckpt.failed:
+        print(f"[경고] failed {sorted(ckpt.failed)}는 그대로 보존됩니다(재시드 대상 아님) — 재수집하려면 따로 비우세요.")
     summary = reseed_checkpoint(ckpt, collected, args.epsilon)
     print(f"[재시드] DB 수집 노드 {len(collected)}개, 체크포인트 {'있음' if existed else '없음'}({path})")
     print(f"  failed: {summary['failed'] or '[]'}")
@@ -910,6 +912,8 @@ def run_reseed(args) -> int:
         return 0
     if existed:
         backup = path.with_name(path.name + ".bak")
+        if backup.exists():  # 원본 백업은 한 번만 — 재실행이 첫 백업을 덮어쓰지 않게 한다
+            backup = path.with_name(path.name + f".bak-{int(time.time())}")
         shutil.copy2(path, backup)
         print(f"  백업: {backup}")
     ckpt.save_items()
