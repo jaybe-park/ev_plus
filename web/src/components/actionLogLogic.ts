@@ -20,9 +20,13 @@ export function lineKind(text: string): LogLineKind {
  * 화면에 그릴 로그 줄. 서버 log_entries가 action_log와 같은 길이면(정상) 줄마다 그 시점 보드·내 홀카드를
  * 붙이고, 없거나 길이가 어긋나면(구 응답) 텍스트만 쓴다 — 다른 줄의 보드를 잘못 붙이지 않는다.
  * 둘 다 재생 중에는 projectState가 끝에서 같은 개수(logPending)만큼 숨긴 값이다. 줄의 보드는 지금 화면
- * 보드(state.community_cards) 장수를 넘지 않는다.
+ * 보드(state.community_cards) 장수를 넘지 않는다. heroRevealed=false(테이블에서 내 카드를 숨긴 상태)면
+ * 내 홀카드 자리에 뒷면(🂠)을 그려 로그가 카드를 드러내지 않는다.
  */
-export function logLines(state: Pick<GameState, "action_log" | "log_entries" | "community_cards">): LogLine[] {
+export function logLines(
+  state: Pick<GameState, "action_log" | "log_entries" | "community_cards">,
+  heroRevealed = true,
+): LogLine[] {
   const entries: LogEntry[] | undefined = state.log_entries;
   const aligned = !!entries && entries.length === state.action_log.length;
   return state.action_log.map((text, i) => {
@@ -30,7 +34,7 @@ export function logLines(state: Pick<GameState, "action_log" | "log_entries" | "
     return {
       text,
       kind: lineKind(text),
-      heroCards: e && e.text === text ? e.hero_cards : [],
+      heroCards: e && e.text === text ? (heroRevealed ? e.hero_cards : e.hero_cards.map(() => "🂠")) : [],
       // 화면 보드보다 앞서지 않게 자른다: 스트리트 헤더 줄은 서버가 카드를 깐 뒤 기록하지만, 재생 중엔
       // street_start가 community_card보다 먼저 소비되므로 테이블에 깔린 장수까지만 보인다
       board: e && e.text === text ? e.board.slice(0, state.community_cards.length) : [],

@@ -361,7 +361,7 @@ export default function App() {
         <div className="flex-1 min-h-0 overflow-hidden">
           {rightTab === "log" ? (
             <div className="p-3 h-full flex flex-col">
-              <ActionLog lines={logLines(shown)} />
+              <ActionLog lines={logLines(shown, myCardsRevealed)} />
             </div>
           ) : hintEnabled ? (
             // ① 상황 ② GTO 빈도 ③ 내 패 ④ 에퀴티 — 넘치면 패널 안에서만 스크롤

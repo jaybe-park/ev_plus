@@ -20,6 +20,9 @@ const entries = [
 describe("로그 줄 — 줄마다 그 시점 내 핸드·보드", () => {
   it("log_entries가 있으면 줄마다 내 홀카드와 그 시점 보드를 붙인다", () => {
     const lines = logLines({ action_log: log, log_entries: entries, community_cards: flop });
+    const hidden = logLines({ action_log: log, log_entries: entries, community_cards: flop }, false);
+    expect(hidden.every((l) => l.heroCards.every((c) => c === "🂠"))).toBe(true);
+    expect(hidden[0].heroCards.length).toBe(lines[0].heroCards.length);
     expect(lines.map((l) => [l.text, l.heroCards, l.board])).toEqual([
       [log[0], hero, []], [log[1], hero, []], [log[2], hero, flop], [log[3], hero, flop], [log[4], hero, flop],
     ]);

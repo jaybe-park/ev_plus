@@ -1,6 +1,7 @@
 import type { GameState, SetupConfig, GtoRange, SessionReview } from "./types";
 
-const BASE = "https://localhost:8765";
+// 기본은 HTTPS 백엔드(ADR 0025). 프리뷰·테스트 도구가 HTTP 백엔드를 띄울 때만 VITE_API_BASE로 바꾼다.
+const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "https://localhost:8765";
 
 // FastAPI(Pydantic) 422는 detail이 배열이다: [{loc, msg, type}, ...].
 // 그대로 new Error(array)에 넘기면 "[object Object]"가 뜬다(W13) — 사람이
