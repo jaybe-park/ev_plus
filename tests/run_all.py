@@ -29,7 +29,7 @@ from db.connection import _DEFAULT_DB_PATH  # noqa: E402  (sys.path 조작 후 �
 
 FAST_FILES = ["test_poker_full.py", "test_gto_tree.py", "test_guards.py"]
 FULL_FILES = ["test_poker_full.py", "test_equity.py", "test_grader.py", "test_gto_tree.py",
-              "test_guards.py", "test_slim_db.py"]
+              "test_guards.py", "test_slim_db.py", "test_equity_verify.py"]
 
 # --full에서만 도는 프론트 품질 게이트. npm run <script> 이름 그대로 사용한다
 # (web/package.json 참고) — 원본: docs/spec/testing.md

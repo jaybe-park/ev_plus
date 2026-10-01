@@ -16,10 +16,10 @@ import bisect
 import math
 import random
 from itertools import combinations
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 from core.card import Card, Suit, Rank
-from core.evaluator import HandEvaluator, evaluate_rank
+from core.evaluator import evaluate_rank
 from ai.preflop_equity_table import PREFLOP_EQUITY, PREFLOP_SAMPLES
 
 _FULL_DECK = [Card(r, s) for r in Rank for s in Suit]
@@ -168,19 +168,6 @@ def mc_adaptive(
     return _adaptive(lambda n: _mc_run(hole_cards, board, num_opponents, n), **kw)
 
 
-def calculate_equity(
-    hole_cards: List[Card],
-    community_cards: List[Card],
-    num_opponents: int = 1,
-    num_simulations: int = 200,
-) -> float:
-    """순수 고정 샘플 MC 승률 (0.0~1.0)."""
-    if len(hole_cards) < 2:
-        return 0.5
-    w, t, n = mc_counts(hole_cards, community_cards, num_opponents, num_simulations)
-    return (w + 0.5 * t) / n
-
-
 # ──────────────────────────────────────────
 # 전수조사 (vs 상대 1명)
 # ──────────────────────────────────────────
@@ -204,7 +191,7 @@ def exact_counts_river(hole: List[Card], board: List[Card]) -> Tuple[float, floa
 
 
 def exact_counts_turn(hole: List[Card], board: List[Card]) -> Tuple[float, float, int]:
-    """턴: 리버 46장 × 상대 C(44,2) ≈ 4.6만 조합. ~10초."""
+    """턴 전수: 리버 46장 × 상대 C(44,2) ≈ 4.6만 조합, 약 0.15초. 런타임 경로가 아니라 테스트 기준값용."""
     known = set(hole) | set(board)
     deck = [c for c in _FULL_DECK if c not in known]
 
@@ -225,7 +212,7 @@ def exact_counts_turn(hole: List[Card], board: List[Card]) -> Tuple[float, float
 
 
 def exact_counts_flop(hole: List[Card], board: List[Card]) -> Tuple[float, float, int]:
-    """플랍: 턴/리버 C(47,2) × 상대 C(45,2) ≈ 107만 조합. 2~5분."""
+    """플랍 전수: 턴/리버 C(47,2) × 상대 C(45,2) ≈ 107만 조합, 약 3초. 런타임 경로가 아니라 기준값용."""
     known = set(hole) | set(board)
     deck = [c for c in _FULL_DECK if c not in known]
 
@@ -243,71 +230,6 @@ def exact_counts_flop(hole: List[Card], board: List[Card]) -> Tuple[float, float
             elif mine == opp:
                 ties += 1
             total += 1
-    return wins, ties, total
-
-
-def board_rank_table(board: List[Card]) -> dict:
-    """
-    보드 B(5장) 공유 리버 스팟들을 위한 랭크 테이블.
-
-    B와 겹치지 않는 47장에서 만들 수 있는 모든 2장 조합(C(47,2)=1081개)의
-    "보드+그 2장" 핸드 랭크를 한 번만 계산해 정렬 리스트(bisect용)와
-    카드별 부분 리스트(블로커 보정용)로 반환한다.
-    """
-    known = set(board)
-    deck = [c for c in _FULL_DECK if c not in known]
-
-    full_sorted: List[tuple] = []
-    card_ranks: Dict[Card, List[tuple]] = {c: [] for c in deck}
-    pair_rank: Dict[frozenset, tuple] = {}
-
-    for c1, c2 in combinations(deck, 2):
-        r = evaluate_rank([c1, c2] + board)
-        full_sorted.append(r)
-        card_ranks[c1].append(r)
-        card_ranks[c2].append(r)
-        pair_rank[frozenset((c1, c2))] = r
-
-    full_sorted.sort()
-    return {
-        "board": list(board),
-        "deck": deck,
-        "full_sorted": full_sorted,
-        "card_ranks": card_ranks,
-        "pair_rank": pair_rank,
-    }
-
-
-def equity_via_board_table(
-    hole: List[Card], board: List[Card], table: dict,
-) -> Tuple[float, float, int]:
-    """
-    board_rank_table 결과를 이용한 리버 equity 계산.
-    exact_counts_river와 동일한 반환 형식 (wins, ties, total=990).
-
-    아이디어: 1081개 전체 조합 중 "나보다 약한/타이" 개수를 이진탐색으로 구하고,
-    내 홀카드 2장을 포함하는 91개 조합(상대가 실제로 만들 수 없는 조합)의
-    약한/타이 개수를 빼서 정확한 990조합 기준값을 만든다.
-    """
-    a, b = hole
-    mine = evaluate_rank(list(hole) + list(board))
-
-    full_sorted = table["full_sorted"]
-    lo = bisect.bisect_left(full_sorted, mine)
-    hi = bisect.bisect_right(full_sorted, mine)
-    full_weaker = lo
-    full_tie = hi - lo
-
-    ab_rank = table["pair_rank"][frozenset((a, b))]
-    excluded = list(table["card_ranks"][a]) + list(table["card_ranks"][b])
-    excluded.remove(ab_rank)  # a·b 조합 자체는 두 리스트에 각 1회씩 중복 → 1회만 제거
-
-    exc_weaker = sum(1 for r in excluded if r < mine)
-    exc_tie = sum(1 for r in excluded if r == mine)
-
-    wins = float(full_weaker - exc_weaker)
-    ties = float(full_tie - exc_tie)
-    total = 990
     return wins, ties, total
 
 
@@ -384,7 +306,7 @@ def smart_equity(
 
 
 # ──────────────────────────────────────────
-# 레인지 기반 샘플링 (B단계)
+# 레인지 기반 샘플링
 # ──────────────────────────────────────────
 
 _NOTATION_RANK = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8,
@@ -418,8 +340,6 @@ class RangeSampler:
     """
 
     def __init__(self, weights: dict):
-        import bisect
-        self._bisect = bisect
         self.combos: List[Tuple[Card, Card]] = []
         self.cum: List[float] = []
         total = 0.0
@@ -451,7 +371,7 @@ class RangeSampler:
 
     def draw(self) -> Tuple[Card, Card]:
         """가중치대로 콤보 1개 (블로커 무시 — 호출자가 거절 판단)."""
-        i = self._bisect.bisect_left(self.cum, random.random() * self.total)
+        i = bisect.bisect_left(self.cum, random.random() * self.total)
         return self.combos[min(i, len(self.combos) - 1)]
 
     def sample(self, blocked: set) -> Optional[Tuple[Card, Card]]:
@@ -459,7 +379,7 @@ class RangeSampler:
         if not self.combos:
             return None
         for _ in range(30):
-            i = self._bisect.bisect_left(self.cum, random.random() * self.total)
+            i = bisect.bisect_left(self.cum, random.random() * self.total)
             c1, c2 = self.combos[min(i, len(self.combos) - 1)]
             if c1 not in blocked and c2 not in blocked:
                 return c1, c2
@@ -478,11 +398,11 @@ def _ranged_runner(
     상대별 레인지 샘플러를 적용한 MC 러너 run(n) → (wins, ties, 지분 제곱합).
     samplers의 None은 랜덤 핸드. 레인지 조건부 분포다. 블로커 제거는 한 번만 한다.
 
-    상대 홀카드는 결합분포 Π w_i(h_i)·[카드 비중복]에서 뽑는다(T-034):
+    상대 홀카드는 결합분포 Π w_i(h_i)·[카드 비중복]에서 뽑는다:
     1) 각 레인지에서 내 홀·보드와 겹치는 콤보를 미리 뺀다(남는 게 없으면 랜덤 상대).
     2) 레인지 상대 전원을 독립으로 한 번에 뽑고, 서로 겹치면 전체를 다시 뽑는다(결합 거절 샘플링).
     3) 랜덤 상대는 남은 카드에서 균등하게 뽑는다(균등 가중이라 조건부도 균등 — 정확).
-    상대를 한 명씩 차례로 뽑으면(이전 방식) 결합분포가 아니어서 좁은 레인지끼리 편향된다.
+    상대를 한 명씩 차례로 뽑으면 결합분포가 아니어서 좁은 레인지끼리 편향된다.
     거절이 _JOINT_MAX_TRIES번 연속이면(레인지끼리 거의 전부 겹침) 그 샘플만 순차 방식으로 대체한다.
     """
     known = set(hole_cards) | set(board)
@@ -535,17 +455,6 @@ def _ranged_runner(
     return run
 
 
-def mc_counts_ranged(
-    hole_cards: List[Card],
-    board: List[Card],
-    samplers: List[Optional[RangeSampler]],
-    num_simulations: int,
-) -> Tuple[float, float, int]:
-    """레인지 반영 고정 샘플 MC: (wins, ties, total)."""
-    w, t, _ = _ranged_runner(hole_cards, board, samplers)(num_simulations)
-    return w, t, num_simulations
-
-
 def mc_adaptive_ranged(
     hole_cards: List[Card],
     board: List[Card],
@@ -582,7 +491,8 @@ def ranged_equity_detail(
     if num_simulations is None:
         w, t, n, _se = mc_adaptive_ranged(hole_cards, board, samplers)
     else:
-        w, t, n = mc_counts_ranged(hole_cards, board, samplers, num_simulations)
+        w, t, _ = _ranged_runner(hole_cards, board, samplers)(num_simulations)
+        n = num_simulations
     return EquityResult(_ratio(w, t, n), f"mc:{n}", n)
 
 

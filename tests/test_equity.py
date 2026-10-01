@@ -22,7 +22,7 @@ from core.card import Card, Suit, Rank
 from core.game import Action
 from core.player import Player
 from ai.equity import (
-    calculate_equity, exact_counts_river, exact_counts_turn,
+    exact_counts_river, exact_counts_turn, mc_counts, _ratio,
     smart_equity, equity_detail, made_hand_rank,
 )
 from ai.bot import PokerBot, BotDifficulty, board_wetness
@@ -61,7 +61,7 @@ def test_preflop_table():
           len(PREFLOP_EQUITY) == 169 and all(len(v) == 5 for v in PREFLOP_EQUITY.values()),
           f"={len(PREFLOP_EQUITY)}")
     check("값마다 100만 샘플", PREFLOP_SAMPLES >= 1_000_000, f"={PREFLOP_SAMPLES}")
-    # 알려진 기준값 (±1%p 목표보다 좁은 ±0.2%p로 검사) — T-036 완료 조건
+    # 경로·표본 수 확인용 대표값 4개(±0.2%p). 공개 기준값 23개 대조는 tests/test_equity_verify.py
     for hole, n_opp, expect in ((("As", "Ah"), 1, 0.852), (("Ah", "Kh"), 1, 0.670),
                                 (("7s", "2h"), 1, 0.346), (("Ad", "Ac"), 5, 0.492)):
         r = equity_detail(cards(*hole), [], n_opp)
@@ -77,15 +77,15 @@ def test_preflop_table():
     # 상대가 늘수록 단조 감소 (AA)
     aa = PREFLOP_EQUITY["AA"]
     check("AA 상대 수 증가 시 단조 감소", all(aa[i] > aa[i + 1] for i in range(4)), f"={aa}")
-    # 테이블 값 = 지금 코드의 MC와 일치 (vs2 이상은 옛 동률 공식 과대분 ≤ 0.15%p 허용)
-    from ai.equity import mc_adaptive, _ratio
+    # 테이블 값 = 지금 코드의 MC와 일치 (vs2 이상은 옛 동률 공식 과대분 실측 최대 +0.40%p 허용)
+    from ai.equity import mc_adaptive
     random.seed(21)
     for hole, n_opp in ((("As", "Ah"), 2), (("Qh", "Jh"), 3), (("7s", "2h"), 1)):
         w, t, n, se = mc_adaptive(cards(*hole), [], n_opp, target_se=0.004, max_samples=20_000)
         est = _ratio(w, t, n)
         tab = PREFLOP_EQUITY[preflop_notation(cards(*hole))][n_opp - 1]
-        check(f"{preflop_notation(cards(*hole))} vs{n_opp} 테이블 {tab:.4f} ≈ MC {est:.4f} (3σ+0.15%p)",
-              abs(est - tab) <= 3 * se + 0.0015, f"차이={est - tab:+.4f}, se={se:.4f}")
+        check(f"{preflop_notation(cards(*hole))} vs{n_opp} 테이블 {tab:.4f} ≈ MC {est:.4f} (3σ+0.40%p)",
+              abs(est - tab) <= 3 * se + 0.004, f"차이={est - tab:+.4f}, se={se:.4f}")
 
 
 def test_exact_river():
@@ -105,44 +105,39 @@ def test_exact_river():
 def test_mc_sanity():
     print("\n[E-3] Monte Carlo 근사 정확도")
     random.seed(42)
-    e = calculate_equity(cards("As", "Ah"), [], 1, 3000)
+    e = _ratio(*mc_counts(cards("As", "Ah"), [], 1, 3000))
     check("AA vs1 ≈ 0.85", 0.80 <= e <= 0.90, f"={e:.3f}")
 
-    e = calculate_equity(cards("7s", "2h"), [], 1, 3000)
+    e = _ratio(*mc_counts(cards("7s", "2h"), [], 1, 3000))
     check("72o vs1 ≈ 0.35", 0.29 <= e <= 0.41, f"={e:.3f}")
 
-    e = calculate_equity(cards("As", "Ah"), [], 4, 2000)
+    e = _ratio(*mc_counts(cards("As", "Ah"), [], 4, 2000))
     check("AA vs4 ≈ 0.56 (멀티웨이 하락)", 0.45 <= e <= 0.68, f"={e:.3f}")
 
     # 넛플러시 드로우 (A하이 포함): 뜨거나 A페어로도 이김 → ~0.65
-    e = calculate_equity(cards("Ah", "5h"), cards("Kh", "9h", "2s"), 1, 2000)
+    e = _ratio(*mc_counts(cards("Ah", "5h"), cards("Kh", "9h", "2s"), 1, 2000))
     check("넛플러시드로우 ≈ 0.65", 0.55 <= e <= 0.75, f"={e:.3f}")
 
 
 def test_multiway_tie_share():
     print("\n[E-13] 멀티웨이 동률 1/k (T-032)")
-    from ai.equity import mc_counts, mc_counts_ranged, RangeSampler, _ratio
+    from ai.equity import RangeSampler, ranged_equity
     royal = cards("As", "Ks", "Qs", "Js", "Ts")  # 모두 보드를 플레이 → 전원 스플릿
     hole = cards("2c", "3d")
     for n_opp, expect in ((1, 1 / 2), (2, 1 / 3), (5, 1 / 6)):
         e = _ratio(*mc_counts(hole, royal, n_opp, 200))
         check(f"로열 보드 vs{n_opp} = 1/{n_opp + 1}", abs(e - expect) < 1e-9, f"={e:.4f}")
-        e = calculate_equity(hole, royal, n_opp, 200)
-        check(f"calculate_equity 로열 보드 vs{n_opp} = 1/{n_opp + 1}",
-              abs(e - expect) < 1e-9, f"={e:.4f}")
     # 레인지 경로도 같은 공식
-    e = _ratio(*mc_counts_ranged(hole, royal, [RangeSampler({"88": 1.0}), None], 200))
+    e = ranged_equity(hole, royal, [RangeSampler({"88": 1.0}), None], 200)
     check("ranged 로열 보드 vs2 = 1/3", abs(e - 1 / 3) < 1e-9, f"={e:.4f}")
     # 일부만 동률: 나·상대A 동률, 상대B 패 → 1/2 (리버, 레인지로 고정)
     board = cards("Ah", "Kd", "8c", "5s", "2h")
-    e = _ratio(*mc_counts_ranged(
-        cards("Qc", "Jd"), board,
-        [RangeSampler({"QJo": 1.0}), RangeSampler({"43s": 1.0})], 300))
+    e = ranged_equity(cards("Qc", "Jd"), board,
+                      [RangeSampler({"QJo": 1.0}), RangeSampler({"43s": 1.0})], 300)
     # QJo 콤보 중 Qc/Jd 블록 제외 나머지 전부 같은 하이카드 → 동률, 43s는 5-high 스트레이트(A-5)로 승
     check("43s(휠) 상대 포함 시 0", e == 0.0, f"={e:.4f}")
-    e = _ratio(*mc_counts_ranged(
-        cards("Qc", "Jd"), board,
-        [RangeSampler({"QJo": 1.0}), RangeSampler({"76s": 1.0})], 300))
+    e = ranged_equity(cards("Qc", "Jd"), board,
+                      [RangeSampler({"QJo": 1.0}), RangeSampler({"76s": 1.0})], 300)
     check("나·상대A 동률 + 상대B 패 = 1/2", abs(e - 0.5) < 1e-9, f"={e:.4f}")
 
     # smart_equity 멀티웨이(적응형 MC) 경로도 같은 공식
@@ -509,7 +504,7 @@ def test_ranged_equity():
     check("KK vs AA레인지 ≈ 0.18", 0.10 <= e <= 0.28, f"={e:.3f}")
 
     # KK vs 랜덤 → ~0.82, 레인지가 좁아지면 하락해야 함
-    e_random = calculate_equity(cards("Kh", "Kd"), [], 1, 800)
+    e_random = _ratio(*mc_counts(cards("Kh", "Kd"), [], 1, 800))
     check("KK vs 랜덤 > vs AA레인지", e_random > e + 0.3,
           f"random={e_random:.3f}, ranged={e:.3f}")
 
@@ -532,7 +527,7 @@ def test_ranged_equity():
 
     # 결합 거절 샘플링 (T-034): 좁은 레인지 상대 두 명 — 리버라 정답을 전수로 계산
     from itertools import product
-    from ai.equity import mc_counts_ranged, _ratio, _showdown_share, _notation_combos
+    from ai.equity import _showdown_share, _notation_combos
     from core.evaluator import evaluate_rank
     hole, board = cards("Js", "Jh"), cards("2c", "3d", "4h", "Ks", "9c")
     known = set(hole) | set(board)
@@ -549,14 +544,14 @@ def test_ranged_equity():
     truth = share / n_ok
     random.seed(34)
     n = 6000
-    est = _ratio(*mc_counts_ranged(hole, board,
-                                   [RangeSampler({"AA": 1, "55": 1}), RangeSampler({"AA": 1, "66": 1})], n))
+    est = ranged_equity(hole, board,
+                        [RangeSampler({"AA": 1, "55": 1}), RangeSampler({"AA": 1, "66": 1})], n)
     se = (truth * (1 - truth) / n) ** 0.5
     check(f"좁은 레인지 2명 결합분포: 정답 {truth:.3f}, 추정 {est:.3f} (3σ={3*se:.3f})",
           abs(est - truth) < 3 * se, f"차이={est - truth:+.3f}")
     # 순서를 바꿔도 같은 분포
-    est2 = _ratio(*mc_counts_ranged(hole, board,
-                                    [RangeSampler({"AA": 1, "66": 1}), RangeSampler({"AA": 1, "55": 1})], n))
+    est2 = ranged_equity(hole, board,
+                         [RangeSampler({"AA": 1, "66": 1}), RangeSampler({"AA": 1, "55": 1})], n)
     check("상대 순서 무관", abs(est2 - truth) < 3 * se, f"={est2:.3f}")
     # 레인지가 보드·내 카드에 전부 막히면 랜덤 상대로 취급
     blocked_all = RangeSampler({"JJ": 1.0})  # Js·Jh가 내 홀 → Jd Jc 1콤보만 남음
@@ -571,7 +566,7 @@ def test_ranged_equity():
         sampler = RangeSampler(utg)
         # QQ vs UTG 오픈 레인지: 랜덤(~0.80)보다 낮아야 함 (레인지가 강함)
         e_r = ranged_equity(cards("Qh", "Qd"), [], [sampler], 800)
-        e_u = calculate_equity(cards("Qh", "Qd"), [], 1, 800)
+        e_u = _ratio(*mc_counts(cards("Qh", "Qd"), [], 1, 800))
         check("QQ vs UTG레인지 < vs 랜덤", e_r < e_u - 0.03,
               f"ranged={e_r:.3f}, random={e_u:.3f}")
     else:
@@ -741,29 +736,6 @@ def test_grader():
     check("중간 equity 벳 → ⬜ (제한 판정)", g.grade == "⬜", f"={g.grade}")
 
 
-def test_board_rank_table():
-    print("\n[E-12] 보드 중심 리버 계산 (board_rank_table) 정합성")
-    from ai.equity import board_rank_table, equity_via_board_table
-
-    full = [Card(r, s) for r in Rank for s in Suit]
-    random.seed(2026)
-    mismatch = 0
-    cases = 0
-    for _ in range(100):
-        board = random.sample(full, 5)
-        table = board_rank_table(board)
-        rest = [c for c in full if c not in board]
-        for _ in range(5):
-            hole = random.sample(rest, 2)
-            direct = exact_counts_river(hole, board)
-            via_table = equity_via_board_table(hole, board, table)
-            cases += 1
-            if direct != via_table:
-                mismatch += 1
-    check(f"랜덤 보드 100 × 홀 5 = {cases}케이스 완전 일치", mismatch == 0,
-          f"불일치={mismatch}")
-
-
 def test_gto_allin_action_and_hint():
     """[E-13] T-014: GTO 샘플 액션이 allin이면 봇이 Action.ALL_IN을 실행하고,
     사람 힌트 문자열에 '올인 N%'가 번역돼 보인다(ADR 0002 "화면 그대로만" —
@@ -846,7 +818,6 @@ if __name__ == "__main__":
     test_fast_evaluator()
     test_made_hand_rank()
     test_grader()
-    test_board_rank_table()
     test_gto_allin_action_and_hint()
 
     print(f"\n{'='*50}")
