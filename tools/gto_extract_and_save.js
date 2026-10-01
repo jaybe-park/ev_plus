@@ -10,7 +10,7 @@
 //       extractAndSave(null).then(console.log);    // 레이즈 사이즈를 모르면 null(추측 금지)
 //
 // 노드 키(action_seq)는 현재 URL의 preflop_actions(앞에서 history_spot개 토큰)를 그대로
-// 보낸다(ADR 0008/0009). 포지션·상황 종류·라벨은 서버가 action_seq에서 유도한다(ADR 0038).
+// 보낸다(ADR 0008/0009). 포지션·상황 종류·라벨은 서버가 action_seq에서 유도한다(ADR 0044).
 // 서버도 빈도합 [0.9, 1.1]을 검증해 불량이면 422로 거부한다(ADR 0002).
 function currentActionSeq() {
   const params = new URL(location.href).searchParams;

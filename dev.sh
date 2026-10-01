@@ -4,8 +4,7 @@
 # - 프론트: Vite dev server (HMR)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SSL_KEY="$SCRIPT_DIR/ssl/key.pem"
-SSL_CERT="$SCRIPT_DIR/ssl/cert.pem"
+source "$SCRIPT_DIR/scripts/server_env.sh"
 
 echo "♠ Texas Hold'em — 개발 모드"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -14,20 +13,8 @@ echo "  프론트  http://localhost:5766   (HMR 활성화)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-PYTHON=$(command -v python3 || command -v python)
-if [ -z "$PYTHON" ]; then
-  echo "  오류: python3 또는 python을 찾을 수 없습니다."
-  exit 1
-fi
-
-if [ ! -f "$SSL_CERT" ] || [ ! -f "$SSL_KEY" ]; then
-  echo "  SSL 인증서가 없습니다. 생성 중..."
-  mkdir -p "$SCRIPT_DIR/ssl"
-  openssl req -x509 -newkey rsa:2048 \
-    -keyout "$SSL_KEY" -out "$SSL_CERT" \
-    -days 3650 -nodes -subj "/CN=localhost" 2>/dev/null
-  echo "  인증서 생성 완료."
-fi
+find_python
+ensure_ssl "$SCRIPT_DIR"
 
 cd "$SCRIPT_DIR"
 # 서버 코드 디렉터리만 감시한다 — tests/·scripts/·docs 수정으로 재시작되면 메모리의 게임이 사라진다

@@ -65,6 +65,17 @@ def get_connection(db_path: str = None) -> sqlite3.Connection:
     return conn
 
 
+def get_readonly_connection(db_path: str = None) -> sqlite3.Connection:
+    """읽기 전용 연결(`mode=ro`). 마이그레이션·PRAGMA 쓰기를 하지 않고, 파일이 없으면
+    만들지 않고 실패한다. 감사·재시드처럼 운영 DB를 읽기만 하는 도구용."""
+    path = resolve_db_path(db_path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"DB 파일이 없습니다: {path}")
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _migrate(conn: sqlite3.Connection):
     """스키마 생성 및 버전 관리"""
     cur = conn.cursor()

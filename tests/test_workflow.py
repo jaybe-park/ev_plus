@@ -66,15 +66,27 @@ def test_exclusive_runs():
     mod = load_hook_module()
 
     mod.running_commands = lambda: ["pypy3 scripts/grind.py"]
-    check("그라인드 중 워커 실행 차단", mod.check("pypy3 scripts/equity_worker.py") is not None)
     check("그라인드 중 튜닝 차단", mod.check("python3 scripts/tune_bot.py --hands 10") is not None)
-    check("그라인드 중 워커 --status 허용", mod.check("python3 scripts/equity_worker.py --status") is None)
+    check("그라인드 중 GTO 수집 차단", mod.check("python3 scripts/collect_gto_tree.py --limit 5") is not None)
+    check("그라인드 중 그라인드 2개째 차단", mod.check("pypy3 scripts/grind.py") is not None)
+    check("그라인드 중 수집 --help 허용", mod.check("python3 scripts/collect_gto_tree.py --help") is None)
+    check("그라인드 중 다른 스크립트 허용", mod.check("python3 scripts/audit_gto_preflop.py") is None)
 
-    mod.running_commands = lambda: ["python3 scripts/equity_worker.py --preflop-first"]
-    check("워커 중 워커 2개째 차단", mod.check("pypy3 scripts/equity_worker.py") is not None)
+    mod.running_commands = lambda: ["python3 scripts/collect_gto_tree.py --limit 90"]
+    check("수집 중 그라인드 차단", mod.check("pypy3 scripts/grind.py") is not None)
+    check("수집 중 튜닝 차단", mod.check("python3 scripts/tune_bot.py") is not None)
+    check("수집 중 수집 2개째 차단", mod.check("python3 scripts/collect_gto_tree.py") is not None)
+
+    mod.running_commands = lambda: ["python3 scripts/tune_bot.py --hands 10"]
+    check("튜닝 중 그라인드 차단", mod.check("pypy3 scripts/grind.py") is not None)
+
+    check("폐기된 에퀴티 워커 규칙 없음",
+          all("equity_worker" not in t and not any("equity_worker" in c for c in cs)
+              for t, cs, _ in mod.EXCLUSIVE), str(mod.EXCLUSIVE))
 
     mod.running_commands = lambda: []
     check("아무것도 안 돌 때 그라인드 허용", mod.check("pypy3 scripts/grind.py") is None)
+    check("아무것도 안 돌 때 수집 허용", mod.check("python3 scripts/collect_gto_tree.py") is None)
 
 
 def test_hook_registered():

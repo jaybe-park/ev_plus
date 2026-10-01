@@ -11,7 +11,7 @@ GTO 기반 프리플랍 어드바이저와 3단계 AI 봇을 포함한다.
 
 ```bash
 # 의존성 설치 (최초 1회)
-pip install -r requirements-server.txt
+pip install -r requirements.txt
 cd web && npm install && cd ..
 
 # 개발 모드 실행

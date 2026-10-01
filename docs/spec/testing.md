@@ -1,6 +1,6 @@
 # 테스트 체계 — 현재 사양
 
-> 최종 갱신: 2026-09-26 · 관련 결정: [0026](../decisions/0026-stubbot-and-isolated-test-db.md)
+> 최종 갱신: 2026-10-01 · 관련 결정: [0026](../decisions/0026-stubbot-and-isolated-test-db.md), [0001](../decisions/0001-adopt-playbook.md)
 
 ## 무엇을 하는가
 
@@ -10,28 +10,28 @@ exit code 1.
 
 ## 규칙 (지금 유효한 것만)
 
-- `python3 tests/run_all.py` 또는 `--fast`: `run_all.py::FAST_FILES` = `test_poker_full.py` +
-  `test_gto_tree.py`(로직 검증만, 수 초 이내). `--full`: `FULL_FILES` = 위에 `test_equity.py` +
-  `test_grader.py` 추가. 신규 테스트 파일을 대표 명령에 포함하려면 이 두 상수에 등록해야
-  한다 — 원본: `tests/run_all.py`
+- `python3 tests/run_all.py`(= `--fast`)는 `FAST_FILES`, `--full`은 `FULL_FILES`를 돈다. 어떤
+  파일이 어디에 들어가는지는 원본 `tests/run_all.py`의 두 상수가 정한다. 새 테스트 파일은
+  두 상수에 등록해야 대표 명령에 포함된다 — 원본: `tests/run_all.py`
+- 실행 시간 실측(2026-10-01, 이 저장소의 로컬 맥): `--fast` 약 8~11초(`test_poker_full.py`가
+  대부분, 그중 `3-1` 100핸드 칩 보존이 약 7초), `--full` 약 25초(파이썬 약 21초 + 프론트 게이트
+  약 4초)
 - **`--full`은 파이썬 스위트 뒤에 프론트 품질 게이트도 돈다**: `run_all.py::WEB_STEPS` —
   `npm run build`(tsc -b + vite build) → `npm run lint`(eslint .) → `npm run test`(vitest run,
-  `web/src/**/__tests__/*.test.ts`), `web/` 디렉터리에서 순차 실행하고 실패하면 다른 파이썬
-  테스트와 동일하게 통합 요약에 ❌로 반영되어 전체 exit code 1이 된다. `npm`이 PATH에 없으면
-  (`shutil.which("npm") is None`) 세 단계를 전부 건너뛰고 경고 한 줄만 낸다 — CI 없는 이
-  프로젝트에서 npm 미설치 환경(예: 최소 컨테이너)에서도 파이썬 테스트만은 항상 돌게 하기
-  위함. `--fast`는 프론트 게이트를 돌지 않는다 — 근거: 2026-09-26 리뷰 W9(프론트 lint 38
-  오류·테스트 0 방치) · 강제 장치: `tests/run_all.py::WEB_STEPS`, `web/package.json`의
-  `build`/`lint`/`test` 스크립트
-- `test_poker.py`는 `run_all.py`에 등록돼 있지 않다(독립 레거시 스위트, 개별 실행만).
+  `web/src/**/__tests__/*.test.ts`), `web/` 디렉터리에서 순차 실행하고 실패하면 통합 요약에
+  ❌로 반영되어 전체 exit code 1이 된다. `npm`이 PATH에 없으면 세 단계를 건너뛰고 경고 한
+  줄만 낸다(파이썬 테스트만은 항상 돈다). `web/node_modules`가 없으면(새 워크트리 등) 세 단계가
+  실패한다. `--fast`는 프론트 게이트를 돌지 않는다 · 강제 장치: `tests/run_all.py::WEB_STEPS`,
+  `web/package.json`의 `build`/`lint`/`test` 스크립트
 - 파일 역할: `test_poker_full.py` = 포커 로직(핸드 평가/베팅/팟 분배/게임 흐름/웹 세션/헤즈업·
-  사이드팟/프리플랍 GTO 트리 라우팅) · `test_equity.py` = 에퀴티 엔진 + 봇 의사결정 ·
+  사이드팟/프리플랍 GTO 조회·저장/세션 경로 룰) · `test_equity.py` = 에퀴티 엔진 + 봇 의사결정 ·
   `test_grader.py` = 플레이 평가(Play Grader) 판정 엔진 · `test_gto_tree.py` = GTO 트리
-  수집 워커의 순수 로직 · `test_guards.py` = 테스트 인프라 자체의 가드(poker.db 무결성
-  검사 로직, DB 크기 임계치 판정 함수, `equity_detail` 중복 카드 입력 검증) · `test_poker.py` = 기본
-  핸드 평가 유닛 테스트(레거시).
-  각 파일의 정확한 항목 수·번호는 여기 쓰지 않는다 — 실제 목록은 각 파일의 `def test_*`
-  (또는 `check(...)`) 선언을 grep하거나 `run_all.py` 출력의 통합 요약을 본다.
+  수집기·감사·재시드·큐 정리 스크립트의 순수 로직(브라우저·네트워크 없음) · `test_guards.py` =
+  테스트 인프라 가드(운영 DB 스냅샷 비교, DB 크기 임계치, `equity_detail` 중복 카드 입력 검증) ·
+  `test_workflow.py` = Claude Code hook(`.claude/hooks/block_dangerous.py`)의 차단 패턴·동시
+  실행 금지·등록 여부(1초 이내).
+  각 파일의 정확한 항목 수·번호는 여기 쓰지 않는다 — 실제 목록은 각 파일의 `ALL_TESTS`/`def test_*`
+  선언을 보거나 `run_all.py` 출력의 통합 요약을 본다.
 - **StubBot 방침**: `test_poker_full.py`는 모듈 임포트 시점에 `PokerBot.decide_action`을
   "콜 금액 있으면 콜, 없으면 체크"의 스텁으로 전역 패치한다(equity/GTO DB 조회 없음).
   이 파일의 목적은 게임 엔진 정합성이지 봇 실력이 아니다. 특정 액션 시퀀스가 필요한
@@ -39,35 +39,31 @@ exit code 1.
   판단력(equity 정확도, GTO 준수 등)은 `test_equity.py`/`scripts/ai_regression.py`가
   담당한다 — 근거: [0026](../decisions/0026-stubbot-and-isolated-test-db.md) ·
   강제 장치: `tests/test_poker_full.py` 상단의 `PokerBot.decide_action = _stub_decide_action` 패치
-- **EV_PLUS_DB 격리**: 로직 테스트는 실 DB(그라인드 데이터)와 락 경합·오염을 피하려고
-  `run()` 헬퍼가 테스트 함수 실행 직전마다 `EV_PLUS_DB` 환경변수를 새 임시 SQLite 파일로
-  갱신한다. `WebGameSession` 생성마다 `GameRecorder`가 커넥션을 열고 닫지 않기 때문에,
-  DB 파일을 공유하면 테스트가 누적될수록 쓰기 락 경합이 심해진다 — 근거:
-  [0026](../decisions/0026-stubbot-and-isolated-test-db.md) · 강제 장치:
-  `tests/test_poker_full.py`의 모듈 상단 `os.environ["EV_PLUS_DB"] = tempfile...`
-- **격리는 파일마다 개별 구현**: `run_all.py`는 각 테스트 파일을 별도 subprocess로 실행하므로
-  환경변수는 파일 간에 상속되지 않는다. `db.connection.get_connection()`을 인자 없이
-  호출하는 모든 경로(`gto/loader.py`, `gto/advisor.py` 등)가 대상이라, 파일마다 모듈
-  임포트 시점에 `os.environ["EV_PLUS_DB"] = tempfile...`를 직접 설정해야 한다 —
-  `test_poker_full.py`, `test_equity.py`, `test_grader.py`, `test_gto_tree.py`,
-  `test_guards.py` 모두 이 패턴을 쓴다. 에퀴티 계산(`ai/equity.py`)은 DB를 전혀 열지
-  않는다 — 강제 장치: `tests/test_equity.py::test_no_db_writes`
-- **운영 poker.db 무결성 가드**: `tests/run_all.py`가 실행 전후 운영 `poker.db`의
-  `(mtime, size)`를 비교해(`poker_db_snapshot`/`poker_db_untouched`) 값이 바뀌면(격리
-  누락으로 실제 DB에 썼다는 뜻) 전체를 실패로 처리한다 — 강제 장치: `tests/run_all.py`
-  자체 로직(exit code 1) · 함수 단위 테스트: `tests/test_guards.py::test_run_all_db_snapshot_guard`
+- **EV_PLUS_DB 격리**: 테스트는 공유 `poker.db`를 열지 않는다. `db.connection.get_connection()`을
+  인자 없이 부르는 모든 경로(`gto/loader.py`, `gto/advisor.py`, 세션 기록기 등)가 `EV_PLUS_DB`를
+  따르므로, 테스트 파일마다 모듈 임포트 시점에 `os.environ["EV_PLUS_DB"] = tempfile...`를
+  설정한다(`run_all.py`는 파일마다 별도 subprocess라 환경변수가 파일 간에 이어지지 않는다).
+  `test_poker_full.py`의 `run()` 헬퍼는 테스트 함수마다 새 임시 DB로 바꿔, 한 테스트가 시딩한
+  GTO 노드·미수집 큐 행·핸드 기록이 다음 테스트로 새지 않게 한다. GTO 로더 캐시는 프로세스
+  안에 남으므로 GTO 데이터를 쓰는 테스트는 `_seed_situation`(시딩 후 `loader.invalidate()`)이나
+  `_fresh_gto_db()`(새 DB + 캐시 비움)로 시작한다. 에퀴티 계산(`ai/equity.py`)은 DB를 전혀
+  열지 않는다 — 근거: [0026](../decisions/0026-stubbot-and-isolated-test-db.md) · 강제 장치:
+  각 파일 상단의 `EV_PLUS_DB` 설정, `tests/test_equity.py::test_no_db_writes`
+- **운영 poker.db 무결성 가드**: `tests/run_all.py`가 실행 전후 그 체크아웃의 `poker.db`
+  (`db.connection._DEFAULT_DB_PATH`)의 `(mtime, size)`를 비교해 값이 바뀌면(격리 누락으로 실제
+  DB에 썼다는 뜻) 전체를 실패로 처리한다 — 강제 장치: `tests/run_all.py` 자체 로직(exit code 1) ·
+  함수 단위 테스트: `tests/test_guards.py::test_run_all_db_snapshot_guard`
 - **시간 버짓**: `test_poker_full.py`는 총 실행 시간이 `TIME_BUDGET_SEC`(30초)를 넘으면
-  테스트를 실패시키지 않고 "⚠️ 시간 버짓 초과" 경고만 낸다(성능 회귀 조기 감지용,
-  StubBot 적용 후 정상 실행은 1초 미만) — 강제 장치: 경고만(실패로 격상하지 않음),
-  `tests/test_poker_full.py::TIME_BUDGET_SEC`
+  테스트를 실패시키지 않고 "⚠️ 시간 버짓 초과" 경고만 낸다(성능 회귀 조기 감지용) —
+  강제 장치: 경고만, `tests/test_poker_full.py::TIME_BUDGET_SEC`
 - **영역 번호 규약**: `test_poker_full.py`는 함수명을 `test_<영역>_<순번>_<설명>` 형식으로
   붙인다(예: `test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi`). 영역 번호는 핸드 평가(1)·
   베팅 라운드(2)·팟 분배(3)·게임 흐름(4)·웹 세션(5)·헤즈업/사이드팟/프리플랍 GTO 트리(6)·
   GTO 저장·조회 가드(7)·세션 경로 룰(8) 순으로 굳어져 있다. 영역 8은 게임 룰을
   core 헬퍼가 아니라 `WebGameSession` 공개 API(`submit_action`/`next_hand`/`get_state`의
-  `events`)로 검사한다 — 스택·딜러·봇 스크립트를 정한 새 핸드는 `_scripted_session()` 헬퍼로 만든다. **새 원칙 테스트는 해당 영역 번호 안에
-  다음 순번으로 추가**한다(예: 게임 흐름 원칙이면 4번대, GTO 조회 가드면 7번대). 새
-  영역이 필요하면 다음 정수를 새로 할당하고 이 문단을 갱신한다.
+  `events`)로 검사한다 — 스택·딜러·봇 스크립트를 정한 새 핸드는 `_scripted_session()` 헬퍼로
+  만든다. **새 원칙 테스트는 해당 영역 번호 안에 다음 순번으로 추가**하고 파일 끝 `ALL_TESTS`에
+  등록한다(등록하지 않으면 돌지 않는다). 새 영역이 필요하면 다음 정수를 새로 할당하고 이 문단을 갱신한다.
 
 ## 알려진 한계
 
@@ -75,4 +71,6 @@ exit code 1.
   코드 동작으로만 보장된다. 세션 퍼저 `test_8_12`는 테스트 쪽 참조 모델(`_RefTable`)로 행동
   순서·최소 레이즈·재오픈·금액·폴백·사람 화면 값·칩 보존·무빙 버튼을 대조하지만(규칙은
   `docs/spec/game.md` '세션 퍼저'), 이벤트 종류 순서·카드 공개는 보지 않는다.
-- `test_poker.py`는 `run_all.py`에 포함되지 않아 커밋 전 루틴 실행에서 빠질 수 있다.
+- `test_poker_full.py`·`test_gto_tree.py`·`test_workflow.py`는 테스트를 함수 목록(`ALL_TESTS`
+  또는 `__main__` 호출)으로 직접 돌린다 — 함수를 정의하고 목록에 넣지 않으면 조용히 빠진다.
+- 수집기의 브라우저 쪽(DOM 읽기·렌더 대기)과 `tools/gto_extract_and_save.js`에는 테스트가 없다.

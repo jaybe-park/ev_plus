@@ -1,5 +1,5 @@
 """
-④ 데이터 기반 프리플랍 트리 워커 — 핵심 로직 모듈.
+프리플랍 트리 수집 — 순수 로직 모듈.
 
 설계: docs/spec/gto-preflop.md "수집" 규칙, ADR 0011.
 - 가정 없이: GTO Wizard가 실제로 보여주는 액션/사이즈/빈도로만 가지를 뻗는다.
@@ -7,13 +7,11 @@
 - 저장 키: 실측 사이즈 그대로(verbatim). 깊이-캐노니컬 하드코딩 사용 안 함.
 - 우선순위: 도달 확률(경로상 액션 빈도 누적) 가중 best-first — 자주 나오는 라인부터.
 
-이 모듈은 브라우저 자동화(Playwright/Chrome MCP)와 독립적인 **순수 로직**만 담는다.
-실제 브라우저 조작(navigate/extract)은 별도 드라이버(Chrome MCP 대화형 또는 향후
-Playwright 스크립트)가 이 모듈의 함수를 호출해 사용한다.
+브라우저와 독립적인 순수 로직만 담는다. 브라우저 조작은 scripts/collect_gto_tree.py가 한다.
 """
 from typing import Optional
 
-EPSILON = 0.0005  # 0.05% — 레인지 합산 빈도 컷 (③ 실측: 노드당 논-올인 레이즈 1개)
+EPSILON = 0.0005  # 0.05% — 레인지 합산 빈도 컷
 
 COMBOS = {"pair": 6, "suited": 4, "offsuit": 12}
 
@@ -103,8 +101,7 @@ def expand_node(node: TreeNode, agg_freqs: dict) -> list:
 
 
 class FrontierQueue:
-    """도달확률 내림차순 best-first 우선순위 큐(간단한 리스트 기반 — 노드 수가
-    ③에서 실측된 규모라 힙이 굳이 필요 없음)."""
+    """도달확률 내림차순 best-first 우선순위 큐(노드 수가 적어 리스트로 충분)."""
 
     def __init__(self):
         self._items: list = []

@@ -335,90 +335,128 @@ def _seed_nodes(db_path: str, nodes: dict):
     conn.close()
 
 
-# [T-9] T-001 — 덮어써져 사라진 노드(visited인데 DB·failed에 없음)를 frontier로 되돌린다.
-# 기본 드라이런은 체크포인트를 바꾸지 않고, --apply만 바꾼다.
-def test_requeue_lost_nodes():
-    import requeue_lost_gto_nodes as rq
+# [T-9] audit — 3종 키 불일치, 자식 핸드 ⊆ 부모 지지 집합, visited 유실, frontier 유실
+def test_audit_checks():
+    import audit_gto_preflop as audit
+    from db.connection import get_connection, get_readonly_connection
+    from gto.loader import read_preflop_nodes, collected_by_seq
     db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    # 루트(UTG RFI): AA 레이즈 100%, 72o 폴드 100% → 콤보가중 raise=6/18, fold=12/18
+    # 루트(UTG RFI): AA 레이즈, 72o 폴드 → 콤보가중 raise=6/18, fold=12/18.
+    # R2.5-R8-F-F-F-F(UTG vs HJ 3bet)에 루트 레이즈 레인지 밖 72o가 있다(노드 5 재현).
     _seed_nodes(db_path, {
         "": (2.5, {"AA": {"raise": 1.0}, "72o": {"fold": 1.0}}),
-        "R2.5": (8.0, {"AA": {"raise": 1.0}, "KK": {"fold": 1.0}}),  # HJ: fold 6/12
-        "R2.5-C": (11.0, {"AA": {"raise": 1.0}}),   # 덮어쓴 쪽(남아 있음)
+        "R2.5": (8.0, {"AA": {"raise": 0.5, "fold": 0.5}, "KK": {"fold": 1.0}}),
+        "R2.5-R8-F-F-F-F": (20.0, {"AA": {"call": 1.0}, "72o": {"fold": 1.0}}),
+        "F-F-F-R2.5-F": (14.0, {"AA": {"raise": 1.0}}),
     })
-    ckpt = {
-        "visited": ["", "R2.5-C", "R2.5-F",            # R2.5-F: 덮어써져 사라짐
-                    "R2.5-F-F-F-F-F",                   # 결정 노드 아님(모두 폴드)
-                    "F-F-F-R2.5-F"],                    # failed에 있음 → 대상 아님
-        "failed": ["F-F-F-R2.5-F"],
-        "frontier": [{"tokens": ["F"], "reach": 0.5}],
-    }
-    fd, ckpt_path = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    try:
-        with open(ckpt_path, "w") as f:
-            json.dump(ckpt, f)
-        before = open(ckpt_path).read()
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            rq.main(["--checkpoint", ckpt_path, "--db", db_path])
-        check("드라이런은 체크포인트를 바꾸지 않음", open(ckpt_path).read() == before)
-        check("드라이런이 사라진 노드 1개(R2.5-F)를 보고", "'R2.5-F'" in out.getvalue()
-              and "1개" in out.getvalue(), out.getvalue()[-400:])
-
-        with contextlib.redirect_stdout(io.StringIO()):
-            rq.main(["--checkpoint", ckpt_path, "--db", db_path, "--apply"])
-        data = json.load(open(ckpt_path))
-        fr = {"-".join(f["tokens"]): f["reach"] for f in data["frontier"]}
-        check("--apply: R2.5-F가 visited에서 빠짐", "R2.5-F" not in data["visited"], str(data["visited"]))
-        check("--apply: R2.5-F가 frontier에 들어감", "R2.5-F" in fr, str(fr))
-        check("--apply: reach = 루트 raise(6/18) × HJ fold(6/12)",
-              abs(fr.get("R2.5-F", 0) - (6 / 18) * 0.5) < 1e-9, str(fr.get("R2.5-F")))
-        check("--apply: 결정 노드 아님·failed·DB 노드는 visited 유지",
-              {"R2.5-F-F-F-F-F", "F-F-F-R2.5-F", "", "R2.5-C"} <= set(data["visited"]),
-              str(data["visited"]))
-        check("--apply: 기존 frontier 보존", "F" in fr, str(fr))
-    finally:
-        os.unlink(ckpt_path)
-
-
-# [T-10] T-001 — audit: 3종 키 = derive_node_meta(action_seq), visited인데 DB·failed에 없음 = 0
-def test_audit_key_and_lost_checks():
-    import audit_gto_preflop as audit
-    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    _seed_nodes(db_path, {"F-F-F-R2.5-F": (14.0, {"AA": {"raise": 1.0}})})
-    from db.connection import get_connection
     conn = get_connection(db_path)
     # 라벨이 action_seq와 다른 행(옛 덮어쓰기 흔적 재현)
     conn.execute("INSERT INTO gto_preflop_situations (position, vs_position, range_type, "
                  "situation_label, action_seq, hero_position) "
                  "VALUES ('BB','BTN','vs_open','BB vs BTN open','R2.5-C-F-F-F','BB')")
     conn.commit()
-    rows = conn.execute("SELECT * FROM gto_preflop_situations").fetchall()
     conn.close()
-    mism = audit.key_mismatches(rows)
+    conn = get_readonly_connection(db_path)
+    nodes = read_preflop_nodes(conn)
+    conn.close()
+
+    mism = audit.key_mismatches(nodes)
     check("3종 키 불일치 1건(R2.5-C-F-F-F는 BB vs UTG)",
           [m[0] for m in mism] == ["R2.5-C-F-F-F"], str(mism))
+    outside = audit.range_outside_parent(nodes)
+    check("부모 레이즈 레인지 밖 핸드가 있는 자식 1건(R2.5-R8-F-F-F-F)",
+          [o[0] for o in outside] == ["R2.5-R8-F-F-F-F"] and "1개" in outside[0][1], str(outside))
+    check("hero_prev_action: UTG vs HJ 3bet → (루트, R2.5) / 첫 결정은 None",
+          audit.hero_prev_action("R2.5-R8-F-F-F-F") == ("", "R2.5")
+          and audit.hero_prev_action("R2.5") is None)
 
+    collected = collected_by_seq(nodes)
     fd, ckpt_path = tempfile.mkstemp(suffix=".json")
     os.close(fd)
     try:
+        # visited에 덮어써져 사라진 F-F-F-R2.5-C, frontier에서 R2.5-F(HJ fold 자식)가 빠짐
         with open(ckpt_path, "w") as f:
-            json.dump({"visited": ["F-F-F-R2.5-F", "F-F-F-R2.5-C", "R2.5-F-F-F-F-F"],
-                       "failed": [], "frontier": []}, f)
-        lost = audit.lost_visited(ckpt_path, {"F-F-F-R2.5-F", "R2.5-C-F-F-F"})
+            json.dump({"visited": sorted(collected) + ["F-F-F-R2.5-C", "R2.5-F-F-F-F-F"],
+                       "failed": [], "frontier": [{"tokens": ["F"], "reach": 0.6}]}, f)
+        lost = audit.lost_visited(ckpt_path, set(collected))
         check("visited인데 DB·failed에 없음 = [F-F-F-R2.5-C]", lost == ["F-F-F-R2.5-C"], str(lost))
+        lost_fr = [k for _, k in audit.lost_frontier(ckpt_path, collected)]
+        check("DB 재구성 frontier 유실 = R2.5-F 포함, 체크포인트 frontier의 F는 제외",
+              "R2.5-F" in lost_fr and "F" not in lost_fr, str(lost_fr))
         with contextlib.redirect_stdout(io.StringIO()):
             rc = audit.main(["--db", db_path, "--checkpoint", ckpt_path])
         check("audit이 불일치를 실패(1)로 보고", rc == 1, f"rc={rc}")
-        check("체크포인트 없으면 lost 검사는 None(생략)",
-              audit.lost_visited(ckpt_path + ".none", set()) is None)
+        check("체크포인트 없으면 체크포인트 검사는 None(생략)",
+              audit.lost_visited(ckpt_path + ".none", set()) is None
+              and audit.lost_frontier(ckpt_path + ".none", {}) is None)
     finally:
         os.unlink(ckpt_path)
 
 
-# [T-11] T-015/ADR 0011 — queue_frontier_additions: 미수집 큐 → 프론티어(조상부터, 2순위)
+# [T-10] --reseed-checkpoint: 브라우저 없이 DB에서 frontier 재시드, visited·failed 보존, .bak
+def test_reseed_checkpoint():
+    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    _seed_nodes(db_path, {
+        "": (2.5, {"AA": {"raise": 1.0}, "72o": {"fold": 1.0}}),
+        "R2.5": (8.0, {"AA": {"raise": 0.5, "fold": 0.5}, "KK": {"fold": 1.0}}),
+    })
+    old = {"visited": ["", "R2.5", "R2.5-F-F-F-F-F", "F-F-F-R2.5-C"],   # 마지막 = 사라진 노드
+           "failed": ["F-R9"], "frontier": [{"tokens": ["F"], "reach": 0.6},
+                                             {"tokens": ["R2.5", "C"], "reach": 1e-9}]}
+    fd, ckpt_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    prev_db = os.environ["EV_PLUS_DB"]
+    orig_connect = ct.connect_cdp
+    try:
+        with open(ckpt_path, "w") as f:
+            json.dump(old, f)
+        before = open(ckpt_path).read()
+        os.environ["EV_PLUS_DB"] = db_path
+
+        def no_browser(cdp_url):
+            raise AssertionError("재시드가 브라우저에 연결함")
+        ct.connect_cdp = no_browser
+
+        args = ct.build_parser().parse_args(["--reseed-checkpoint", "--dry-run",
+                                             "--checkpoint", ckpt_path])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = ct.run_reseed(args)
+        check("--dry-run: 체크포인트를 쓰지 않고 바뀔 내용만 출력",
+              rc == 0 and open(ckpt_path).read() == before and "R2.5-F" in out.getvalue(),
+              out.getvalue()[-300:])
+
+        args = ct.build_parser().parse_args(["--reseed-checkpoint", "--checkpoint", ckpt_path])
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = ct.run_reseed(args)
+        data = json.load(open(ckpt_path))
+        fr = {"-".join(f["tokens"]): f["reach"] for f in data["frontier"]}
+        check("재시드: .bak에 원본 보존", open(ckpt_path + ".bak").read() == before)
+        check("재시드: DB 트리의 미수집 자식(R2.5-F, R2.5-R8) frontier에 추가",
+              {"R2.5-F", "R2.5-R8"} <= set(fr), str(fr))
+        check("재시드: reach = 루트 raise(6/18) × HJ fold(콤보가중 9/12)",
+              abs(fr.get("R2.5-F", 0) - (6 / 18) * (9 / 12)) < 1e-9, str(fr.get("R2.5-F")))
+        check("재시드: 기존 frontier 보존(DB 밖 R2.5-C 유지, 같은 키 F는 큰 reach 12/18)",
+              fr.get("R2.5-C") == 1e-9 and abs(fr.get("F", 0) - 12 / 18) < 1e-9, str(fr))
+        check("재시드: visited 보존(사라진 노드만 빠짐), failed 그대로",
+              set(data["visited"]) == {"", "R2.5", "R2.5-F-F-F-F-F"}
+              and data["failed"] == ["F-R9"], str(data))
+        check("재시드: frontier는 reach 내림차순",
+              [f["reach"] for f in data["frontier"]] == sorted(fr.values(), reverse=True))
+    finally:
+        os.environ["EV_PLUS_DB"] = prev_db
+        ct.connect_cdp = orig_connect
+        for p in (ckpt_path, ckpt_path + ".bak"):
+            os.path.exists(p) and os.unlink(p)
+
+
+# [T-11] ADR 0011 — queue_frontier_additions: 미수집 큐 → 프론티어(조상부터, 2순위, 트리 밖 제외)
 def test_queue_frontier_additions_ancestor_first():
-    collected = {"": None, "R2.5": None}  # 루트·R2.5는 이미 수집됨(값은 안 씀)
+    # 루트(UTG RFI): 레이즈 2.5 + 폴드(림프 C 없음). R2.5(HJ): 폴드·콜·3벳 8 모두 있음.
+    collected = {
+        "": {"raise_size": 2.5, "hands": {"AA": {"raise": 1.0}, "72o": {"fold": 1.0}}},
+        "R2.5": {"raise_size": 8.0, "hands": {"AA": {"raise": 1.0}, "AKs": {"call": 1.0},
+                                              "72o": {"fold": 1.0}}},
+    }
 
     # 조상까지 다 수집됨 → 이 노드 자신을 낮은 우선순위로 추가
     out = ct.queue_frontier_additions(["R2.5-F"], collected)
@@ -441,6 +479,14 @@ def test_queue_frontier_additions_ancestor_first():
     # 같은 미수집 조상을 가리키는 큐 키 여럿 → 한 번만 추가(중복 제거)
     out = ct.queue_frontier_additions(["R2.5-C-R8", "R2.5-C-F"], collected)
     check("같은 조상 중복 제거", out == [(["R2.5", "C"], ct.QUEUE_FRONTIER_REACH)], str(out))
+
+    # 트리 밖(수집된 조상에서 다음 액션 빈도 ≤ ε): 루트 림프 C, 화면에 없는 사이즈 R2.9·R9
+    out = ct.queue_frontier_additions(["C", "C-F-R3", "R2.9-F", "R2.5-R9"], collected)
+    check("트리 밖 키(림프·없는 사이즈)는 스킵", out == [], str(out))
+    check("next_action_freq: 루트 레이즈 6/18, 콜 0, 사이즈 다른 레이즈 0",
+          abs(ct.next_action_freq(collected[""], "R2.5") - 6 / 18) < 1e-9
+          and ct.next_action_freq(collected[""], "C") == 0.0
+          and ct.next_action_freq(collected[""], "R3") == 0.0)
 
     # 빈 collected(루트조차 미수집) → 루트가 대상
     out = ct.queue_frontier_additions(["F-F"], {})
@@ -468,6 +514,38 @@ def test_load_missing_queue_from_db_filters_collected():
     check("collected=0인 큐 키만 반환", "F-F-F-F-C" in keys and "R2.5-C" not in keys, str(keys))
 
 
+# [T-13] 옛 enum 큐 행 정리 스크립트 — dry-run은 DB를 바꾸지 않고, --apply는 seq 행을 남긴다
+def test_prune_missing_spots():
+    import prune_missing_spots as pm
+    from db.connection import get_connection
+    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    conn = get_connection(db_path)
+    for pos, vs, rtype in (("BB", "BTN", "vs_open"), ("BTN", "", "open"), ("HJ", "C", "seq")):
+        conn.execute("INSERT INTO gto_missing_spots_preflop (street, position, vs_position, "
+                     "range_type, situation_label) VALUES ('preflop',?,?,?,?)",
+                     (pos, vs, rtype, f"{pos} {rtype}"))
+    conn.commit()
+    conn.close()
+
+    def rows():
+        c = get_connection(db_path)
+        out = sorted(r["range_type"] for r in c.execute("SELECT range_type FROM gto_missing_spots_preflop"))
+        c.close()
+        return out
+
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        rc = pm.main(["--dry-run", "--db", db_path])
+    check("dry-run: 대상 2행 보고, 삭제 안 함",
+          rc == 0 and "enum 행 2개" in out.getvalue() and rows() == ["open", "seq", "vs_open"],
+          out.getvalue()[-300:])
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = pm.main(["--db", db_path])
+    check("옵션 없으면 아무것도 안 함(rc=2)", rc == 2 and len(rows()) == 3)
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = pm.main(["--apply", "--db", db_path])
+    check("--apply: enum 행만 삭제, seq 행 유지", rc == 0 and rows() == ["seq"], str(rows()))
+
+
 ALL_TESTS = [
     ("T-1 compute_children 실측 사이즈 verbatim + action_to_token ValueError",
      test_compute_children_uses_measured_size),
@@ -478,14 +556,16 @@ ALL_TESTS = [
     ("T-6 _limit_hit/_parse_usage 카운터 우선", test_limit_hit_counter_authority),
     ("T-7 run() 한도/환경오류/저장실패 시 노드 유실 없음",
      test_run_requeues_node_on_limit_and_env_failure),
-    ("T-8 run() 저장이 계속 실패하면 N회 안에 안전 중단(T-012)",
+    ("T-8 run() 저장이 계속 실패하면 N회 안에 안전 중단",
      test_run_aborts_on_persistent_save_failure),
-    ("T-9 사라진 노드 frontier 복구(드라이런 기본, T-001)", test_requeue_lost_nodes),
-    ("T-10 audit 3종 키·visited 누락 검사(T-001)", test_audit_key_and_lost_checks),
-    ("T-11 queue_frontier_additions 조상부터·2순위(T-015)",
+    ("T-9 audit 3종 키·부모 지지 집합·visited·frontier 유실 검사", test_audit_checks),
+    ("T-10 --reseed-checkpoint 브라우저 없이 재시드·visited 보존·.bak", test_reseed_checkpoint),
+    ("T-11 queue_frontier_additions 조상부터·2순위·트리 밖 제외",
      test_queue_frontier_additions_ancestor_first),
-    ("T-12 load_missing_queue_from_db는 collected=0만(T-015)",
+    ("T-12 load_missing_queue_from_db는 collected=0만",
      test_load_missing_queue_from_db_filters_collected),
+    ("T-13 prune_missing_spots: dry-run은 읽기만, --apply는 enum 행만 삭제",
+     test_prune_missing_spots),
 ]
 
 if __name__ == "__main__":

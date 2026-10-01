@@ -154,14 +154,12 @@ CREATE INDEX IF NOT EXISTS idx_postflop_game_pos ON postflop_actions(game_uuid, 
 # v11: raise_size를 TEXT("3x" 플레이스홀더) → REAL(bb 단위 실측 raise-to 숫자,
 # 예: 8.0, 11.0, 13.5)로 변경. 사이징은 배수 공식으로 추론 불가 — GTO Wizard에서
 # 실측한 값만 저장한다 (ADR 0004 참고).
-# v12: 프리플랍 전체 트리 커버리지(②)를 위해 캐노니컬 시퀀스 키 컬럼 추가.
-#   - action_seq: 히어로 결정 직전까지의 액션 시퀀스를 캐노니컬 사이즈로 스냅한
-#     노드 키(예: "R2.5-R8-F-F-F-F", RFI UTG는 ""). 임의 노드(스퀴즈/멀티웨이/4벳+)를
-#     일반적으로 담기 위한 병렬 키. 기존 (position,vs_position,range_type) enum 키는
-#     레거시/파생으로 nullable 유지(제거하지 않음 — 봇/조회/테스트 하위 호환).
+# v12: 프리플랍 노드 키 컬럼 추가.
+#   - action_seq: 히어로 결정 직전까지의 액션 시퀀스(노드 키, 예 "R2.5-R8-F-F-F-F",
+#     RFI UTG는 ""). 스퀴즈·멀티웨이·4벳+ 노드도 담는다.
 #   - hero_position/num_active: 시퀀스에서 파생한 조회/디버깅용 컬럼.
-#   UNIQUE(action_seq)는 별도 부분 유니크 인덱스(idx_gto_pre_seq)로 강제(NULL 다수 허용).
-# v13 (T-001, ADR 0038): 노드의 유일 키는 action_seq 하나다. UNIQUE(position, vs_position,
+#   UNIQUE(action_seq)는 유니크 인덱스 idx_gto_pre_seq로 강제한다.
+# v13 (ADR 0044): 노드의 유일 키는 action_seq 하나다. UNIQUE(position, vs_position,
 #   range_type)를 제거하고(서로 다른 노드 — 예 R2.5-F와 R2.5-C — 가 같은 3종 키를 가질 수
 #   있음) action_seq를 NOT NULL로 바꾼다. 3종 키는 action_seq에서 유도한 조회용 라벨이다.
 #   SQLite는 제약 삭제 ALTER가 없어 테이블 재생성으로 옮긴다(rebuild_gto_preflop_situations_v13).
@@ -237,10 +235,8 @@ CREATE_GTO_PREFLOP_SEQ_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gto_pre_seq ON gto_preflop_situations(action_seq);
 """
 
-# v11: gto_missing_spots → gto_missing_spots_preflop 개명. 포스트플랍용 별도
-# gto_missing_spots_postflop이 필요해질 것을 대비해 미리 이름공간 분리.
-# (구 포스트플랍 텍스처 클래스 수집 계획은 폐기됨 — TODO.md "Epic: 포스트플랍
-# 전략" 참고. gto_postflop_situations/hands 테이블은 여전히 미사용 상태.)
+# v11: gto_missing_spots → gto_missing_spots_preflop 개명(포스트플랍 큐와 이름공간 분리).
+# 시퀀스 큐 행은 range_type='seq', 노드 키는 vs_position 칸(ADR 0035).
 CREATE_GTO_MISSING_SPOTS_PREFLOP = """
 CREATE TABLE IF NOT EXISTS gto_missing_spots_preflop (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -263,21 +259,18 @@ CREATE INDEX IF NOT EXISTS idx_gto_missing_preflop_collected ON gto_missing_spot
 
 # v4~v10의 에퀴티 캐시 스키마(equity_cache, worker_meta, equity_cache_stats와 대기 큐
 # 부분 인덱스들)는 ADR 0034로 폐기됐다. 새 DB는 이 테이블들을 만들지 않고, 코드도 읽거나
-# 쓰지 않는다. 기존 DB의 테이블은 DROP하지 않는다(운영 DB 직접 변경 금지 — 파일 정리는
-# scripts/slim_db.py, D-15). 아래 MIGRATIONS의 v7·v9·v10 스텝은 이력 보존용 no-op이다.
+# 쓰지 않는다. 기존 DB의 테이블은 DROP하지 않는다(운영 DB 직접 변경 금지, ADR 0033).
+# 아래 MIGRATIONS의 v7·v9·v10 스텝은 이력 보존용 no-op이다.
 
 def backfill_v12(conn):
     """v12 백필: 기존 gto_preflop_situations 행에 캐노니컬 노드 키(action_seq) +
     hero_position + num_active를 결정론적으로 채우고, vs_3bet vs_position 포맷을
     정규화한다. 데이터 손실 0(기존 컬럼은 그대로 두고 파생 컬럼만 UPDATE).
 
-    - 노드 키 생성은 gto.url_generator.situation_to_node_key를 **단일 소스**로 사용
-      (런타임 조회 키 gto.advisor.canonical_node_key와 동일한 캐노니컬 사이즈 테이블).
-    - vs_3bet 정규화: 우리 데이터 모델은 "오프너가 3벳에 대응"하는 레인지만 담으므로
+    - 노드 키는 gto.url_generator.situation_to_node_key(깊이-캐노니컬 사이즈)로 만든다.
+    - vs_3bet 정규화: 데이터 모델은 "오프너가 3벳에 대응"하는 레인지만 담으므로
       opener == hero(position)다. three_bettor만 저장된 행(예: BTN 행 vs_position="BB")을
-      'opener/three_bettor'(="BTN/BB")로 정규화 — 인계된 포맷 불일치(UTG 행="UTG/HJ"는
-      이미 정규형, BTN 행="BB"만 반쪽) 해소. 이로써 loader.get_vs_3bet_range의
-      'opener/three_bettor' 조회 키와도 일치하게 됨(기존 enum 경로 조회도 정상화).
+      'opener/three_bettor'(="BTN/BB")로 정규화해 loader.get_vs_3bet_range 조회 키와 맞춘다.
 
     connection._migrate가 이 함수를 콜러블 마이그레이션 스텝으로 호출한다(호출부에서
     최종 conn.commit 수행). 신규 DB(current==0)에서는 마이그레이션이 실행되지 않으므로
@@ -318,7 +311,7 @@ def rebuild_gto_preflop_situations_v13(conn):
     커밋). 복사 뒤 foreign_key_check로 고아 핸드가 없는지 확인한 다음 다시 켠다.
 
     action_seq가 NULL인 행이 있으면 노드 키를 알 수 없어 옮길 수 없다 — 추측으로 채우거나
-    조용히 버리지 않고 예외를 낸다(2026-09-26 운영 DB는 58행 모두 action_seq 있음).
+    조용히 버리지 않고 예외를 낸다.
     """
     conn.commit()
     nulls = conn.execute(
@@ -368,12 +361,9 @@ def rebuild_gto_preflop_situations_v13(conn):
 
 
 def relabel_limp_nodes_v14(conn):
-    """v14 (T-016, gto/node_key.py::derive_node_meta 림프 판정 추가): 림프 노드가
-    range_type='open'/situation_label "{H} RFI"로 잘못 저장된 기존 행을 재라벨링한다.
+    """v14 (ADR 0046): 림프 노드가 range_type='open'/situation_label "{H} RFI"로 저장된
+    행(예 action_seq="F-F-F-F-C"가 "BB RFI")을 'vs_limp'로 재라벨링한다.
 
-    옛 derive_node_meta는 레이즈가 0회면 콜(림프) 토큰이 있어도 무조건 'open'을
-    반환했다(예: action_seq="F-F-F-F-C"인 행이 range_type='open', situation_label=
-    "BB RFI"로 저장됨 — 데이터 모델 밖 상황을 잘못된 라벨로 저장한 버그, ADR 0006).
     range_type='open'으로 저장된 행만 대상으로 새 derive_node_meta를 재계산해
     'vs_limp'로 나오는 행만 옮긴다(그 밖의 행·라벨은 건드리지 않음 — 추측 재라벨 금지).
     action_seq가 없거나(NULL, v13 이후 없음) 재계산 결과가 없으면(결정 노드 아님) 스킵.
@@ -430,7 +420,7 @@ MIGRATIONS = {
         "ALTER TABLE gto_missing_spots RENAME TO gto_missing_spots_preflop;",
     ],
     12: [
-        # 프리플랍 전체 트리 커버리지 ②: 캐노니컬 시퀀스 키 컬럼 추가 + 백필.
+        # 노드 키 컬럼 추가 + 백필.
         # SQLite ADD COLUMN은 UNIQUE 제약을 인라인으로 못 붙이므로(문서 제약) 컬럼만
         # 추가하고, 유니크는 아래 부분 유니크 인덱스로 별도 강제한다.
         "ALTER TABLE gto_preflop_situations ADD COLUMN action_seq TEXT;",
@@ -442,11 +432,11 @@ MIGRATIONS = {
         CREATE_GTO_PREFLOP_SEQ_INDEX,
     ],
     13: [
-        # T-001/ADR 0038: 노드 유일 키 = action_seq. enum 3종 UNIQUE 제거(테이블 재생성).
+        # ADR 0044: 노드 유일 키 = action_seq. 3종 키 UNIQUE 제거(테이블 재생성).
         rebuild_gto_preflop_situations_v13,
     ],
     14: [
-        # T-016: 림프 노드가 'open'/"{H} RFI"로 저장된 기존 행을 'vs_limp'로 재라벨링.
+        # ADR 0046: 림프 노드가 'open'/"{H} RFI"로 저장된 기존 행을 'vs_limp'로 재라벨링.
         relabel_limp_nodes_v14,
     ],
 }

@@ -4,26 +4,13 @@
 # - 포트 8765 하나만 사용
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SSL_KEY="$SCRIPT_DIR/ssl/key.pem"
-SSL_CERT="$SCRIPT_DIR/ssl/cert.pem"
+source "$SCRIPT_DIR/scripts/server_env.sh"
 
 echo "♠ Texas Hold'em — 프로덕션 모드"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-PYTHON=$(command -v python3 || command -v python)
-if [ -z "$PYTHON" ]; then
-  echo "  오류: python3 또는 python을 찾을 수 없습니다."
-  exit 1
-fi
-
-if [ ! -f "$SSL_CERT" ] || [ ! -f "$SSL_KEY" ]; then
-  echo "  SSL 인증서가 없습니다. 생성 중..."
-  mkdir -p "$SCRIPT_DIR/ssl"
-  openssl req -x509 -newkey rsa:2048 \
-    -keyout "$SSL_KEY" -out "$SSL_CERT" \
-    -days 3650 -nodes -subj "/CN=localhost" 2>/dev/null
-  echo "  인증서 생성 완료."
-fi
+find_python
+ensure_ssl "$SCRIPT_DIR"
 
 # 1. 프론트 빌드
 echo "  [1/2] 프론트엔드 빌드 중..."

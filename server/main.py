@@ -164,7 +164,7 @@ def get_session_review(session_id: str):
 # ──────────────────────────────────────────
 
 class GtoPreflopSaveRequest(BaseModel):
-    # 노드 키(필수, ADR 0008/0009/0038): GTO Wizard URL의 preflop_actions 문자열 그대로
+    # 노드 키(필수, ADR 0008/0009/0044): GTO Wizard URL의 preflop_actions 문자열 그대로
     # (실측 사이즈, 예 "F-F-F-R2.5-F"). UTG RFI는 "". 저장 행은 이 값으로만 찾는다.
     action_seq: str
     hands: Dict[str, Dict[str, float]]    # {"AA": {"raise": 1.0}, ...}
@@ -174,11 +174,6 @@ class GtoPreflopSaveRequest(BaseModel):
     vs_position: Optional[str] = None      # None=RFI, "BTN"=vs_open, "BTN/BB"=vs_3bet(opener/three_bettor)
     range_type: Optional[str] = None       # open | vs_open | vs_3bet | vs_4bet ...
     situation_label: Optional[str] = None  # "BTN RFI" (없으면 유도 라벨)
-
-
-# 핸드별 fold+call+raise+allin 합 허용 범위(ADR 0002 — 수집기·로더와 같은 기준)
-_SAVE_FREQ_SUM_MIN = 0.9
-_SAVE_FREQ_SUM_MAX = 1.1
 
 
 @app.post("/gto/preflop/save")
@@ -191,6 +186,7 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
     from db.connection import get_connection
     from gto.url_generator import node_key_active_count
     from gto.node_key import derive_node_meta
+    from gto.loader import FREQ_SUM_MIN, FREQ_SUM_MAX, freq_sum_ok
 
     action_seq = req.action_seq.strip()
     meta = derive_node_meta(action_seq)
@@ -222,13 +218,13 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
         raise HTTPException(status_code=422, detail="핸드가 0개입니다 — 저장하지 않습니다.")
     bad = []
     for hand, freqs in req.hands.items():
-        total = sum(freqs.get(a, 0.0) for a in ("fold", "call", "raise", "allin"))
-        if not (_SAVE_FREQ_SUM_MIN <= total <= _SAVE_FREQ_SUM_MAX):
-            bad.append((hand, round(total, 3)))
+        if not freq_sum_ok(freqs):
+            bad.append((hand, round(sum(freqs.values()), 3)))
     if bad:
         raise HTTPException(
             status_code=422,
-            detail=f"빈도합이 [0.9, 1.1] 밖인 핸드 {len(bad)}개 — 저장하지 않습니다: {bad[:10]}",
+            detail=f"빈도합이 [{FREQ_SUM_MIN}, {FREQ_SUM_MAX}] 밖인 핸드 {len(bad)}개 "
+                   f"— 저장하지 않습니다: {bad[:10]}",
         )
 
     position = meta["hero_position"]
@@ -277,7 +273,7 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
             freqs.get("allin", 0.0),
         ))
 
-    # 미수집 큐(range_type='seq') 완료 처리(T-015, ADR 0011 "큐=2순위"): 같은 action_seq를
+    # 미수집 큐(range_type='seq') 완료 처리(ADR 0011 "큐=2순위"): 같은 action_seq를
     # 가리키던 큐 행이 있으면 collected=1로 갱신 — show_missing_spots.py가 더는 미수집으로
     # 보여주지 않는다. 큐에 없던 노드(직접 수집 등)는 매치되는 행이 없어 조용히 0행 갱신.
     cur.execute(
@@ -289,11 +285,8 @@ def save_gto_preflop(req: GtoPreflopSaveRequest):
     conn.commit()
     conn.close()
 
-    # 캐시 무효화 (enum + 시퀀스 키 캐시 모두)
-    import gto.loader as loader
-    loader._cache.clear()
-    loader._cache_by_seq.clear()
-    loader._loaded = False
+    from gto.loader import invalidate
+    invalidate()
 
     return {
         "ok": True, "situation": label,
@@ -306,7 +299,7 @@ def get_gto_preflop_range(action_seq: str):
     """노드 키(action_seq)로 프리플랍 레인지 반환 (전체 핸드 + 콤보가중 요약).
 
     GTO 패널은 게임 상태 `gto.node_key`(advisor 추천이 쓴 노드)를 그대로 넘긴다 — 힌트와
-    패널이 항상 같은 노드다(T-013). UTG RFI는 빈 문자열(`?action_seq=`).
+    패널이 항상 같은 노드다. UTG RFI는 빈 문자열(`?action_seq=`).
     """
     from gto.loader import get_range_by_seq
     data = get_range_by_seq(action_seq)
@@ -366,10 +359,3 @@ web_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if os.path.isdir(web_dist):
     app.mount("/", StaticFiles(directory=web_dist, html=True), name="static")
 
-
-if __name__ == "__main__":
-    import uvicorn
-    # 서버 코드 디렉터리만 감시 — tests/·scripts/·docs 수정으로 재시작돼 게임이 사라지지 않게(T-028, dev.sh와 동일)
-    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    uvicorn.run("server.main:app", host="0.0.0.0", port=8765, reload=True,
-                reload_dirs=[os.path.join(_root, d) for d in ("server", "core", "ai", "gto", "db")])

@@ -296,7 +296,3 @@ class GameRecorder:
         # pending 버퍼 비우기
         self._pending_preflop = []
         self._pending_postflop = []
-
-    def close(self):
-        """하위호환용 no-op. 커넥션을 더 이상 영속 보관하지 않는다."""
-        pass

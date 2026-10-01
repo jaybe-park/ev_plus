@@ -2,7 +2,7 @@
 PreToolUse(Bash) hook — 에이전트가 위험한 명령을 실행하기 전에 차단한다.
 
 규약: stdin JSON의 tool_input.command 검사 → 차단은 exit 2 + stderr 이유, 통과는 exit 0.
-차단 목록은 이 프로젝트의 규칙·사고 이력에서 채운다(docs/decisions/ 0002 참고).
+차단 목록은 이 프로젝트의 규칙·사고 이력에서 채운다(docs/decisions/ 0001·0033 참고).
 같은 종류 사고가 두 번 나면 여기에 추가한다.
 """
 
@@ -24,14 +24,14 @@ BLOCK = [
 ]
 
 # 동시 실행 금지 조합 — (실행하려는 스크립트, 이미 떠 있으면 안 되는 스크립트들, 이유)
-# 이유: 워커 2개는 중복 계산, 그라인드/워커+튜닝은 CPU·DB 경합
+# 그라인드·튜닝·GTO 수집은 서로(같은 것 2개 포함) 동시에 돌리지 않는다 — CPU/DB 경합,
+# 수집기는 체크포인트 파일도 하나뿐이다.
+_HEAVY = ["scripts/grind.py", "scripts/tune_bot.py", "scripts/collect_gto_tree.py"]
 EXCLUSIVE = [
-    ("scripts/equity_worker.py", ["scripts/equity_worker.py", "scripts/grind.py"],
-     "에퀴티 워커는 한 번에 하나만(그라인드도 워커를 띄운다) — 중복 계산"),
-    ("scripts/grind.py", ["scripts/grind.py", "scripts/equity_worker.py", "scripts/tune_bot.py"],
-     "그라인드는 워커·튜닝과 동시 실행 금지 — CPU/DB 경합"),
-    ("scripts/tune_bot.py", ["scripts/grind.py", "scripts/tune_bot.py"],
-     "튜닝은 그라인드·다른 튜닝과 동시 실행 금지 — CPU/DB 경합"),
+    ("scripts/grind.py", _HEAVY, "그라인드는 튜닝·수집·다른 그라인드와 동시 실행 금지 — CPU/DB 경합"),
+    ("scripts/tune_bot.py", _HEAVY, "튜닝은 그라인드·수집·다른 튜닝과 동시 실행 금지 — CPU/DB 경합"),
+    ("scripts/collect_gto_tree.py", _HEAVY,
+     "GTO 수집은 그라인드·튜닝·다른 수집과 동시 실행 금지 — DB 경합·체크포인트 하나"),
 ]
 # 이 옵션이 붙으면 조회 전용이라 동시 실행 검사 대상이 아니다
 READ_ONLY_FLAGS = ("--status", "--help", "-h")
