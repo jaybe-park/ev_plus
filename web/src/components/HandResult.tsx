@@ -23,6 +23,7 @@ export default function HandResult({ state, onNextHand, onNewGame, loading, auto
   const active = autoNext && !state.game_over;
   useEffect(() => {
     if (!active) return;
+    setRemaining(AUTO_NEXT_MS);  // 재활성화 시 이전 남은 시간 잔상 방지
     const c = createCountdown(AUTO_NEXT_MS, setRemaining, () => onNextRef.current());
     countdown.current = c;
     return () => { c.stop(); countdown.current = null; };
