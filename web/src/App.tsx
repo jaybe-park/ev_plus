@@ -8,8 +8,7 @@ import PokerTable from "./components/PokerTable";
 import ActionBar from "./components/ActionBar";
 import ActionLog from "./components/ActionLog";
 import HandResult from "./components/HandResult";
-import GtoPanel from "./components/GtoPanel";
-import EquityPanel from "./components/EquityPanel";
+import HintPanel from "./components/HintPanel";
 import { gtoFetchState, type GtoFetchResult } from "./components/gtoPanelLogic";
 import { sessionSummaryText, shouldFetchReview } from "./reviewLogic";
 import {
@@ -203,7 +202,7 @@ export default function App() {
   const actionDisabled = isReplaying || loading || sessionExpired;
 
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col lg:flex-row">
+    <div className="min-h-screen lg:h-screen lg:overflow-hidden bg-gray-950 flex flex-col lg:flex-row">
       {/* 메인 게임 영역 */}
       <div className="flex-1 flex flex-col min-h-0">
         {/* 헤더 */}
@@ -245,8 +244,8 @@ export default function App() {
         </div>
 
         {/* 테이블 */}
-        <div className="flex-1 flex items-center justify-center p-4 relative">
-          <div className="w-full max-w-3xl relative">
+        <div className="flex-1 min-h-0 flex justify-center p-4 relative lg:overflow-y-auto">
+          <div className="w-full max-w-3xl relative my-auto">
             <PokerTable
               state={shown}
               activePlayer={activePlayer}
@@ -308,7 +307,7 @@ export default function App() {
       </div>
 
       {/* 사이드패널 — 로그 / 힌트 탭 */}
-      <div className="lg:w-72 shrink-0 flex flex-col border-t lg:border-t-0 lg:border-l border-gray-800">
+      <div className="lg:w-72 shrink-0 min-h-0 flex flex-col border-t lg:border-t-0 lg:border-l border-gray-800">
         {/* 탭 헤더 */}
         <div className="flex border-b border-gray-700 shrink-0">
           {(["log", "hint"] as const).map(t => (
@@ -331,24 +330,21 @@ export default function App() {
           ))}
         </div>
         {/* 탭 컨텐츠 */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-hidden">
           {rightTab === "log" ? (
             <div className="p-3 h-full">
               <ActionLog log={shown.action_log} />
             </div>
           ) : hintEnabled ? (
+            // ① 상황 ② GTO 빈도 ③ 내 패 ④ 에퀴티 — 넘치면 패널 안에서만 스크롤
             <div className="h-full overflow-y-auto">
-              {/* 에퀴티 */}
-              <div className="border-b border-gray-800">
-                <div className="px-3 pt-2 text-xs font-medium text-gray-400">📈 에퀴티</div>
-                <EquityPanel
-                  equity={panel.equity}
-                  callAmount={panel.call_amount}
-                  isMyTurn={state.waiting_for_action && !isReplaying}
-                />
-              </div>
-              {/* GTO */}
-              <GtoPanel gto={panel.gto} fetch={gtoFetch} />
+              <HintPanel
+                gto={panel.gto}
+                fetch={gtoFetch}
+                equity={panel.equity}
+                callAmount={panel.call_amount}
+                isMyTurn={state.waiting_for_action && !isReplaying}
+              />
             </div>
           ) : (
             <div className="flex items-center justify-center h-32 text-gray-600 text-sm text-center px-4">

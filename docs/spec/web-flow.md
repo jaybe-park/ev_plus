@@ -147,8 +147,22 @@
   "[object Object]"가 뜬다 — `web/src/api.ts::formatApiError`가 `loc`/`msg`를 사람이 읽는
   한 줄 문장으로 평탄화한다 — 강제 장치: `web/src/__tests__/api.test.ts`
 - `GtoRange.raise_size`는 `number | null`이다(서버 `raise_size: Optional[float]`,
-  bb 단위 실측값). 패널은 값이 있을 때만 "(N bb)"로 표시 — 원본: `web/src/types.ts`,
-  `web/src/components/GtoPanel.tsx`
+  bb 단위 실측값). 힌트 패널 상황 라벨은 값이 있을 때만 "(Nbb)"를 붙인다 — 원본: `web/src/types.ts`,
+  `web/src/components/hintPanelLogic.ts::situationText`
+- 힌트 패널(사이드 "💡 힌트" 탭)은 위에서부터 ① 상황 라벨(예 "HJ vs UTG open (7.5bb)", 근사면
+  "(근사)") ② GTO 빈도(노드 전체 레인지 `summary` 막대, 올인·레이즈·콜·폴드 순, 0.1% 미만 제외)
+  ③ 내 패 액션 %(advisor 추천 `frequencies` = 그리드에서 내 패 칸의 값, 예 "레이즈 65.0% · 콜 35.0%",
+  없으면 레인지의 그 핸드) ④ 에퀴티(큰 숫자·게이지·팟오즈·콜 EV) 순서로만 보인다. 그 밖의 것은
+  접힌 "자세히"로 뒤에 둔다 — "에퀴티 자세히"(상대별 1:1·스트리트 추이·출처), "GTO 자세히"(레이즈 비교 한
+  줄·13×13 레인지 그리드, 데이터 없음이면 GTO Wizard 수집 링크). GTO 데이터 없음은 ① "포지션 — GTO 데이터
+  없음" + ④, 포스트플랍·사람 차례 아님은 ④만, 레인지 로딩·조회 실패는 ②③ 자리에 안내 한 줄. 없는 액션을
+  폴드로 채우지 않는다(ADR 0002) — 원본: `web/src/components/hintPanelLogic.ts::hintLayout`,
+  `web/src/components/HintPanel.tsx` · 강제 장치: `web/src/components/__tests__/hintPanelLogic.test.ts`
+  (순서·문자열. 렌더링 테스트 없음)
+- 화면 높이: 넓은 화면(`lg`, 1024px 이상)에서 페이지 전체가 뷰포트 높이(`lg:h-screen`)에 고정되고 페이지
+  스크롤이 없다. 액션 바는 메인 열 아래 `shrink-0`이라 항상 보이고, 사이드 패널(로그·힌트)과 테이블 영역은
+  넘치면 각자 안에서 스크롤한다 — vs_3bet처럼 액션 갈래가 많은 노드에서도 1080px 높이 화면에서 액션 버튼이
+  밀려나지 않는다 — 원본: `web/src/App.tsx` · 강제 장치: 장치 없음(레이아웃 렌더링 테스트 없음)
 
 ## 화면·경로·데이터
 
@@ -159,6 +173,7 @@
 | `server/schemas.py` | 응답/이벤트 Pydantic 모델 |
 | `web/src/hooks/useEventQueue.ts` | 이벤트 큐 재생 타이머·하이라이트 연출 |
 | `web/src/hooks/eventQueueLogic.ts` | 재생 표시 상태 리듀서·투영, 패널 상태, 타이밍, 배지/레이블(순수 함수, vitest 대상) |
+| `web/src/components/HintPanel.tsx` · `hintPanelLogic.ts` | 힌트 탭 구성(① 상황 ② GTO 빈도 ③ 내 패 ④ 에퀴티 + 접힌 자세히), 순서·문자열은 순수 함수 |
 | `web/src/api.ts` | fetch 래퍼 + 422 detail 배열 평탄화(`formatApiError`) + 상태 코드 실은 `ApiError` |
 | `web/src/sessionStore.ts` | 세션 번호 `sessionStorage` 보관(새로고침 후 이어하기)·404 만료 판정 |
 | `db/recorder.py` | 핸드/액션 RL 기록(세션과 별개 관심사, 실패해도 게임 진행에 영향 없음) |
