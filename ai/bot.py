@@ -1,10 +1,10 @@
 import random
 from enum import Enum
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict
 
 from core.game import Action
 from core.player import Player
-from core.card import Card
+from core.card import Card, Suit
 from core.pot_odds import effective_call_pot, pot_odds as calc_pot_odds
 from gto.advisor import GTOAdvisor
 from gto.loader import get_raise_range, get_call_range
@@ -114,8 +114,49 @@ def opponent_range_info(state: dict, opponents: list) -> list:
         elif name in caller_names and opener_pos:
             weights = get_call_range(pos, opener_pos)
             role = "caller"
+        if not weights:
+            # 레인지 데이터가 없으면 랜덤 핸드로 본다 — 화면(EquityPanel)이 role을 그대로 보이므로
+            # "caller"/"raiser"로 남기면 레인지를 반영한 것처럼 보인다.
+            role = "unknown"
         result.append((RangeSampler(weights) if weights else None, role))
     return result
+
+
+def has_draw(hole: List[Card], board: List[Card]) -> bool:
+    """
+    아웃 기반 드로우 판정(순수 함수). 플러시 드로우 = 홀+보드에 같은 수트 4장,
+    스트레이트 드로우(OESD·거트샷) = 랭크 비트마스크에 없는 랭크 하나를 더하면 5연속이 생김.
+    백도어(두 장이 더 필요)는 드로우가 아니다. 리버 제외·메이드 핸드(페어 이상) 제외는
+    호출자가 한다(이미 완성된 핸드는 드로우를 따질 필요가 없다).
+    """
+    all_cards = list(hole) + list(board)
+    if len(all_cards) < 5:
+        return False
+
+    suit_counts: Dict[Suit, int] = {}
+    for card in all_cards:
+        suit_counts[card.suit] = suit_counts.get(card.suit, 0) + 1
+    if any(n == 4 for n in suit_counts.values()):
+        return True
+
+    # 랭크 비트마스크: bit r (2~14), 에이스는 로우(bit 1)로도 센다
+    mask = 0
+    for card in all_cards:
+        v = card.rank.rank_value
+        mask |= 1 << v
+        if v == 14:
+            mask |= 1 << 1
+    straight_windows = [0b11111 << lo for lo in range(1, 11)]  # A-5 ~ T-A
+    if any(mask & w == w for w in straight_windows):
+        return False  # 이미 스트레이트(메이드) — 호출자가 걸러내지만 드로우로는 보지 않는다
+    for v in range(2, 15):
+        if mask & (1 << v):
+            continue
+        extra = (1 << v) | ((1 << 1) if v == 14 else 0)
+        m2 = mask | extra
+        if any(m2 & w == w for w in straight_windows):
+            return True
+    return False
 
 
 def estimate_opponent_ranges(state: dict, opponents: list) -> Optional[list]:
@@ -199,6 +240,15 @@ class PokerBot:
         return prof
 
     def decide_action(self, game_state: dict) -> Tuple[Action, int]:
+        action, amount = self._decide(game_state)
+        # 오픈 폴드 금지: 콜할 금액이 없으면 폴드 대신 체크한다(공짜 카드를 버리지 않는다).
+        if action == Action.FOLD:
+            call_amount = max(0, game_state.get("current_bet", 0) - self.player.current_bet)
+            if call_amount == 0:
+                return Action.CHECK, 0
+        return action, amount
+
+    def _decide(self, game_state: dict) -> Tuple[Action, int]:
         if game_state.get("street") == "프리플랍":
             self.last_equity = None
             gto_result = self._try_gto_action(game_state)
@@ -249,7 +299,7 @@ class PokerBot:
             return self._preflop_raise(game_state, raise_count, raise_size)
 
         elif action_str == "allin":
-            # T-014: 샘플된 GTO 액션이 allin이면 그대로 실행한다(레이즈로 뭉개거나
+            # 샘플된 GTO 액션이 allin이면 그대로 실행한다(레이즈로 뭉개거나
             # 휴리스틱으로 떨어지지 않음 — ADR 0002 "화면 그대로만" 원칙).
             return Action.ALL_IN, 0
 
@@ -349,7 +399,7 @@ class PokerBot:
             if p["name"] != self.player.name and not p["is_folded"]
         ]
         n_opps = max(1, len(opponents))
-        # 숏스택 캡: 팟오즈는 유효 콜·유효 팟 기준 (T-033)
+        # 숏스택 캡: 팟오즈는 유효 콜·유효 팟 기준
         call_amount, pot = self._effective_call_pot(state)
         street = state["street"]  # "플랍" | "턴" | "리버"
 
@@ -366,8 +416,9 @@ class PokerBot:
             equity = smart_equity(hole, community, n_opps, prof["sims"])
         self.last_equity = round(equity, 4)
         made = made_hand_rank(hole, community)
-        # 드로우: 지금은 하이카드지만 equity가 살아있는 핸드 (리버 제외)
-        is_draw = street != "리버" and made <= 1 and equity >= 0.30
+        # 드로우: 아직 하이카드인데 아웃이 있는 핸드(플러시 드로우·OESD·거트샷, 리버 제외).
+        # 에퀴티 기준(≥0.30)은 오버카드만 든 핸드를 전부 드로우로 봐서 폐기했다(ADR 0049).
+        is_draw = street != "리버" and made <= 1 and has_draw(hole, community)
         pos = self._position_score(state)   # 0.0(첫 액션) ~ 1.0(마지막 액션)
         wet = board_wetness(community)
 
@@ -419,7 +470,7 @@ class PokerBot:
         margin = prof["call_margin"]
         # 어그레션 마진: 상대가 벳했다 = 랜덤보다 강한 레인지.
         # 벳이 클수록 equity(vs 랜덤)의 과대평가가 심해지므로 기준 상향.
-        # (벳 크기 신호는 캡하지 않은 원래 금액 기준 — 레이즈를 받아도 실제 레이즈 크기, T-034)
+        # (벳 크기 신호는 캡하지 않은 원래 금액 기준 — 레이즈를 받아도 실제 레이즈 크기)
         bet_ratio = facing_bet_ratio(
             state["pot"], state["current_bet"],
             [p.get("current_bet", 0) for p in state.get("players", [])],

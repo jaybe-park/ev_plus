@@ -25,7 +25,7 @@ from ai.equity import (
     calculate_equity, exact_counts_river, exact_counts_turn,
     smart_equity, equity_detail, made_hand_rank,
 )
-from ai.bot import PokerBot, BotDifficulty, board_wetness
+from ai.bot import PokerBot, BotDifficulty, board_wetness, has_draw, opponent_range_info
 
 _RANK = {r.symbol: r for r in Rank}
 _RANK["T"] = Rank.TEN  # 10 별칭
@@ -680,6 +680,70 @@ def test_made_hand_rank():
     check("투페어 = 3", r == 3, f"={r}")
 
 
+def test_has_draw():
+    print("\n[E-7b] 봇 드로우 판정은 아웃 기반 (플러시 드로우 / OESD / 거트샷, ADR 0049)")
+    # 오버카드만: 옛 기준(equity ≥ 0.30)은 드로우로 봤다 — AK on Q72r eq ≈ 0.555
+    check("AK on Q72r 드로우 아님", not has_draw(cards("Ah", "Kd"), cards("Qs", "7c", "2h")))
+    check("KQ on J72r 드로우 아님", not has_draw(cards("Kh", "Qd"), cards("Js", "7c", "2h")))
+    check("98s on 762 OESD", has_draw(cards("9h", "8h"), cards("7s", "6c", "2d")))
+    check("A5 on K43 거트샷(2)", has_draw(cards("Ah", "5d"), cards("Ks", "4c", "3h")))
+    check("A5s on K93 드로우 아님(백도어뿐)", not has_draw(cards("Ah", "5h"), cards("Ks", "9c", "3d")))
+    check("JT on Q93 거트샷(K)", has_draw(cards("Jh", "Td"), cards("Qs", "9c", "3h")))
+    check("A5s on Kh9h2s 플러시 드로우", has_draw(cards("Ah", "5h"), cards("Kh", "9h", "2s")))
+    check("플랍 3장 같은 수트 = 백도어, 드로우 아님", not has_draw(cards("Ah", "5h"), cards("Kh", "9c", "2s")))
+    check("턴 플러시 드로우(홀 1장 + 보드 3장)", has_draw(cards("Ah", "5d"), cards("Kh", "9h", "2h", "3c")))
+    check("보드만 4연속(홀 무관) 거트샷 포함", has_draw(cards("Ah", "2d"), cards("9s", "8c", "7h", "6d")))
+    check("완성 스트레이트는 드로우 아님(메이드)", not has_draw(cards("Th", "9d"), cards("8s", "7c", "6h")))
+    check("휠 거트샷 A-2-3-5 → 4", has_draw(cards("Ah", "2d"), cards("3s", "5c", "9h")))
+    check("브로드웨이 OESD JQ on KT2", has_draw(cards("Jh", "Qd"), cards("Ks", "Tc", "2h")))
+    # 봇 판단에서 쓰이는 방식: 메이드 핸드(페어 이상)·리버는 호출자가 제외
+    # KQ on J72r(eq ≈ 0.485): medium은 밸류(≥0.55)도 순수 블러프(<0.30)도 아니라 체크만 나와야 한다.
+    # 옛 기준(equity ≥ 0.30 = 드로우)이면 BTN 세미블러프 40%가 섞였다.
+    random.seed(3)
+    bot = _make_bot(["Kh", "Qd"], BotDifficulty.MEDIUM)
+    st = _bot_state("플랍", ["Js", "7c", "2h"], 100, 0)
+    bets = sum(bot.decide_action(st)[0] in (Action.RAISE, Action.ALL_IN) for _ in range(30))
+    check("KQ 오버카드 플랍 30회 벳 0 (세미블러프 경로 없음)", bets == 0, f"bets={bets}/30")
+
+
+def test_bot_no_open_fold():
+    print("\n[E-6b] 봇은 콜할 금액이 0이면 폴드하지 않는다(오픈 폴드 금지)")
+    bot = _make_bot(["7c", "2d"], BotDifficulty.MEDIUM)
+    # 내부 판단이 FOLD를 내더라도 decide_action은 체크로 바꾼다
+    bot._postflop_decision = lambda state: (Action.FOLD, 0)
+    st = _bot_state("플랍", ["As", "Kh", "Qd"], 100, 0)
+    check("벳 없는 플랍 FOLD → CHECK", bot.decide_action(st) == (Action.CHECK, 0), f"={bot.decide_action(st)}")
+    st_pre = _bot_state("프리플랍", [], 30, 20)
+    bot.player.current_bet = 20  # BB, 림프 팟 → 콜 금액 0
+    bot._try_gto_action = lambda state: (Action.FOLD, 0)
+    check("프리플랍 BB 옵션 FOLD → CHECK", bot.decide_action(st_pre) == (Action.CHECK, 0))
+    # 콜 금액이 있으면 폴드는 그대로
+    bot.player.current_bet = 0
+    bot._postflop_decision = lambda state: (Action.FOLD, 0)
+    st2 = _bot_state("플랍", ["As", "Kh", "Qd"], 100, 50)
+    check("콜 금액 50이면 FOLD 유지", bot.decide_action(st2) == (Action.FOLD, 0))
+
+
+def test_role_unknown_without_range():
+    print("\n[E-6c] 상대 레인지 데이터가 없으면 role = unknown")
+    import gto.loader as gto_loader
+    # 이 테스트의 DB(EV_PLUS_DB 임시)에는 GTO 데이터가 없다 → 레인지 조회가 None
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+    try:
+        state = {
+            "positions": {"Bot": "BB", "V1": "UTG", "V2": "CO"},
+            "action_log": ["[UTG] V1: 레이즈 → 50", "[CO] V2: 콜 (50)", "[BB] Bot: 콜 (30)", "── 플랍 ──"],
+        }
+        info = opponent_range_info(state, [{"name": "V1", "is_folded": False}, {"name": "V2", "is_folded": False}])
+        check("레인지 없음 → sampler None", all(s is None for s, _ in info), f"={info}")
+        check("레이저도 콜러도 role unknown", [r for _, r in info] == ["unknown", "unknown"], f"={[r for _, r in info]}")
+        check("sampler 없는 상대는 항상 unknown", all(r == "unknown" for s, r in info if s is None))
+    finally:
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+
+
 def test_grader():
     print("\n[E-11] 플레이 평가 (Play Grader) 판정 규칙")
     from gto.grader import (
@@ -845,6 +909,9 @@ if __name__ == "__main__":
     test_headsup_range_uses_sb()
     test_fast_evaluator()
     test_made_hand_rank()
+    test_has_draw()
+    test_bot_no_open_fold()
+    test_role_unknown_without_range()
     test_grader()
     test_board_rank_table()
     test_gto_allin_action_and_hint()

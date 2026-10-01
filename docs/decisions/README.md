@@ -39,7 +39,7 @@
 | [0036](0036-moving-button.md) | 파산으로 좌석이 빠질 때는 무빙 버튼 | 유효 | game |
 | [0037](0037-allin-only-snaps-to-allin-sibling.md) | 라이브 올인은 올인 형제에만 스냅한다(레이즈 형제와 구분) | 유효 | gto-preflop |
 | [0038](0038-action-validation-and-real-amounts.md) | 액션 판정은 core 한 곳 — 사람 불법 액션은 거절, 봇은 안전 폴백, 금액은 실제 칩 이동 | 유효 (재오픈 판정 기준은 [0048](0048-cumulative-short-allins-reopen.md)에서 보완) | game |
-| [0039](0039-grader-uncertainty-band.md) | Play Grader 콜·폴드 판정에 추정 오차 기반 "경계" 구간 | 유효 | bot |
+| [0039](0039-grader-uncertainty-band.md) | Play Grader 콜·폴드 판정에 추정 오차 기반 "경계" 구간 | 일부 대체됨 → 0049 (경계폭 2σ만·폴드 마진 유지. 경계 구간 자체는 유효) | bot |
 | [0040](0040-no-arena-gate-audit-checks.md) | GTO 수집 뒤 아레나 게이트는 되살리지 않고 audit 무결성 검사로 대신한다 | 유효 | gto-preflop |
 | [0041](0041-bot-adoption-criterion.md) | 봇 개선 채택 기준 — 아레나 차이가 표준오차의 2배 이상 | 유효 | bot |
 | [0042](0042-drop-grader-stage2.md) | Play Grader 2단계(GTO Wizard EV값 수집) 폐기 | 유효 | bot |
@@ -49,3 +49,4 @@
 | [0046](0046-limp-nodes-are-vs-limp-not-open.md) | 림프 노드는 range_type='vs_limp'로 저장한다(open/RFI 아님) | 유효 | gto-preflop |
 | [0047](0047-rules-live-in-core.md) | 포커 룰은 core 한 곳에 — 웹 세션·CLI는 호출만, 세션 경로는 참조 모델 퍼저로 지킨다 | 유효 | game |
 | [0048](0048-cumulative-short-allins-reopen.md) | 불완전 올인 여러 개의 합이 풀 레이즈면 재오픈한다 (TDA Rule 47) | 유효 | game |
+| [0049](0049-grader-vs-range-symmetric-band.md) | 복기 콜·폴드 판정은 vs_range 입력·대칭 경계(max(2σ, 1%p)) | 유효 | bot |

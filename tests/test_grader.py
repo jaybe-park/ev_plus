@@ -21,7 +21,7 @@ os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=Fals
 from core.card import Card, Suit, Rank
 from gto.grader import (
     grade_preflop_action, grade_postflop_call, grade_postflop_fold,
-    grade_postflop_bet_or_raise,
+    grade_postflop_bet_or_raise, band_width, RANGE_UNKNOWN_NOTE,
 )
 
 _RANK = {r.symbol: r for r in Rank}
@@ -95,7 +95,7 @@ def test_postflop_call_grading():
 
 
 def test_short_stack_effective_call():
-    print("\n[G-6] 숏스택 유효 콜·유효 팟 (T-033)")
+    print("\n[G-6] 숏스택 유효 콜·유효 팟")
     from core.pot_odds import effective_call_pot, pot_odds, call_ev
 
     # 리뷰 예시: 팟 100, 상대 1,000 올인, 내 스택 100, 에퀴티 40%
@@ -169,7 +169,7 @@ def test_short_stack_effective_call():
 
 
 def test_borderline_band():
-    print("\n[G-7] 콜·폴드 경계 구간 — |에퀴티−팟오즈| < 2×표준오차 = ⬜ (ADR 0039, T-033)")
+    print("\n[G-7] 콜·폴드 경계 구간 — |에퀴티−팟오즈| < 2×표준오차 = ⬜, 최소 1%p (ADR 0039·0049)")
     from ai.equity import equity_detail, exact_counts_turn, standard_error, EquityResult
 
     # 표준오차: 전수·상수 테이블은 0, MC는 sqrt(p(1-p)/n)
@@ -188,11 +188,18 @@ def test_borderline_band():
     check("오차 밖 −EV 콜 = 🔴", r.grade == "🔴" and "오차 ±2.0%p" in r.reason, f"={r.grade} {r.reason}")
     r = grade_postflop_fold(0.45, 200, 100, 20, se=0.01)
     check("오차 밖 높은 에퀴티 폴드 = 🔴", r.grade == "🔴", f"={r.grade}")
+    # 전수(se=0)도 최소 경계 1%p가 있다(ADR 0049): 0.3%p 부족 콜·0.7%p 이득 콜 모두 ⬜
     r = grade_postflop_call(0.33, 200, 100, 20, se=0.0)
-    check("전수(se=0)는 경계 없음: 0.3%p 부족 콜도 🔴", r.grade == "🔴" and "오차 0(전수)" in r.reason,
-          f"={r.grade} {r.reason}")
+    check("전수 0.3%p 부족 콜 = ⬜ 경계(최소 1%p)", r.grade == "⬜" and "표본 오차 0(전수)" in r.reason
+          and "경계 ±1.0%p" in r.reason, f"={r.grade} {r.reason}")
     r = grade_postflop_call(0.34, 200, 100, 20)
-    check("전수 0.7%p 이득 콜 = ✅", r.grade == "✅" and "에퀴티 34.0%" in r.reason, f"={r.reason}")
+    check("전수 0.7%p 이득 콜 = ⬜ 경계", r.grade == "⬜" and "에퀴티 34.0%" in r.reason, f"={r.reason}")
+    r = grade_postflop_call(0.31, 200, 100, 20)
+    check("전수 2.3%p 부족 콜 = 🔴", r.grade == "🔴", f"={r.grade}")
+    r = grade_postflop_fold(0.36, 200, 100, 20)
+    check("전수 2.7%p 이득을 버린 폴드 = 🔴", r.grade == "🔴", f"={r.grade}")
+    check("경계폭 = max(2σ, 1%p)", band_width(0.0) == 0.01 and abs(band_width(0.004) - 0.01) < 1e-12
+          and abs(band_width(0.01) - 0.02) < 1e-12)
 
     # 실제 MC 경로 반복: 턴 1:1(적응형 MC) 손익분기 스팟. 고치기 전엔 🔴/✅가 반반.
     hole, board = cards("Ah", "Td"), cards("Ks", "9d", "5c", "3h")
@@ -246,8 +253,8 @@ def test_borderline_band():
         s._equity_cache = {}
         s.hand_reviews = []
         info = s._get_equity_info()
-        check("세션 에퀴티 경로 = MC(오차 있음)", info["source"].startswith("mc:") and info["vs_random_se"] > 0,
-              f"={info['source']} {info.get('vs_random_se')}")
+        check("세션 에퀴티 경로 = MC(오차 있음)", info["source"].startswith("mc:") and info["vs_range_se"] > 0,
+              f"={info['source']} {info.get('vs_range_se')}")
         s._grade_human_action(s.human, Action.CALL, 0, Street.TURN, call)
         rv = s.hand_reviews[-1] if s.hand_reviews else {}
         check("세션 복기: 손익분기 콜 = ⬜ 경계", rv.get("grade") == "⬜", f"={rv}")
@@ -350,6 +357,116 @@ def test_panel_vs_range_basis():
             os.remove(tmp)
 
 
+def test_grader_symmetry_stats():
+    print("\n[G-9] 콜·폴드 판정 통계 — 정규분포 에퀴티 추정값 시뮬 (ADR 0049)")
+    # MC 없이: 참 에퀴티 주위 N(참값, σ=1%p)로 추정값을 만들고 se=σ로 채점한다.
+    # 팟 200·콜 100 → 팟오즈 33.3%. 경계 ±2%p.
+    rng = random.Random(49)
+    pot, call, se, n = 200, 100, 0.01, 2000
+    odds = call / (pot + call)
+
+    def rate(fn, true_eq, grade_sym):
+        hits = 0
+        for _ in range(n):
+            est = rng.gauss(true_eq, se)
+            if fn(est, pot, call, 20, se=se).grade == grade_sym:
+                hits += 1
+        return hits / n
+
+    r_call = rate(grade_postflop_call, odds - 0.03, "🔴")
+    check(f"−3%p 콜 🔴 ≥ 70% — 실제 {r_call:.1%}", r_call >= 0.70)
+    r_fold = rate(grade_postflop_fold, odds + 0.03, "🔴")
+    check(f"+3%p를 버린 폴드 🔴 ≥ 70% — 실제 {r_fold:.1%}", r_fold >= 0.70)
+    check("콜·폴드 🔴 비율 대칭(차이 < 5%p)", abs(r_call - r_fold) < 0.05, f"call={r_call:.3f} fold={r_fold:.3f}")
+    b_call = rate(grade_postflop_call, odds, "⬜")
+    b_fold = rate(grade_postflop_fold, odds, "⬜")
+    check(f"본전 콜 ⬜ ≥ 90% — 실제 {b_call:.1%}", b_call >= 0.90)
+    check(f"본전 폴드 ⬜ ≥ 90% — 실제 {b_fold:.1%}", b_fold >= 0.90)
+    # 전수(se=0, 추정 오차 없음)는 1%p 밖이면 항상 판정
+    exact_fold = sum(grade_postflop_fold(odds + 0.03, pot, call, 20).grade == "🔴" for _ in range(10))
+    check("전수 +3%p 폴드 = 항상 🔴", exact_fold == 10)
+
+
+def test_grader_uses_vs_range():
+    print("\n[G-10] 복기 판정 입력 = 패널과 같은 vs_range(+표준오차), 레인지 없으면 랜덤 기준 표기 (ADR 0049)")
+    import gto.loader as gto_loader
+    from db.connection import get_connection
+    from server.session import WebGameSession
+    from core.game import Street, Action
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    prev_env = os.environ.get("EV_PLUS_DB")
+    os.environ["EV_PLUS_DB"] = tmp
+    try:
+        conn = get_connection()
+        sid = conn.execute(
+            "INSERT INTO gto_preflop_situations (position, vs_position, range_type, raise_size, "
+            "situation_label, action_seq) VALUES ('SB', NULL, 'open', 3.0, 'SB RFI', 'F-F-F-F')"
+        ).lastrowid
+        for hand in ("AA", "KK"):
+            conn.execute("INSERT INTO gto_preflop_hands (situation_id, hand, freq_fold, freq_call, "
+                         "freq_raise, freq_allin) VALUES (?,?,0,0,1,0)", (sid, hand))
+        conn.commit()
+        conn.close()
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+
+        random.seed(21)
+        s = WebGameSession(session_id="t040", human_name="Hero", chips=2000,
+                           num_bots=1, difficulty="easy", small_blind=10)
+        bot_p = next(p for p in s.game.players if p is not s.human)
+        s.game.dealer_index = s.game.players.index(bot_p)  # 봇 = BTN/SB 레이저(AA·KK만)
+        for p in s.game.players:
+            p.is_folded = p.is_all_in = False
+        # 플랍 QQ on 742r: vs 랜덤 ≈ 0.85 → 콜 ✅, vs {AA,KK} ≈ 0.19 → 팟오즈 31% 콜은 🔴
+        s.human.hole_cards = cards("Qh", "Qd")
+        s.game.community_cards = cards("7c", "4d", "2s")
+        s.game.current_street = Street.FLOP
+        s.action_log = [f"[BTN/SB] {bot_p.name}: 레이즈 → 60", "[BB] Hero: 콜 (40)", "── 플랍 ──"]
+        s.human.chips, s.human.total_bet_this_round, s.human.current_bet = 1940, 60, 0
+        bot_p.chips, bot_p.total_bet_this_round, bot_p.current_bet = 1840, 160, 100
+        s.game.current_bet, s.game.pot = 100, 220
+        s._equity_cache = {}
+        s.hand_reviews = []
+
+        info = s._get_equity_info()
+        check("레인지 반영 스팟", info["range_applied"] is True and info["vs_range"] < 0.35 < info["vs_random"],
+              f"={info['range_applied']} range={info['vs_range']} random={info['vs_random']}")
+        check("vs_range_se = vs_range를 만든 MC의 표준오차(>0)", info.get("vs_range_se", 0) > 0,
+              f"={info.get('vs_range_se')}")
+        s._grade_human_action(s.human, Action.CALL, 0, Street.FLOP, 100)
+        rv = s.hand_reviews[-1] if s.hand_reviews else {}
+        check("복기 equity = 패널 vs_range", rv.get("equity") == info["vs_range"],
+              f"={rv.get('equity')} vs {info['vs_range']}")
+        check("vs_range 기준 콜 = 🔴 (vs_random이면 ✅였을 스팟)", rv.get("grade") == "🔴", f"={rv}")
+        check("사유에 레인지 모름 표기 없음", RANGE_UNKNOWN_NOTE not in rv.get("reason", ""), f"={rv.get('reason')}")
+        want_err = f"표본 오차 ±{2 * info['vs_range_se'] * 100:.1f}%p"
+        check("사유의 표본 오차 = vs_range 표준오차×2", want_err in rv.get("reason", ""),
+              f"want {want_err!r} in {rv.get('reason')!r}")
+
+        # 레인지 없음: 같은 스팟에서 프리플랍 기록을 지우면 vs_random 기준 + "상대 레인지 모름(랜덤 기준)"
+        s.action_log = ["── 플랍 ──"]
+        s._equity_cache = {}
+        s.hand_reviews = []
+        info2 = s._get_equity_info()
+        s._grade_human_action(s.human, Action.CALL, 0, Street.FLOP, 100)
+        rv2 = s.hand_reviews[-1] if s.hand_reviews else {}
+        check("레인지 없음 → 복기 equity = vs_random(=vs_range)",
+              info2["range_applied"] is False and rv2.get("equity") == info2["vs_random"], f"={rv2}")
+        check("레인지 없음 → 사유에 '상대 레인지 모름(랜덤 기준)'", RANGE_UNKNOWN_NOTE in rv2.get("reason", ""),
+              f"={rv2.get('reason')}")
+        check("레인지 없음 → 콜 ✅", rv2.get("grade") == "✅", f"={rv2.get('grade')}")
+    finally:
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+        if prev_env is None:
+            os.environ.pop("EV_PLUS_DB", None)
+        else:
+            os.environ["EV_PLUS_DB"] = prev_env
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def test_postflop_fold_grading():
     print("\n[G-3] 포스트플랍 폴드 판정")
     # equity 15%, 팟오즈 33% → 정상 폴드
@@ -362,9 +479,16 @@ def test_postflop_fold_grading():
     check("놓친 EV bb 산출", r.ev_loss_bb is not None and abs(r.ev_loss_bb) > 0,
           f"={r.ev_loss_bb}")
 
-    # 경계: equity = 팟오즈 + 마진 이내 → 정상 폴드
-    r = grade_postflop_fold(0.36, 100, 50, 20)  # 팟오즈 33.3% + 5% = 38.3%
-    check("마진 이내 폴드 = ✅", r.grade == "✅", f"={r.grade}")
+    # 대칭(ADR 0049): 고정 마진 없음. 팟오즈 33.3%에 에퀴티 36% 폴드는 경계(1%p) 밖 → 🔴
+    r = grade_postflop_fold(0.36, 100, 50, 20)
+    check("팟오즈 +2.7%p 폴드 = 🔴 (옛 마진 0.05 폐지)", r.grade == "🔴", f"={r.grade} {r.reason}")
+    r = grade_postflop_fold(0.34, 100, 50, 20)
+    check("팟오즈 +0.7%p 폴드 = ⬜ 경계(최소 1%p)", r.grade == "⬜", f"={r.grade}")
+    r = grade_postflop_fold(0.30, 100, 50, 20)
+    check("팟오즈 −3.3%p 폴드 = ✅", r.grade == "✅", f"={r.grade}")
+    # 같은 수치의 콜과 거울상: 콜 0.36 ✅ / 0.34 ⬜ / 0.30 🔴
+    grades = [grade_postflop_call(e, 100, 50, 20).grade for e in (0.36, 0.34, 0.30)]
+    check("콜은 거울상 (✅ ⬜ 🔴)", grades == ["✅", "⬜", "🔴"], f"={grades}")
 
 
 def test_postflop_bet_grading():
@@ -460,6 +584,8 @@ if __name__ == "__main__":
     test_postflop_bet_grading()
     test_short_stack_effective_call()
     test_borderline_band()
+    test_grader_symmetry_stats()
+    test_grader_uses_vs_range()
     test_panel_vs_range_basis()
     test_session_equity_and_review()
 
