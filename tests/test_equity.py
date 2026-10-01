@@ -367,7 +367,7 @@ def _bot_state(street, community, pot, current_bet, players=None, positions=None
             {"name": "Villain", "chips": 1000, "current_bet": 0,
              "is_folded": False, "is_all_in": False, "is_human": True},
         ],
-        "action_log": [],
+        "preflop_seq": [],
     }
 
 
@@ -375,6 +375,75 @@ def _make_bot(hole_specs, difficulty=BotDifficulty.MEDIUM):
     p = Player("Bot", chips=1000, is_human=False)
     p.hole_cards = cards(*hole_specs)
     return PokerBot(p, difficulty)
+
+
+def _set_preflop_events(game, actions):
+    """테스트용: core event_log를 프리플랍 action 이벤트 [(포지션, 한글 액션, to_amount)]로 교체 —
+    preflop_seq는 실제 core 변환(`preflop_action_seq`)을 그대로 탄다."""
+    from core.game import GameEvent, Street
+    game.event_log = [
+        GameEvent("action", {"player": "", "action": kr, "position": pos,
+                             "street": Street.PREFLOP.value, "to_amount": to})
+        for pos, kr, to in actions
+    ]
+
+
+def _use_gto_db(nodes):
+    """테스트용 격리 GTO DB: nodes = [(position, vs_position, range_type, action_seq,
+    {hand: (call, raise)})]. 반환: (tmp 경로, 이전 EV_PLUS_DB) — 호출자가 _drop_gto_db로 되돌린다."""
+    import gto.loader as gto_loader
+    from db.connection import get_connection
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    prev_env = os.environ.get("EV_PLUS_DB")
+    os.environ["EV_PLUS_DB"] = tmp
+    conn = get_connection()
+    for pos, vs, rtype, seq, hands in nodes:
+        sid = conn.execute(
+            "INSERT INTO gto_preflop_situations (position, vs_position, range_type, "
+            "raise_size, situation_label, action_seq) VALUES (?,?,?,3.0,?,?)",
+            (pos, vs, rtype, f"{pos} {rtype} {vs}", seq),
+        ).lastrowid
+        for hand, (call, rz) in hands.items():
+            conn.execute(
+                "INSERT INTO gto_preflop_hands (situation_id, hand, freq_fold, freq_call, "
+                "freq_raise, freq_allin) VALUES (?,?,?,?,?,0)",
+                (sid, hand, max(0.0, 1 - call - rz), call, rz))
+    conn.commit()
+    conn.close()
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+    return tmp, prev_env
+
+
+def _drop_gto_db(tmp, prev_env):
+    import gto.loader as gto_loader
+    gto_loader._cache = {}
+    gto_loader._loaded = False
+    if prev_env is None:
+        os.environ.pop("EV_PLUS_DB", None)
+    else:
+        os.environ["EV_PLUS_DB"] = prev_env
+    if os.path.exists(tmp):
+        os.remove(tmp)
+
+
+def _sampler_sig(sampler):
+    """레인지 비교용 서명(콤보별 가중치, 순서 무관). None이면 None."""
+    if sampler is None:
+        return None
+    out, prev = [], 0.0
+    for (a, b), cum in zip(sampler.combos, sampler.cum):
+        out.append((str(a), str(b), round(cum - prev, 9)))
+        prev = cum
+    return tuple(sorted(out))
+
+
+# 3벳 테스트용 노드: UTG RFI(AA·KK·QQ), HJ vs UTG open(AA 레이즈 1.0 · AKs 레이즈 0.5/콜 0.5 ·
+# QQ 콜 1.0 · 72o 레이즈 0.01 = 2% 이하 제외), CO vs UTG open(JJ 콜)
+_UTG_RFI = ("UTG", None, "open", "", {"AA": (0, 1), "KK": (0, 1), "QQ": (0, 1)})
+_HJ_VS_UTG = ("HJ", "UTG", "vs_open", "R2.5",
+              {"AA": (0, 1), "AKs": (0.5, 0.5), "QQ": (1, 0), "72o": (0, 0.01)})
+_CO_VS_UTG = ("CO", "UTG", "vs_open", "R2.5-F", {"JJ": (1, 0)})
 
 
 def test_bot_decisions():
@@ -604,16 +673,16 @@ def test_headsup_range_uses_sb():
         gto_loader._cache = {}
         gto_loader._loaded = False
 
-        st = {"positions": {"Hero": "BB", "Bot": "BTN/SB"},
-              "action_log": ["[BTN/SB] Bot: 스몰 블라인드 (10)", "[BB] Hero: 빅 블라인드 (20)",
-                             "[BTN/SB] Bot: 레이즈 (60)"]}
+        st = {"players": [{"name": "Hero", "position": "BB"}, {"name": "Bot", "position": "BTN/SB"}],
+              "preflop_seq": [{"position": "BTN/SB", "action": "raise", "amount_bb": 3.0}]}
         (sampler, role), = opponent_range_info(st, [{"name": "Bot"}])
         check("BTN/SB 레이저 → raiser", role == "raiser", f"={role}")
         check("BTN/SB 레이저 레인지 = SB RFI(AA·KK 12콤보)",
               sampler is not None and len(sampler.combos) == 12,
               f"={sampler and len(sampler.combos)}")
-        st2 = {"positions": {"Hero": "BTN/SB", "Bot": "BB"},
-               "action_log": ["[BTN/SB] Hero: 레이즈 (60)", "[BB] Bot: 콜 (40)"]}
+        st2 = {"players": [{"name": "Hero", "position": "BTN/SB"}, {"name": "Bot", "position": "BB"}],
+               "preflop_seq": [{"position": "BTN/SB", "action": "raise", "amount_bb": 3.0},
+                               {"position": "BB", "action": "call", "amount_bb": 3.0}]}
         (sampler2, role2), = opponent_range_info(st2, [{"name": "Bot"}])
         check("BTN/SB 오픈에 BB 콜 → BB vs SB 콜 레인지(QQ·JJ 12콤보)",
               role2 == "caller" and sampler2 is not None and len(sampler2.combos) == 12,
@@ -632,7 +701,7 @@ def test_headsup_range_uses_sb():
         s.human.hole_cards = cards("Qh", "Qd")
         s.game.community_cards = cards("7c", "4d", "2s")
         s.game.current_street = Street.FLOP
-        s.action_log = [f"[BTN/SB] {bot_p.name}: 레이즈 (60)", f"[BB] Hero: 콜 (40)", "── 플랍 ──"]
+        _set_preflop_events(s.game, [("BTN/SB", "레이즈", 60), ("BB", "콜", 60)])
         s._equity_cache = {}
         info = s._get_equity_info()
         check("패널 상대 role = raiser", info["opponents"][0]["role"] == "raiser",
@@ -731,8 +800,11 @@ def test_role_unknown_without_range():
     gto_loader._loaded = False
     try:
         state = {
-            "positions": {"Bot": "BB", "V1": "UTG", "V2": "CO"},
-            "action_log": ["[UTG] V1: 레이즈 → 50", "[CO] V2: 콜 (50)", "[BB] Bot: 콜 (30)", "── 플랍 ──"],
+            "players": [{"name": "Bot", "position": "BB"}, {"name": "V1", "position": "UTG"},
+                        {"name": "V2", "position": "CO"}],
+            "preflop_seq": [{"position": "UTG", "action": "raise", "amount_bb": 2.5},
+                            {"position": "CO", "action": "call", "amount_bb": 2.5},
+                            {"position": "BB", "action": "call", "amount_bb": 2.5}],
         }
         info = opponent_range_info(state, [{"name": "V1", "is_folded": False}, {"name": "V2", "is_folded": False}])
         check("레인지 없음 → sampler None", all(s is None for s, _ in info), f"={info}")
@@ -741,6 +813,139 @@ def test_role_unknown_without_range():
     finally:
         gto_loader._cache = {}
         gto_loader._loaded = False
+
+
+def test_range_from_preflop_seq():
+    print("\n[E-6d] 상대 레인지·레이즈 횟수는 구조화 preflop_seq만으로 판정 (T-046, ADR 0007)")
+    from ai.bot import _preflop_roles, _count_preflop_raises
+    # 순수 함수: 레이즈 구조
+    seq = [{"position": "UTG", "action": "raise", "amount_bb": 2.5},
+           {"position": "HJ", "action": "raise", "amount_bb": 8.0},
+           {"position": "CO", "action": "call", "amount_bb": 8.0},
+           {"position": "UTG", "action": "call", "amount_bb": 8.0}]
+    opener, first, callers, n = _preflop_roles(seq)
+    check("오프너 = UTG, 3벳터 = HJ(레이즈 번호 2)", opener == "UTG" and first == {"UTG": 1, "HJ": 2},
+          f"={opener} {first}")
+    check("콜러 = 오픈 뒤 콜한 CO(오프너 UTG는 레이저로 남음)", "CO" in callers and n == 2, f"={callers} n={n}")
+    limp = [{"position": "UTG", "action": "call", "amount_bb": 1.0},
+            {"position": "BB", "action": "check", "amount_bb": None}]
+    o2, f2, c2, n2 = _preflop_roles(limp)
+    check("림프 팟: 오프너·콜러 없음", o2 is None and not f2 and not c2 and n2 == 0, f"={o2} {f2} {c2}")
+    # _count_raises는 올인도 센다(최고 베팅을 올린 올인). 콜도 못 채운 올인은 세지 않는다.
+    allin3 = [{"position": "UTG", "action": "raise", "amount_bb": 2.5},
+              {"position": "HJ", "action": "raise", "amount_bb": 8.0},
+              {"position": "CO", "action": "allin", "amount_bb": 100.0}]
+    check("오픈·3벳·올인 = 레이즈 3회", _count_preflop_raises(allin3) == 3, f"={_count_preflop_raises(allin3)}")
+    short = [{"position": "UTG", "action": "raise", "amount_bb": 2.5},
+             {"position": "HJ", "action": "allin", "amount_bb": 1.5}]
+    check("오픈보다 작은 올인(콜 성격)은 레이즈 아님", _count_preflop_raises(short) == 1
+          and "HJ" in _preflop_roles(short)[2], f"={_preflop_roles(short)}")
+    bot = _make_bot(["7c", "2d"], BotDifficulty.HARD)
+    st = _bot_state("프리플랍", [], 300, 2000)
+    st["preflop_seq"] = allin3
+    st.pop("action_log", None)
+    check("봇 _count_raises = preflop_seq 기준 3(action_log 없음)", bot._count_raises(st) == 3,
+          f"={bot._count_raises(st)}")
+
+
+def test_three_bettor_range():
+    print("\n[E-6e] 3벳한 상대 = 3벳터 vs 오프너 open(vs_open) 노드의 레이즈 레인지 (T-046)")
+    from core.game import TexasHoldem
+    from ai.equity import RangeSampler
+    names = ["P0", "P1", "P2", "P3", "P4", "P5"]
+
+    def play(game_actions):
+        players = [Player(n, 2000, is_human=(n == "P0")) for n in names]
+        g = TexasHoldem(players, small_blind=10, big_blind=20)
+        g.dealer_index = 0
+        g.start_hand()
+        pos = g.get_positions()
+        by_pos = {v: p for p, v in ((p, pos[p.name]) for p in players)}
+        for ps, act, amt in game_actions:
+            g.act(by_pos[ps], act, amt)
+        return g, by_pos
+
+    line = [("UTG", Action.RAISE, 50), ("HJ", Action.RAISE, 160)]
+    tmp, prev = _use_gto_db([_UTG_RFI, _HJ_VS_UTG])
+    try:
+        g, by_pos = play(line)
+        st = g._get_game_state()
+        check("CLI 경로 state에 action_log 없음", "action_log" not in st)
+        (hj_s, hj_r), (utg_s, utg_r) = opponent_range_info(
+            st, [{"name": by_pos["HJ"].name}, {"name": by_pos["UTG"].name}])
+        check("3벳터 HJ role = raiser", hj_r == "raiser", f"={hj_r}")
+        want = _sampler_sig(RangeSampler({"AA": 1.0, "AKs": 0.5}))
+        check("HJ 레인지 = HJ vs UTG open의 레이즈 빈도 가중(AA 1.0·AKs 0.5, 콜 전용 QQ·2% 이하 72o 제외)",
+              _sampler_sig(hj_s) == want, f"={hj_s and len(hj_s.combos)}콤보")
+        check("오프너 UTG = RFI(AA·KK·QQ 18콤보)", utg_r == "raiser" and utg_s is not None
+              and len(utg_s.combos) == 18, f"={utg_r} {utg_s and len(utg_s.combos)}")
+    finally:
+        _drop_gto_db(tmp, prev)
+
+    # vs_open 노드가 없으면 3벳터는 RFI로 대신하지 않고 unknown(랜덤)
+    tmp, prev = _use_gto_db([_UTG_RFI])
+    try:
+        g, by_pos = play(line)
+        (hj_s, hj_r), = opponent_range_info(g._get_game_state(), [{"name": by_pos["HJ"].name}])
+        check("HJ vs UTG 노드 없음 → 3벳터 unknown·sampler None", hj_r == "unknown" and hj_s is None,
+              f"={hj_r}")
+    finally:
+        _drop_gto_db(tmp, prev)
+
+
+def test_range_cli_web_same():
+    print("\n[E-6f] CLI(core state)와 웹(세션 state)에서 같은 라인의 상대 레인지 판정이 같다 (T-046)")
+    from core.game import TexasHoldem
+    from server.session import WebGameSession
+    from ai.bot import estimate_opponent_ranges
+
+    line = [("UTG", Action.RAISE, 50), ("HJ", Action.RAISE, 160), ("CO", Action.CALL, 0),
+            ("BTN", Action.FOLD, 0), ("SB", Action.FOLD, 0), ("BB", Action.FOLD, 0),
+            ("UTG", Action.CALL, 0)]
+    tmp, prev = _use_gto_db([_UTG_RFI, _HJ_VS_UTG, _CO_VS_UTG])
+    try:
+        random.seed(5)
+        s = WebGameSession(session_id="t046", human_name="Hero", chips=2000,
+                           num_bots=5, difficulty="hard", small_blind=10, equity_enabled=False)
+        for p in s.game.players:
+            p.chips = 2000
+        s.game.dealer_index = 0
+        s.game.start_hand()
+        s.action_log = []
+        web_pos = s.game.get_positions()
+        web_by_pos = {web_pos[p.name]: p for p in s.game.players}
+        for ps, act, amt in line:
+            s._apply(web_by_pos[ps], act, amt)
+        gs_web = s._build_gs_for_ranges()
+
+        cli_players = [Player(p.name, 2000, is_human=p.is_human) for p in s.game.players]
+        g = TexasHoldem(cli_players, small_blind=10, big_blind=20)
+        g.dealer_index = 0
+        g.start_hand()
+        cli_pos = g.get_positions()
+        check("두 경로 포지션 동일", cli_pos == web_pos, f"cli={cli_pos} web={web_pos}")
+        cli_by_pos = {cli_pos[p.name]: p for p in cli_players}
+        for ps, act, amt in line:
+            g.act(cli_by_pos[ps], act, amt)
+        gs_cli = g._get_game_state()
+        check("CLI state에는 action_log가 없다", "action_log" not in gs_cli)
+
+        opps = [{"name": p.name, "is_folded": p.is_folded} for p in s.game.players]
+        web = [(r, _sampler_sig(sm)) for sm, r in opponent_range_info(gs_web, opps)]
+        cli = [(r, _sampler_sig(sm)) for sm, r in opponent_range_info(gs_cli, opps)]
+        check("상대별 role·레인지 동일", web == cli, f"web={[r for r, _ in web]} cli={[r for r, _ in cli]}")
+        roles = {web_pos[o["name"]]: r for o, (r, _) in zip(opps, web)}
+        check("UTG raiser · HJ raiser(3벳) · CO caller", roles.get("UTG") == "raiser"
+              and roles.get("HJ") == "raiser" and roles.get("CO") == "caller", f"={roles}")
+        check("estimate_opponent_ranges도 동일",
+              [_sampler_sig(x) for x in estimate_opponent_ranges(gs_web, opps)]
+              == [_sampler_sig(x) for x in estimate_opponent_ranges(gs_cli, opps)])
+        # 봇 레이즈 횟수 판정도 같다
+        bot = next(iter(s.bots.values()))
+        check("봇 _count_raises 동일(2)", bot._count_raises(gs_web) == bot._count_raises(gs_cli) == 2,
+              f"web={bot._count_raises(gs_web)} cli={bot._count_raises(gs_cli)}")
+    finally:
+        _drop_gto_db(tmp, prev)
 
 
 def test_grader():
@@ -888,6 +1093,9 @@ if __name__ == "__main__":
     test_has_draw()
     test_bot_no_open_fold()
     test_role_unknown_without_range()
+    test_range_from_preflop_seq()
+    test_three_bettor_range()
+    test_range_cli_web_same()
     test_grader()
     test_gto_allin_action_and_hint()
 

@@ -40,6 +40,17 @@ def cards(*specs) -> list:
     return [c(s) for s in specs]
 
 
+def _set_preflop_events(game, actions):
+    """테스트용: core event_log를 프리플랍 action 이벤트 [(포지션, 한글 액션, to_amount)]로 교체.
+    상대 레인지는 구조화 preflop_seq로만 정해진다(ADR 0007) — 실제 core 변환을 그대로 탄다."""
+    from core.game import GameEvent, Street
+    game.event_log = [
+        GameEvent("action", {"player": "", "action": kr, "position": pos,
+                             "street": Street.PREFLOP.value, "to_amount": to})
+        for pos, kr, to in actions
+    ]
+
+
 def check(name: str, cond: bool, detail: str = ""):
     global PASS, FAIL
     if cond:
@@ -305,7 +316,7 @@ def test_panel_vs_range_basis():
         s.human.hole_cards = cards("Qh", "Qd")
         s.game.community_cards = cards("7c", "4d", "2s")
         s.game.current_street = Street.FLOP
-        s.action_log = [f"[BTN/SB] {bot_p.name}: 레이즈 → 60", "[BB] Hero: 콜 (40)", "── 플랍 ──"]
+        _set_preflop_events(s.game, [("BTN/SB", "레이즈", 60), ("BB", "콜", 60)])
         s.human.chips, s.human.total_bet_this_round, s.human.current_bet = 1940, 60, 0
         bot_p.chips, bot_p.total_bet_this_round, bot_p.current_bet = 1840, 160, 100
         s.game.current_bet, s.game.pot = 100, 220
@@ -327,7 +338,7 @@ def test_panel_vs_range_basis():
               f"={info['history']}")
 
         # 레인지 정보가 없으면(상대가 레이즈·콜 기록 없음) vs_random 계산 그대로 — 출처도 그것
-        s.action_log = ["── 플랍 ──"]
+        _set_preflop_events(s.game, [])
         s._equity_cache = {}
         info2 = s._get_equity_info()
         check("레인지 없음 → range_applied=False, vs_range = vs_random",
@@ -422,7 +433,7 @@ def test_grader_uses_vs_range():
         s.human.hole_cards = cards("Qh", "Qd")
         s.game.community_cards = cards("7c", "4d", "2s")
         s.game.current_street = Street.FLOP
-        s.action_log = [f"[BTN/SB] {bot_p.name}: 레이즈 → 60", "[BB] Hero: 콜 (40)", "── 플랍 ──"]
+        _set_preflop_events(s.game, [("BTN/SB", "레이즈", 60), ("BB", "콜", 60)])
         s.human.chips, s.human.total_bet_this_round, s.human.current_bet = 1940, 60, 0
         bot_p.chips, bot_p.total_bet_this_round, bot_p.current_bet = 1840, 160, 100
         s.game.current_bet, s.game.pot = 100, 220
@@ -445,7 +456,7 @@ def test_grader_uses_vs_range():
               f"want {want_err!r} in {rv.get('reason')!r}")
 
         # 레인지 없음: 같은 스팟에서 프리플랍 기록을 지우면 vs_random 기준 + "상대 레인지 모름(랜덤 기준)"
-        s.action_log = ["── 플랍 ──"]
+        _set_preflop_events(s.game, [])
         s._equity_cache = {}
         s.hand_reviews = []
         info2 = s._get_equity_info()

@@ -7,7 +7,7 @@ from core.player import Player
 from core.card import Card, Suit
 from core.pot_odds import effective_call_pot, pot_odds as calc_pot_odds
 from gto.advisor import GTOAdvisor
-from gto.loader import get_raise_range, get_call_range
+from gto.loader import get_raise_range, get_call_range, get_vs_open_range
 from ai.equity import smart_equity, made_hand_rank, ranged_equity, RangeSampler
 
 _gto_advisor = GTOAdvisor()
@@ -72,46 +72,96 @@ def _range_pos(pos: str) -> str:
     return "SB" if pos == "BTN/SB" else pos
 
 
+_EPS = 1e-9
+
+
+def _preflop_roles(preflop_seq: list) -> Tuple[Optional[str], Dict[str, int], set, int]:
+    """
+    구조화 프리플랍 시퀀스(`core/game.py::preflop_action_seq`, ADR 0007)에서 레이즈 구조를 뽑는다.
+    반환: (오프너 포지션, {포지션: 그 사람이 처음 올린 레이즈 번호(1=오픈, 2=3벳, ...)},
+           콜러 포지션 집합, 레이즈 횟수)
+
+    - 레이즈 = `raise`, 또는 지금까지의 최고 베팅(시작 1bb)보다 높은 `allin`. 최고 베팅 이하의
+      `allin`(숏스택이 콜도 다 못 낸 올인)은 콜로 본다.
+    - 콜러 = 오픈이 나온 뒤에 콜(또는 콜 성격 올인)한 사람. 오픈 전 콜(림프)만 한 사람은 콜러가 아니다.
+    - 포지션 라벨은 원본 그대로(헤즈업 "BTN/SB"). 레인지 조회용 치환은 호출자가 `_range_pos`로 한다.
+    """
+    level = 1.0  # 빅 블라인드
+    n_raises = 0
+    opener: Optional[str] = None
+    first_raise: Dict[str, int] = {}
+    callers: set = set()
+    for a in preflop_seq:
+        pos = a.get("position", "")
+        act = a.get("action")
+        amt = a.get("amount_bb")
+        if act == "raise" or (act == "allin" and (amt is None or amt > level + _EPS)):
+            n_raises += 1
+            if amt is not None:
+                level = max(level, amt)
+            if opener is None:
+                opener = pos
+            first_raise.setdefault(pos, n_raises)
+        elif act in ("call", "allin") and opener is not None:
+            callers.add(pos)
+    return opener, first_raise, callers, n_raises
+
+
+def _count_preflop_raises(preflop_seq: list) -> int:
+    """프리플랍 레이즈 횟수(오픈 = 1). 최고 베팅을 올린 올인도 센다(`_preflop_roles`와 같은 기준)."""
+    return _preflop_roles(preflop_seq)[3]
+
+
+def _three_bet_range(my_pos: str, opener_pos: str) -> Optional[dict]:
+    """오프너에게 3벳한 사람의 핸드 분포: "my_pos vs opener_pos open"(vs_open) 노드의
+    레이즈(+올인) 빈도 가중, 빈도 ≤ 2% 제외(RFI·콜 레인지와 같은 기준). 노드가 없으면 None."""
+    data = get_vs_open_range(my_pos, opener_pos)
+    if data is None:
+        return None
+    weights = {}
+    for hand, freqs in data.get("hands", {}).items():
+        w = freqs.get("raise", 0.0) + freqs.get("allin", 0.0)
+        if w > 0.02:
+            weights[hand] = w
+    return weights or None
+
+
 def opponent_range_info(state: dict, opponents: list) -> list:
     """
-    프리플랍 액션 로그로 살아있는 상대들의 핸드 레인지 추정.
+    구조화 프리플랍 시퀀스(state["preflop_seq"])로 살아있는 상대들의 핸드 레인지 추정(ADR 0007).
     반환: opponents 순서대로 [(RangeSampler|None, role)] — role: raiser|caller|unknown
-    레이저 → 그 포지션의 RFI 레이즈 레인지
-    콜러  → 오프너에 대한 콜 레인지
-    정보 없음(블라인드 체크 등) → sampler=None (랜덤 핸드)
-    봇(hard)과 세션 에퀴티 패널이 공용으로 사용.
+    오프너(첫 레이즈)      → 그 포지션의 RFI 레이즈 레인지
+    3벳터(두 번째 레이즈) → "3벳터 vs 오프너 open" vs_open 노드의 레이즈 레인지
+    4벳 이상을 처음 올린 사람 → 데이터 없음(unknown, 랜덤)
+    콜러(오픈 뒤 콜)      → 오프너에 대한 콜 레인지
+    정보 없음(블라인드 체크·림프 팟 등) → sampler=None (랜덤 핸드)
+    이름→포지션은 state["players"][].position(없으면 state["positions"]).
+    봇(hard)과 세션 에퀴티 패널이 공용으로 사용 — CLI·웹이 같은 core 상태를 넘긴다.
     """
-    positions = state.get("positions", {})
-    preflop_log = []
-    for entry in state.get("action_log", []):
-        if "──" in entry:
-            break
-        preflop_log.append(entry)
+    pos_of: Dict[str, str] = {
+        p["name"]: p.get("position", "") for p in state.get("players", []) if "name" in p
+    }
+    for name, pos in (state.get("positions") or {}).items():
+        if not pos_of.get(name):
+            pos_of[name] = pos
 
-    raisers, callers = [], []
-    for entry in preflop_log:
-        for name, pos in positions.items():
-            if name in entry:
-                if "레이즈" in entry or "올인" in entry:
-                    raisers.append((name, pos))
-                elif "콜" in entry:
-                    callers.append((name, pos))
-                break
-
-    opener_pos = _range_pos(raisers[0][1]) if raisers else None
-    raiser_names = {n for n, _ in raisers}
-    caller_names = {n for n, _ in callers}
+    opener, first_raise, callers, _ = _preflop_roles(state.get("preflop_seq") or [])
+    opener_pos = _range_pos(opener) if opener else None
 
     result = []
     for opp in opponents:
-        name = opp["name"]
-        pos = _range_pos(positions.get(name, ""))
+        raw_pos = pos_of.get(opp["name"], "")
+        pos = _range_pos(raw_pos)
         weights = None
         role = "unknown"
-        if name in raiser_names:
-            weights = get_raise_range(pos)
+        n = first_raise.get(raw_pos) if raw_pos else None
+        if n is not None:
             role = "raiser"
-        elif name in caller_names and opener_pos:
+            if n == 1:
+                weights = get_raise_range(pos)
+            elif n == 2 and opener_pos:
+                weights = _three_bet_range(pos, opener_pos)
+        elif raw_pos and raw_pos in callers and opener_pos:
             weights = get_call_range(pos, opener_pos)
             role = "caller"
         if not weights:
@@ -381,14 +431,8 @@ class PokerBot:
         return Action.FOLD, 0
 
     def _count_raises(self, game_state: dict) -> int:
-        """action_log에서 프리플랍 레이즈 횟수"""
-        count = 0
-        for entry in game_state.get("action_log", []):
-            if "──" in entry:
-                break
-            if "레이즈" in entry:
-                count += 1
-        return count
+        """구조화 프리플랍 시퀀스의 레이즈 횟수(올인 포함, ADR 0007)"""
+        return _count_preflop_raises(game_state.get("preflop_seq") or [])
 
     # ──────────────────────────────────────────
     # 포스트플랍: equity 기반 의사결정
