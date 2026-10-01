@@ -1,28 +1,19 @@
-import type { GtoNode, GtoRange } from "../types";
+import type { GtoNode } from "../types";
 import GtoHandGrid from "./GtoHandGrid";
-import { gtoPanelView } from "./gtoPanelLogic";
+import { gtoPanelView, ACTION_COLORS, ACTION_LABELS, ACTION_ORDER, type GtoFetch } from "./gtoPanelLogic";
+import { pct } from "../format";
 
 interface Props {
   gto: GtoNode | null;          // advisor 추천(게임 상태) — 레인지는 이 node_key로 조회한 것
-  gtoRange: GtoRange | null;
-  myHand: string | null;
-  isLoading: boolean;
+  fetch: GtoFetch;              // 그 노드의 레인지 조회 상태
 }
-
-const ACTION_COLORS: Record<string, string> = {
-  allin: "#991b1b", raise: "#ef4444", call: "#22c55e", fold: "#3b82f6",
-};
-const ACTION_ORDER = ["allin", "raise", "call", "fold"];
-const ACTION_LABELS: Record<string, string> = {
-  allin: "올인", raise: "레이즈", call: "콜", fold: "폴드",
-};
 
 function FreqBar({ label, freq, color }: { label: string; freq: number; color: string }) {
   return (
     <div className="space-y-0.5">
       <div className="flex justify-between text-xs">
         <span className="text-gray-300">{label}</span>
-        <span className="text-white font-bold">{(freq * 100).toFixed(1)}%</span>
+        <span className="text-white font-bold">{pct(freq, 1)}</span>
       </div>
       <div className="w-full bg-gray-700 rounded-full h-1.5">
         <div className="h-1.5 rounded-full" style={{ width: `${freq * 100}%`, backgroundColor: color }} />
@@ -31,8 +22,8 @@ function FreqBar({ label, freq, color }: { label: string; freq: number; color: s
   );
 }
 
-export default function GtoPanel({ gto, gtoRange, myHand, isLoading }: Props) {
-  const view = gtoPanelView(gto, gtoRange, isLoading);
+export default function GtoPanel({ gto, fetch }: Props) {
+  const view = gtoPanelView(gto, fetch);
 
   if (view.kind === "loading") {
     return <div className="flex items-center justify-center h-32 text-gray-500 text-sm">로딩 중...</div>;
@@ -46,7 +37,16 @@ export default function GtoPanel({ gto, gtoRange, myHand, isLoading }: Props) {
     );
   }
 
-  if (view.kind === "missing" || !gtoRange) {
+  if (view.kind === "error") {
+    return (
+      <div className="flex flex-col items-center justify-center h-32 text-sm text-center px-4">
+        <div className="text-red-400 font-medium mb-1">조회 실패</div>
+        <div className="text-gray-500 text-xs">GTO 레인지를 서버에서 받지 못했습니다</div>
+      </div>
+    );
+  }
+
+  if (view.kind === "missing") {
     return (
       <div className="p-3 space-y-3">
         <div className="text-center">
@@ -67,9 +67,9 @@ export default function GtoPanel({ gto, gtoRange, myHand, isLoading }: Props) {
     );
   }
 
-  const { raise_size, summary = {}, hands = {} } = gtoRange;
+  const { raise_size, summary = {}, hands = {} } = view.range;
   // 내 패 빈도는 advisor 추천 그대로(힌트와 같은 값). 없으면 레인지에서.
-  const hand = gto?.hand ?? myHand;
+  const hand = gto?.hand ?? null;
   const myHandFreqs = gto?.frequencies ?? (hand ? hands[hand] : null);
 
   return (
@@ -128,7 +128,7 @@ export default function GtoPanel({ gto, gtoRange, myHand, isLoading }: Props) {
                 <div className="flex-1 bg-gray-700 rounded-full h-1.5">
                   <div className={`h-1.5 rounded-full ${color}`} style={{ width: `${val * 100}%` }} />
                 </div>
-                <span className="text-white w-8 text-right">{(val * 100).toFixed(0)}%</span>
+                <span className="text-white w-8 text-right">{pct(val)}</span>
               </div>
             ))}
             <div className="text-gray-500 mt-1 text-[10px]">

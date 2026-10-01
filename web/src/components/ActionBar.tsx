@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { GameState } from "../types";
-import { actionButtons } from "./actionBarLogic";
+import { actionButtons, potPresets, betPresets, presetOff, type Preset } from "./actionBarLogic";
 
 interface Props {
   state: GameState;
@@ -10,7 +10,7 @@ interface Props {
 }
 
 export default function ActionBar({ state, onAction, loading, disabled }: Props) {
-  const { call_amount, min_raise_to, players, big_blind, pot, current_bet } = state;
+  const { min_raise_to, players, big_blind } = state;
   const human = players.find((p) => p.is_human);
 
   // 훅은 항상 같은 순서로 호출해야 하므로 (인간 부재 시) 조기 return보다 먼저 온다.
@@ -28,29 +28,34 @@ export default function ActionBar({ state, onAction, loading, disabled }: Props)
 
   if (!human) return null;
 
-  const maxRaise = human.chips + human.current_bet;
   const isDisabled = disabled || loading;
-  const canCheck = call_amount === 0;
+  const canCheck = state.call_amount === 0;
   const buttons = actionButtons(state);
-  const canRaise = buttons.showRaise && human.chips > call_amount && min_raise_to > 0 && maxRaise >= min_raise_to;
+  const { canRaise, maxRaise } = buttons;
 
   const clampRaise = (v: number) => Math.max(min_raise_to, Math.min(v, maxRaise));
 
-  // 팟 기준 프리셋
-  const potPresets = [
-    { label: "1/3", value: Math.round(pot / 3) + call_amount },
-    { label: "1/2", value: Math.round(pot / 2) + call_amount },
-    { label: "3/4", value: Math.round((pot * 3) / 4) + call_amount },
-    { label: "팟", value: pot + call_amount },
-  ];
-
-  // 상대 베팅 기준 프리셋
-  const betPresets = [
-    { label: "2x",   value: Math.round(current_bet * 2) },
-    { label: "2.5x", value: Math.round(current_bet * 2.5) },
-    { label: "3x",   value: Math.round(current_bet * 3) },
-    { label: "4x",   value: Math.round(current_bet * 4) },
-  ];
+  const presetGroup = (title: string, presets: Preset[]) => (
+    <div className="flex flex-col gap-1 shrink-0">
+      <span className="text-[10px] text-gray-500 text-center">{title}</span>
+      <div className="grid grid-cols-2 gap-1">
+        {presets.map((p) => {
+          const off = presetOff(p.value, buttons, min_raise_to);
+          return (
+            <button
+              key={p.label}
+              disabled={isDisabled || off}
+              onClick={() => setRaiseAmount(clampRaise(p.value))}
+              className="px-2 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed text-gray-300 rounded leading-tight text-center"
+            >
+              <div>{p.label}</div>
+              <div className="text-yellow-400">{off ? "—" : p.value}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   // 슬라이더 dead zone 퍼센트
   const deadPct   = maxRaise > 0 ? (min_raise_to / maxRaise) * 100 : 0;
@@ -126,53 +131,8 @@ export default function ActionBar({ state, onAction, loading, disabled }: Props)
           </div>
         </div>
 
-        {/* 팟 기준 프리셋 */}
-        <div className="flex flex-col gap-1 shrink-0">
-          <span className="text-[10px] text-gray-500 text-center">팟 기준</span>
-          <div className="grid grid-cols-2 gap-1">
-            {potPresets.map((p) => {
-              const val = clampRaise(p.value);
-              const tooSmall = p.value < min_raise_to;
-              const tooBig = p.value > maxRaise;
-              const off = !canRaise || tooSmall || tooBig;
-              return (
-                <button
-                  key={p.label}
-                  disabled={isDisabled || off}
-                  onClick={() => setRaiseAmount(val)}
-                  className="px-2 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed text-gray-300 rounded leading-tight text-center"
-                >
-                  <div>{p.label}</div>
-                  <div className="text-yellow-400">{off ? "—" : p.value}</div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* 베팅 배율 프리셋 */}
-        <div className="flex flex-col gap-1 shrink-0">
-          <span className="text-[10px] text-gray-500 text-center">배율</span>
-          <div className="grid grid-cols-2 gap-1">
-            {betPresets.map((p) => {
-              const val = clampRaise(p.value);
-              const tooSmall = p.value < min_raise_to;
-              const tooBig = p.value > maxRaise;
-              const off = !canRaise || tooSmall || tooBig;
-              return (
-                <button
-                  key={p.label}
-                  disabled={isDisabled || off}
-                  onClick={() => setRaiseAmount(val)}
-                  className="px-2 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed text-gray-300 rounded leading-tight text-center"
-                >
-                  <div>{p.label}</div>
-                  <div className="text-yellow-400">{off ? "—" : p.value}</div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        {presetGroup("팟 기준", potPresets(state))}
+        {presetGroup("배율", betPresets(state))}
       </div>
 
       {/* ── Row 2: 액션 버튼 ── */}

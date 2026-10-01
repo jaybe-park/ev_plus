@@ -6,7 +6,7 @@ import {
   type DisplayState,
 } from "./eventQueueLogic";
 
-// 이벤트 큐 재생(T-029). 무엇을 보일지는 순수 리듀서(eventQueueLogic.applyEvent)가 정하고,
+// 이벤트 큐 재생. 무엇을 보일지는 순수 리듀서(eventQueueLogic.applyEvent)가 정하고,
 // 이 훅은 "언제" 반영할지(타이머)와 하이라이트류 연출(생각 중·배지·칩 날아가기)만 맡는다.
 export interface EventQueueState {
   isReplaying: boolean;

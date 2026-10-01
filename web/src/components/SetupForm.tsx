@@ -3,10 +3,10 @@ import type { SetupConfig } from "../types";
 
 interface Props {
   onStart: (config: SetupConfig) => void;
-  // 서버가 설정을 거절한 이유(422 detail을 formatApiError로 평탄화한 문장) — T-027
+  // 서버가 설정을 거절한 이유(422 detail을 formatApiError로 평탄화한 문장)
   error?: string | null;
   loading?: boolean;
-  // 새로고침했는데 이전 세션이 서버에서 사라진 경우의 안내(T-028, ADR 0043)
+  // 새로고침했는데 이전 세션이 서버에서 사라진 경우의 안내(ADR 0043)
   notice?: string | null;
 }
 

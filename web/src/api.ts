@@ -30,7 +30,7 @@ export function formatApiError(detail: unknown): string {
   return "요청을 처리할 수 없습니다.";
 }
 
-// HTTP 상태 코드를 함께 싣는 오류 — 404(세션 없음)를 다른 오류와 구분한다(T-028)
+// HTTP 상태 코드를 함께 싣는 오류 — 404(세션 없음)를 다른 오류와 구분한다
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -68,7 +68,7 @@ export const api = {
   nextHand: (id: string): Promise<GameState> =>
     request(`/game/${id}/next-hand`, { method: "POST" }),
 
-  // 노드 키(action_seq)로 레인지 조회 — UTG RFI는 빈 문자열(T-013)
+  // 노드 키(action_seq)로 레인지 조회 — UTG RFI는 빈 문자열
   getGtoRange: (actionSeq: string): Promise<GtoRange> =>
     request(`/gto/preflop/range?${new URLSearchParams({ action_seq: actionSeq })}`),
 

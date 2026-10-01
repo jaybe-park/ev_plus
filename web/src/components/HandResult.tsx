@@ -1,4 +1,7 @@
 import type { GameState } from "../types";
+import { displayName } from "../format";
+import { evLossText } from "../reviewLogic";
+import { potLines, potLineText } from "./handResultLogic";
 
 interface Props {
   state: GameState;
@@ -8,9 +11,10 @@ interface Props {
 }
 
 export default function HandResult({ state, onNextHand, onNewGame, loading }: Props) {
-  const { winners, showdown_hands, game_over, players, hand_number, hand_review } = state;
+  const { winners, showdown_hands, game_over, players, hand_number, hand_review, pots } = state;
   const human = players.find((p) => p.is_human);
   const humanWon = human ? winners.includes(human.name) : false;
+  const lines = potLines(pots);
 
   return (
     <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-20 rounded-xl">
@@ -38,15 +42,25 @@ export default function HandResult({ state, onNextHand, onNewGame, loading }: Pr
               핸드 #{hand_number} 결과
             </h2>
             <p className="text-yellow-400 font-bold mb-3">
-              🏆 {winners.join(", ")} 승리
+              🏆 {winners.map(displayName).join(", ")} 승리
             </p>
+
+            {lines.length > 0 && (
+              <div className="bg-gray-900 rounded-lg p-3 mb-4 text-left space-y-1">
+                {lines.map((l, i) => (
+                  <div key={i} className={`text-xs ${l.returned ? "text-gray-500" : "text-gray-300"}`}>
+                    {potLineText(l)}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {Object.keys(showdown_hands).length > 0 && (
               <div className="bg-gray-900 rounded-lg p-3 mb-4 text-left space-y-1">
                 {Object.entries(showdown_hands).map(([name, hand]) => (
                   <div key={name} className="flex justify-between text-xs">
                     <span className={`font-medium ${winners.includes(name) ? "text-yellow-400" : "text-gray-300"}`}>
-                      {name.replace("🤖 ", "")}
+                      {displayName(name)}
                     </span>
                     <span className="text-gray-400">{hand}</span>
                   </div>
@@ -61,21 +75,20 @@ export default function HandResult({ state, onNextHand, onNewGame, loading }: Pr
             {hand_review && hand_review.length > 0 && (
               <div className="bg-gray-900 rounded-lg p-3 mb-4 text-left space-y-1.5 max-h-48 overflow-y-auto">
                 <div className="text-xs text-gray-500 mb-1">내 플레이</div>
-                {hand_review.map((r, i) => (
+                {hand_review.map((r, i) => {
+                  const loss = evLossText(r.ev_loss_bb);
+                  return (
                   <div key={i} className="text-xs">
                     <div className="flex items-center gap-1.5">
                       <span className="text-gray-500 w-10 shrink-0">{r.street}</span>
                       <span className="text-gray-300 shrink-0">{r.action}</span>
                       <span className="shrink-0">{r.grade}</span>
-                      {r.ev_loss_bb != null && r.ev_loss_bb < 0 && (
-                        <span className="text-red-400 font-medium shrink-0">
-                          {r.ev_loss_bb.toFixed(1)}bb
-                        </span>
-                      )}
+                      {loss && <span className="text-red-400 font-medium shrink-0">{loss}</span>}
                     </div>
                     <div className="text-gray-500 text-[10px] pl-[3.2rem]">{r.reason}</div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
