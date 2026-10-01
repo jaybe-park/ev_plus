@@ -28,7 +28,7 @@ app.add_middleware(
 
 sessions: Dict[str, WebGameSession] = {}
 
-# 세션 정리(T-028): 세션은 메모리에만 있으므로 오래 안 쓴 세션·개수 초과분을 지운다.
+# 세션 정리: 세션은 메모리에만 있으므로 오래 안 쓴 세션·개수 초과분을 지운다.
 # 지워진 세션에 대한 요청은 404 → 프론트가 "세션 만료 — 새 게임" 안내를 띄운다.
 SESSION_TTL_SEC = 24 * 3600      # 마지막 요청 후 24시간 지나면 만료
 MAX_SESSIONS = 20                # 넘으면 가장 오래 안 쓴 세션부터 정리
@@ -81,7 +81,7 @@ def _get_session(session_id: str) -> WebGameSession:
 
 
 # 게임 엔드포인트는 동기 def라 FastAPI 스레드풀에서 동시에 돈다. 같은 세션에 대한 요청은
-# session.lock으로 직렬화하고, 이벤트는 그 요청이 만든 것만 응답에 싣는다(T-026).
+# session.lock으로 직렬화하고, 이벤트는 그 요청이 만든 것만 응답에 싣는다.
 
 @app.post("/game/start", response_model=GameStateResponse)
 def start_game(req: StartGameRequest):
@@ -94,7 +94,7 @@ def start_game(req: StartGameRequest):
         difficulty=req.difficulty,
         small_blind=req.big_blind // 2,  # BB 입력(짝수 검증됨) → SB = BB / 2
     )
-    # 첫 상태 계산까지 성공한 세션만 등록한다 — 도중에 실패하면 목록에 남지 않는다(T-027)
+    # 첫 상태 계산까지 성공한 세션만 등록한다 — 도중에 실패하면 목록에 남지 않는다
     state = session.get_state(session.start_events)
     _register_session(session_id, session)
     return state

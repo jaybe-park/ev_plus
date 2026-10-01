@@ -14,32 +14,8 @@
 
 ## 🚨 먼저 — 2026-10-01 리뷰 수정
 
-### T-044 — GTO 조회 경로 가드 + 파이썬 군살 정리 (RC2·RC5) — 영역: gto/, db/, scripts/, tools/, tests/test_gto_tree.py, tests/test_workflow.py, tests/run_all.py, .claude/hooks/block_dangerous.py, requirements*.txt, dev.sh/prod.sh/start.sh, docs/spec/gto-preflop.md·db.md·testing.md
-- 왜: 간단 라벨 예비 경로가 올인·림프·3~5인에서 ADR 0035·0037·0046·0005를 우회한다. 죽은 코드·일회성 도구·폐기된 워커 잔재가 남아 있다.
-- 완료 조건:
-  - [ ] 프리플랍 시퀀스에 올인이 있으면 라벨 예비 경로는 None(힌트 "데이터 없음")이고 미수집 큐에 시퀀스 키가 기록된다. 테스트: UTG 올인 → HJ 힌트 None / UTG 오픈·HJ 3벳·CO 올인 → UTG 힌트 None
-  - [ ] 림프가 있는 팟은 RFI로 판정하지 않는다(`is_rfi`는 시퀀스에 콜·레이즈가 없을 때만). 테스트: UTG 림프 → HJ 힌트가 RFI 노드가 아님
-  - [ ] 3~5인 테이블에서는 라벨 예비 경로도 None(ADR 0005). 테스트 1건
-  - [ ] `audit_gto_preflop.py`에 두 검사 추가: ① 자식 노드 핸드 집합 = 부모의 직전 액션 지지 집합(노드 5의 117핸드를 잡아야 함, 현재 DB에서 1건 실패로 보고) ② DB에서 재구성한 frontier ⊆ 체크포인트 frontier ∪ visited(유실 `F-F-R2.5`를 잡아야 함). `requeue_lost_gto_nodes.py`와 그 테스트 삭제(역할을 audit이 흡수, 되돌리기는 frontier 재시드)
-  - [ ] 체크포인트 frontier 유실 복구: `failed=[]`를 확인한 뒤 `gto_tree_checkpoint.json`을 DB에서 재시드(수집기의 시드 경로 사용, 백업 `.json.bak` 남김). 재시드 후 frontier에 `F-F-R2.5`가 있다
-  - [ ] 미수집 큐 정화: 수집기가 큐 항목을 frontier에 넣을 때 수집된 조상에서 다음 액션 빈도가 ε 이하인 키(트리 밖)는 건너뛴다. 옛 enum 행 23개 삭제는 `--dry-run` 지원 스크립트(`scripts/prune_missing_spots.py`)로만 — 실행은 하지 않고 dry-run 결과만 보고
-  - [ ] 삭제: `db/queries.py`(+`db/__init__.py` 재노출), `gto/url_generator.py`의 `rfi_url`/`vs_open_url`/`vs_3bet_url`/`get_url`/`OPEN_SIZE`/`THREE_BET_SIZE`(`situation_to_node_key`·레거시 사이즈 표는 v12 마이그레이션이 쓰면 유지), `tools/migrate_gto.py`, `scripts/slim_db.py`+`tests/test_slim_db.py`(FULL에서 제외), `gto/loader.py:108` 도달 불가 fold 줄, `server/main.py`의 `__main__` HTTP 실행 블록(ADR 0025), `db/recorder.py::close`, `tests/test_poker.py`(영역 1과 중복)
-  - [ ] hook `EXCLUSIVE`에서 `equity_worker` 규칙 제거(grind/tune/collect만), hook 모듈 docstring의 ADR 참조 0002→0001·0033. `tests/test_workflow.py`를 그에 맞게 고치고 `run_all.py` FAST에 등록
-  - [ ] `requirements.txt` 하나로 통합(httpx 포함, `requirements-server.txt` 삭제, README·start 스크립트 참조 갱신). `dev.sh`/`prod.sh` SSL 블록을 공용 함수 파일로 빼고 `start.sh`는 유지(`test_8_23`이 `dev.sh`를 파싱하므로 그 형식 보존)
-  - [ ] 로더에 공개 `invalidate()`를 두고 `server/main.py`가 내부 캐시 변수를 직접 지우지 않는다. GTO 노드+핸드 로딩을 `gto/loader.py` 한 함수로 모으고 collect·audit이 그것을 쓴다(빈도합 허용 상수 1곳)
-  - [ ] 주석 정리: ADR 번호 0038→0044 6곳(db/schema.py:164,445 · gto/node_key.py:9,12 · server/main.py:167 · tools/gto_extract_and_save.js:13), 날짜·사고 경위·Task 꼬리표(`collect_gto_tree.py`·`url_generator.py`·`schema.py`·`advisor.py`·`gto_tree_worker.py`) 삭제, `collect_gto_tree.py` 모듈 docstring을 10줄 이내로
-  - [ ] gto-preflop.md·db.md·testing.md 덮어쓰기: 스키마 현재 버전 14(운영 DB 2026-10-01 적용), 부분 인덱스 절 삭제(ADR 0032 대체됨), "장치 없음"→hook, FAST/FULL 목록은 "원본 `run_all.py`"로, 실행 시간 실측, 격리 이유 정정, v13 적용 서술·vs_open 스냅샷·"T-013/T-014/T-012" 근거 삭제, 삭제한 도구 참조 제거
-- 의존: 운영 DB 마이그레이션(완료, 2026-10-01)
-
 ### T-045 — 문서 전면 정합 (RC6) — 메인 세션이 T-040~044 병합 뒤 수행
 - 완료 조건:
-  - [ ] README: https, 끝난 T-013 제거, 구조 표 갱신, 야간 루틴은 spec 링크로, 현재 상태 표 사실 정정
-  - [x] game.md를 `game-rules.md`·`web-flow.md`로 분할(2026-10-01)
-  - [ ] 장황 후보(self-review RC6) 삭제, CLAUDE.md 프로젝트 값에 "spec 1개 ≤ 6천 토큰"
-  - [ ] ADR: README 상태 정정(0020·0022·0032 "일부 대체됨", 0005·0006·0008·0013 비고 "해소됨 → …"), 0050 "슬림 사본으로 운영 DB 교체(옛 D-15)" 작성, 없는 `ai-dev-workflow-migration.md` 링크 제거(playbook·ADR 0001은 불변이므로 README 비고로)
-  - [ ] CLAUDE.md: 절대 규칙 강제 장치 정정(격리 = `run_all.py` 스냅샷 가드 + `test_guards`), 문서 지도에서 git 제외 파일 표기, `.claude/agents/implementer.md` UI 커밋 규칙을 CLAUDE.md와 일치
-  - [ ] DECISIONS: 머리말을 "기준은 CLAUDE.md" 한 줄로. TODO: 빈 섹션·완료 Task 의존 메모 제거, E-2에서 ADR 0007 위반을 독립 Task로 분리
-  - [ ] self-reviews/README·review 스킬의 "캐시 드리프트" 문구 정정
 
 ## 게임 룰 (spec/game-rules.md)
 

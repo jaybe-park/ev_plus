@@ -138,13 +138,8 @@ SLOW_THRESHOLD_SEC = 0.5
 
 
 def run(name, fn):
-    # 테스트마다 새 임시 DB 파일 사용.
-    # 이유: WebGameSession마다 GameRecorder가 자체 sqlite3 커넥션을 열고
-    # 절대 닫지 않는다. 모든 테스트가 같은 DB 파일을 공유하면 테스트가
-    # 누적될수록 살아있는 커넥션 수가 늘어나 SQLite 쓰기 락 경합이 심해지고,
-    # 결국 busy_timeout(30s)까지 블로킹되는 현상이 발생한다
-    # (예: 34개 테스트 후 단순 세션 생성이 31초 걸림).
-    # 테스트별로 격리된 파일을 쓰면 커넥션이 서로 충돌하지 않는다.
+    # 테스트마다 새 임시 DB 파일 — 운영 poker.db를 건드리지 않고(ADR 0026), 테스트끼리
+    # 기록이 섞이지 않는다.
     os.environ["EV_PLUS_DB"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
     start = time.perf_counter()
     try:
