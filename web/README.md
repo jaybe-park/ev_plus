@@ -8,4 +8,4 @@ npm run lint         # eslint
 npm run test         # vitest (src/**/__tests__/*.test.ts, 순수 로직만)
 ```
 
-화면·API 규칙은 루트 `docs/spec/game.md`(웹 게임 흐름)를 본다.
+화면·API 규칙은 루트 `docs/spec/web-flow.md`를 본다(룰은 `docs/spec/game-rules.md`).

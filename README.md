@@ -93,7 +93,8 @@ python3 scripts/gto_tree_report.py
 
 | 문서 | 내용 |
 |---|---|
-| [게임](docs/spec/game.md) | 룰, 웹 게임 흐름(이벤트), API 목록 — 필드 상세는 `https://localhost:8765/docs` |
+| [포커 룰](docs/spec/game-rules.md) | 좌석·버튼, 행동 순서, 재오픈, 사이드팟·반환, 칩 보존 (core 엔진) |
+| [웹 흐름·API](docs/spec/web-flow.md) | 세션·이벤트 재생·화면 규칙, API 목록 — 필드 상세는 `https://localhost:8765/docs` |
 | [AI 봇](docs/spec/bot.md) | 난이도·페르소나, 의사결정, 플레이 평가, 아레나·튜닝 |
 | [에퀴티](docs/spec/equity.md) | 에퀴티 엔진(프리플랍 테이블·전수·적응형 MC), 에퀴티 패널, 응답 시간 |
 | [프리플랍 GTO](docs/spec/gto-preflop.md) | 수집·저장·조회 규칙, 운영 방법 |

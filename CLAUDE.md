@@ -26,7 +26,7 @@ cd web && npm run build            # 프론트 빌드 확인
 
 | 층 | 문서 |
 |---|---|
-| 현재 상태 | `docs/spec/` — `game.md`(룰·웹 흐름·API) · `bot.md`(봇·플레이 평가) · `equity.md`(에퀴티 엔진·워커·패널) · `gto-preflop.md`(GTO 수집·저장·조회) · `db.md`(연결·마이그레이션·기록·보존) · `testing.md`(테스트 체계) |
+| 현재 상태 | `docs/spec/` — `game-rules.md`(포커 룰, core) · `web-flow.md`(세션·이벤트·화면·API) · `bot.md`(봇·플레이 평가) · `equity.md`(에퀴티 엔진·워커·패널) · `gto-preflop.md`(GTO 수집·저장·조회) · `db.md`(연결·마이그레이션·기록·보존) · `testing.md`(테스트 체계) |
 | 로컬 생성 (git 제외, 문서가 아니라 리포트) | `docs/gto-preflop-progress.md` — `python3 scripts/gto_tree_report.py`가 만든다. 규칙을 적지 않는다 |
 | 결정 | `docs/decisions/` (목록: `README.md`) |
 | 결정 대기 | `DECISIONS.md` |

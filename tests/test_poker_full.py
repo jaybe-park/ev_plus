@@ -3570,7 +3570,7 @@ ALL_TESTS = [
     ("6-3  헤즈업 포스트플랍 BB 선행동",       test_6_3_headsup_postflop_bb_acts_first),
     ("6-4  헤즈업 20핸드 칩 총량 보존",        test_6_4_headsup_chip_conservation),
     ("6-5  사이드팟 — 숏스택 메인팟만 수령",   test_6_5_sidepot_shortstack_wins_mainpot_only),
-    ("6-6  사이드팟 — 동일 올인 팟 1개",       test_6_6_sidepot_three_allins),
+    ("6-6  사이드팟 — 100/300/600 → 메인·사이드·반환",       test_6_6_sidepot_three_allins),
     ("6-7  사이드팟 — 폴드 기여분 처리",       test_6_7_sidepot_folded_player_contribution),
     ("6-8  사이드팟 분배 후 칩 보존",          test_6_8_sidepot_conservation),
     ("6-9  헤즈업 GTO BTN/SB→SB RFI 매핑",     test_6_9_headsup_gto_btnSB_mapped_to_sb_rfi),

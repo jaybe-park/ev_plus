@@ -288,7 +288,8 @@ class TexasHoldem:
     def calculate_side_pots(self) -> List[Tuple[int, List[Player]]]:
         """[(금액, eligible 플레이어들)] — total_bet_this_round 오름차순 계층.
         각 계층은 그 금액을 낸(폴드하지 않은) 플레이어끼리만 나눈다. 폴드한 사람의 기여도
-        계층별로 들어간다. eligible이 1명인 계층 = 초과 베팅 반환."""
+        계층별로 들어간다. 아무도 콜하지 않은 초과 베팅(최대 기여 − 두 번째 기여)은 showdown()이
+        반환 계층으로 분리한다 — eligible 1명이어도 폴드한 사람의 돈이 든 계층은 그 사람이 이긴 팟."""
         all_players = self.players
         contenders = [p for p in all_players if not p.is_folded and len(p.hole_cards) >= 2]
         if not contenders:
