@@ -74,6 +74,22 @@
   `fixtures/replay_session.json`: 시작 화면 = 직전 상태, 팟 = 이벤트 `pot_after`, 스트리트·보드는
   해당 이벤트에서만, 봇 베팅은 그 봇 액션부터, 전부 소비 = 서버 최종 상태, 스킵 동일, 새 핸드,
   "재생 중 로그는 끝 기준으로 자른다")
+- 구조화 로그 `log_entries`: 게임 상태는 `action_log`(문자열, 끝 30줄)와 함께 같은 창의
+  `log_entries: [{text, street, board, hero_cards}]`를 싣는다 — `action_log`와 1:1(같은 길이, `text` = 같은 위치
+  문자열), `street`·`board`(그 줄이 생긴 시점까지 깔린 커뮤니티 카드)·`hero_cards`(사람 홀카드)는 그 줄을 쓸
+  때의 값이다. 스트리트 헤더 줄("── 플랍 ──")은 카드를 깐 뒤 기록하므로 새 보드를, 승리 줄은 최종 보드를 싣는다.
+  세션은 로그를 `_append_log` 한 곳에서만 쌓는다 — 원본: `server/session.py::_append_log`, `server/schemas.py::LogEntry`
+  · 강제 장치: `tests/test_poker_full.py::test_8_32_log_entries_carry_board_and_hero_cards`,
+  `::test_8_33_log_entries_window_matches_action_log_tail`
+- 로그 화면(사이드 "📋 로그" 탭): 줄마다 오른쪽에 그 시점의 내 핸드 | 보드를 작게 보인다(♥♦ 빨강). 재생 중에는
+  `projectState`가 `log_entries`도 `action_log`와 같은 개수(`logPending`)만큼 끝에서 숨기고, 줄의 보드는 지금
+  화면 보드 장수까지만 보인다(`street_start`가 `community_card`보다 먼저 소비되므로 아직 안 깔린 카드를 로그가
+  먼저 보이지 않게). `log_entries`가 없거나 길이·텍스트가 어긋나면 텍스트만 보인다. 로그 영역은 내용만큼
+  늘어나고 사이드 패널 높이(좁은 화면은 60vh)를 넘으면 안에서 스크롤한다. 우상단 "복사" 버튼은 로그 텍스트만
+  (카드 표시 없이 줄바꿈으로 이어) `navigator.clipboard`에 넣고 잠깐 "복사됨"을 보인다. 클립보드 실패·미지원은
+  조용히 무시 — 원본: `web/src/components/actionLogLogic.ts`, `web/src/components/ActionLog.tsx` · 강제 장치:
+  `web/src/components/__tests__/actionLogLogic.test.ts`(줄 구성·보드 자르기·복사 문자열·클립보드 실패),
+  `web/src/hooks/__tests__/replayDisplay.test.ts`("log_entries … 1:1을 유지한다"), 늘어나는 높이는 장치 없음
 - 이벤트 페이로드: `blind`/`action`은 `pot_after`(이벤트 직후 팟)·`bet_after`(그 플레이어의
   이번 스트리트 베팅), `street_start`는 `pot_after`를 싣는다. `winner` 이후 표시 팟은 0 — 강제
   장치: `tests/test_poker_full.py::test_8_12_session_fuzz_event_amounts_and_conservation`(누적 이동액

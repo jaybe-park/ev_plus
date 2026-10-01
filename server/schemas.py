@@ -176,6 +176,14 @@ class PotShareOut(BaseModel):
     returned: bool = False        # 아무도 콜하지 않은 초과 베팅을 본인에게 돌려준 계층
 
 
+class LogEntry(BaseModel):
+    """action_log 한 줄 + 그 줄이 생긴 시점의 스트리트·보드·사람 홀카드(화면 로그 줄 표시용)"""
+    text: str                       # action_log의 같은 위치 문자열과 동일
+    street: str                     # 프리플랍 / 플랍 / 턴 / 리버 / 쇼다운
+    board: List[str] = []           # 그 시점까지 깔린 커뮤니티 카드
+    hero_cards: List[str] = []      # 사람 홀카드(핸드 중 고정)
+
+
 class GameStateResponse(BaseModel):
     session_id: str
     hand_number: int
@@ -193,6 +201,7 @@ class GameStateResponse(BaseModel):
     showdown_hands: Dict[str, str] = {}
     pots: Optional[List[PotShareOut]] = None  # 팟 계층별 분배 (hand_over=true일 때)
     action_log: List[str] = []
+    log_entries: List[LogEntry] = []  # action_log[-30:]와 1:1(같은 길이·같은 text 순서)
     call_amount: int = 0
     min_raise_to: int = 0             # 레이즈 불가(액션 닫힘·스택 부족)면 0
     can_raise: bool = False           # 사람이 지금 레이즈/올인-레이즈를 할 수 있는가

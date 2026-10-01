@@ -7,6 +7,7 @@ import SetupForm from "./components/SetupForm";
 import PokerTable from "./components/PokerTable";
 import ActionBar from "./components/ActionBar";
 import ActionLog from "./components/ActionLog";
+import { logLines } from "./components/actionLogLogic";
 import HandResult from "./components/HandResult";
 import HintPanel from "./components/HintPanel";
 import { gtoFetchState, type GtoFetchResult } from "./components/gtoPanelLogic";
@@ -332,8 +333,8 @@ export default function App() {
         {/* 탭 컨텐츠 */}
         <div className="flex-1 min-h-0 overflow-hidden">
           {rightTab === "log" ? (
-            <div className="p-3 h-full">
-              <ActionLog log={shown.action_log} />
+            <div className="p-3 h-full flex flex-col">
+              <ActionLog lines={logLines(shown)} />
             </div>
           ) : hintEnabled ? (
             // ① 상황 ② GTO 빈도 ③ 내 패 ④ 에퀴티 — 넘치면 패널 안에서만 스크롤
