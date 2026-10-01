@@ -27,11 +27,20 @@ export interface GameState {
   action_log: string[];
   call_amount: number;
   min_raise_to: number;
-  can_raise: boolean;       // 사람이 지금 레이즈/올인-레이즈를 할 수 있나(false면 버튼 숨김, T-039)
+  can_raise: boolean;       // 사람이 지금 레이즈/올인-레이즈를 할 수 있나(false면 버튼 숨김)
   events: GameEvent[];
   gto: GtoNode | null;
   equity: EquityInfo | null;
   hand_review: HandReviewEntry[] | null;
+  pots?: PotShare[] | null; // 핸드 종료 시 팟 계층(없거나 null이면 계층 표시 없이 승자만)
+}
+
+// 팟 계층 하나. returned=true는 아무도 받지 않은 초과 베팅을 낸 사람에게 돌려준 몫.
+export interface PotShare {
+  amount: number;
+  eligible: string[];
+  winners: string[];
+  returned: boolean;
 }
 
 // ── 에퀴티 패널 / 플레이 평가 ──────────────────────────
@@ -66,7 +75,7 @@ export interface HandReviewEntry {
   action: string;
   grade: string;
   reason: string;
-  ev_loss_bb: number | null;
+  ev_loss_bb: number | null;     // 양수 = 손실 크기(bb). 손실 없음·판정 안 함은 null
   pot_odds: number | null;
   equity: number | null;
   gto_freq: number | null;
@@ -75,7 +84,7 @@ export interface HandReviewEntry {
 export interface SessionReview {
   total_actions: number;
   grade_counts: Record<string, number>;
-  total_ev_loss_bb: number;
+  total_ev_loss_bb: number;      // 양수 = 누적 손실 크기(bb)
   gto_match_rate: number | null;
 }
 
@@ -98,7 +107,7 @@ export interface ActionBadge {
 
 // ── GTO 레인지 ──────────────────────────────────────
 
-// 게임 상태의 GTO 패널 정보 — advisor 추천 하나에서 만든다(T-013, server/session.py::_get_gto_panel).
+// 게임 상태의 GTO 패널 정보 — advisor 추천 하나에서 만든다(server/session.py::_get_gto_panel).
 // found=false: 이 상황의 GTO 데이터 없음. 레인지는 node_key로 /gto/preflop/range?action_seq= 조회.
 export interface GtoNode {
   found: boolean;

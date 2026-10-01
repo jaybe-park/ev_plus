@@ -17,7 +17,7 @@ class MemoryStorage {
 
 const g = globalThis as unknown as { sessionStorage?: unknown };
 
-describe("세션 번호 보관 — 새로고침 후 이어하기 (T-028, ADR 0043)", () => {
+describe("세션 번호 보관 — 새로고침 후 이어하기 (ADR 0043)", () => {
   beforeEach(() => { g.sessionStorage = new MemoryStorage(); });
   afterEach(() => { delete g.sessionStorage; });
 
@@ -45,7 +45,7 @@ describe("세션 번호 보관 — 새로고침 후 이어하기 (T-028, ADR 004
   });
 });
 
-describe("세션 만료 판정 (T-028)", () => {
+describe("세션 만료 판정", () => {
   it("404만 세션 만료로 본다", () => {
     expect(isSessionGone(new ApiError("세션을 찾을 수 없습니다.", 404))).toBe(true);
     expect(isSessionGone(new ApiError("불법 액션", 400))).toBe(false);

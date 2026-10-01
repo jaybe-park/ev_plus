@@ -1,4 +1,4 @@
-// 에퀴티 패널의 표시 판단만 순수 함수로 뽑은 모듈(vitest 대상, T-006).
+// 에퀴티 패널의 표시 판단만 순수 함수로 뽑은 모듈(vitest 대상).
 // 패널이 보여주는 숫자는 전부 vs_range 한 기준이다(vs_random은 화면에 없다 — ADR 0022/0034).
 import type { EquityInfo } from "../types";
 

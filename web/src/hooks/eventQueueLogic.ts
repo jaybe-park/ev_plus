@@ -1,7 +1,7 @@
 // useEventQueue의 "이벤트 하나를 보고 무엇을 표시할지" 판단 로직만 순수 함수로 뽑아둔 모듈.
 // 타이머로 언제 반영할지(스케줄링)는 useEventQueue.ts가 맡고, 이 파일은 부작용 없이
 // 입력(GameEvent)에서 출력(배지 텍스트/커밋 레이블/리셋 여부)만 계산한다 — vitest로
-// 이벤트 순서·텍스트를 검증하기 위해 분리(T-030).
+// 이벤트 순서·텍스트를 검증하기 위해 분리.
 import type { GameEvent, ActionBadge, GameState } from "../types";
 
 export const BET_ACTIONS = new Set(["call", "raise", "allin"]);
@@ -10,11 +10,16 @@ export function isBetAction(action: string): boolean {
   return BET_ACTIONS.has(action);
 }
 
+/** 블라인드 표기 "SB 10" / "BB 20". 헤즈업 버튼(BTN/SB)은 SB. */
+export function blindLabel(position: string, amount: number): string {
+  const isSmall = position === "SB" || position === "BTN/SB";
+  return `${isSmall ? "SB" : "BB"} ${amount}`;
+}
+
 /** 이벤트 로그에서 배지(플레이어 옆 말풍선)에 표시할 텍스트를 만든다. 없으면 null. */
 export function formatBadge(event: GameEvent): ActionBadge | null {
   if (event.type === "blind") {
-    const isSmall = event.position === "SB" || event.position === "BTN/SB";
-    return { player: event.player, text: `${isSmall ? "SB" : "BB"} ${event.amount}`, variant: "blind" };
+    return { player: event.player, text: blindLabel(event.position, event.amount), variant: "blind" };
   }
   if (event.type === "action") {
     const { player, action, amount } = event;
@@ -31,10 +36,7 @@ export function formatBadge(event: GameEvent): ActionBadge | null {
 
 /** 좌석 아래 "커밋된" 액션 레이블(예: "레이즈 → 44", "콜 20")을 만든다. 없으면 null. */
 export function makeCommitLabel(event: GameEvent): string | null {
-  if (event.type === "blind") {
-    const isSmall = event.position === "SB" || event.position === "BTN/SB";
-    return `${isSmall ? "SB" : "BB"} ${event.amount}`;
-  }
+  if (event.type === "blind") return blindLabel(event.position, event.amount);
   if (event.type === "action") {
     const { action, amount } = event as { action: string; amount: number };
     switch (action) {
@@ -78,10 +80,13 @@ export function replayCommitEffects(events: GameEvent[]): CommitEffect[] {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 재생 표시 상태 (T-029)
+// 재생 표시 상태
 //   응답이 오면 서버 최종 상태(next)를 바로 그리지 않는다. 재생 중에는 "이전 상태 + 지금까지
 //   소비한 이벤트"로 만든 DisplayState 하나만 그린다(applyEvent 리듀서). 팟·스트리트·베팅·칩·
 //   폴드·카드 수·로그 줄 수가 모두 여기서 나오므로 애니메이션과 같은 시점에 바뀐다.
+//   로그: 서버는 끝 30줄(action_log[-30:])만 보내므로, 아직 소비하지 않은 이벤트의 로그 줄 수
+//   (logPending)를 들고 next.action_log의 끝에서 그만큼 숨긴다(앞 기준으로 자르면 30줄이 넘는
+//   핸드에서 창이 밀려 어긋난다).
 // ─────────────────────────────────────────────────────────────
 
 export interface SeatView {
@@ -97,7 +102,7 @@ export interface DisplayState {
   street: string;
   pot: number;
   cardCount: number;         // 보이는 커뮤니티 카드 수
-  logCount: number;          // 보이는 로그 줄 수
+  logPending: number;        // 아직 소비하지 않은 이벤트의 로그 줄 수(끝에서 숨김)
   showdownRevealed: boolean;
   seats: Record<string, SeatView>;
 }
@@ -112,6 +117,7 @@ export function initialDisplay(
   next: GameState,
   isNewHand: boolean,
 ): DisplayState {
+  const logPending = next.events.filter((e) => e.log).length;
   if (isNewHand || !prevState) {
     const prevChips = new Map((prevState?.players ?? []).map((p) => [p.name, p.chips]));
     const seats: Record<string, SeatView> = {};
@@ -122,7 +128,7 @@ export function initialDisplay(
         bet: 0, folded: false, allIn: false, dealt: 0, committed: null,
       };
     }
-    return { street: "프리플랍", pot: 0, cardCount: 0, logCount: 0, showdownRevealed: false, seats };
+    return { street: "프리플랍", pot: 0, cardCount: 0, logPending, showdownRevealed: false, seats };
   }
   const seats: Record<string, SeatView> = {};
   for (const p of prevState.players) {
@@ -135,7 +141,7 @@ export function initialDisplay(
     street: prevState.street,
     pot: prevState.pot,
     cardCount: prevState.community_cards.length,
-    logCount: prevState.action_log.length,
+    logPending,
     showdownRevealed: false,
     seats,
   };
@@ -148,15 +154,15 @@ function withSeat(d: DisplayState, name: string, patch: Partial<SeatView>): Reco
 
 /** 이벤트 하나를 소비한 뒤의 표시 상태(순수 리듀서). */
 export function applyEvent(d: DisplayState, e: GameEvent): DisplayState {
-  const logCount = e.log ? d.logCount + 1 : d.logCount;
+  const logPending = e.log ? Math.max(0, d.logPending - 1) : d.logPending;
   switch (e.type) {
     case "deal_card": {
       const cur = d.seats[e.player]?.dealt ?? 0;
-      return { ...d, seats: withSeat(d, e.player, { dealt: Math.min(cur + 1, 2) }) };
+      return { ...d, logPending, seats: withSeat(d, e.player, { dealt: Math.min(cur + 1, 2) }) };
     }
     case "blind":
       return {
-        ...d, logCount,
+        ...d, logPending,
         pot: e.pot_after ?? d.pot + e.amount,
         seats: withSeat(d, e.player, {
           chips: e.chips_after ?? d.seats[e.player]?.chips ?? 0,
@@ -168,7 +174,7 @@ export function applyEvent(d: DisplayState, e: GameEvent): DisplayState {
       const seat = d.seats[e.player];
       const chips = e.chips_after ?? seat?.chips ?? 0;
       return {
-        ...d, logCount,
+        ...d, logPending,
         pot: e.pot_after ?? d.pot,
         seats: withSeat(d, e.player, {
           chips,
@@ -182,18 +188,18 @@ export function applyEvent(d: DisplayState, e: GameEvent): DisplayState {
     case "street_start": {
       const seats: Record<string, SeatView> = {};
       for (const [k, s] of Object.entries(d.seats)) seats[k] = { ...s, bet: 0, committed: null };
-      return { ...d, logCount, street: e.street, pot: e.pot_after ?? d.pot, seats };
+      return { ...d, logPending, street: e.street, pot: e.pot_after ?? d.pot, seats };
     }
     case "community_card":
-      return { ...d, logCount, cardCount: d.cardCount + 1 };
+      return { ...d, logPending, cardCount: d.cardCount + 1 };
     case "showdown":
-      return { ...d, logCount, showdownRevealed: true };
+      return { ...d, logPending, showdownRevealed: true };
     case "winner": {
       let seats = d.seats;
       for (const [name, c] of Object.entries(e.winner_chips ?? {})) {
         seats = withSeat({ ...d, seats }, name, { chips: c });
       }
-      return { ...d, logCount, pot: 0, seats };
+      return { ...d, logPending, pot: 0, seats };
     }
   }
   return d;
@@ -214,7 +220,7 @@ export function projectState(next: GameState, d: DisplayState): GameState {
     street: d.street,
     pot: d.pot,
     community_cards: next.community_cards.slice(0, d.cardCount),
-    action_log: next.action_log.slice(0, d.logCount),
+    action_log: next.action_log.slice(0, Math.max(0, next.action_log.length - d.logPending)),
     players: next.players.map((p) => {
       const s = d.seats[p.name];
       return s ? { ...p, chips: s.chips, current_bet: s.bet, is_folded: s.folded, is_all_in: s.allIn } : p;
@@ -224,7 +230,7 @@ export function projectState(next: GameState, d: DisplayState): GameState {
 
 /**
  * 힌트 패널(에퀴티·GTO)·액션 바가 읽을 상태. 재생 중엔 재생 직전 상태를 유지해, 아직 화면에
- * 깔리지 않은 카드가 반영된 새 에퀴티·GTO 노드를 먼저 보이지 않는다(T-029).
+ * 깔리지 않은 카드가 반영된 새 에퀴티·GTO 노드를 먼저 보이지 않는다. 헤더 핸드 번호도 이 상태를 쓴다.
  */
 export function panelState(isReplaying: boolean, replayBase: GameState | null, current: GameState): GameState {
   return isReplaying && replayBase ? replayBase : current;

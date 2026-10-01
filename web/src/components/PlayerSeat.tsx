@@ -1,5 +1,6 @@
 import type { PlayerState, ActionBadge } from "../types";
 import CardView, { CardBack } from "./CardView";
+import { displayName } from "../format";
 
 interface Props {
   player: PlayerState;
@@ -134,7 +135,7 @@ export default function PlayerSeat({
       {/* 플레이어 정보 */}
       <div className={`${bgClass} ${ringClass} border rounded-xl px-3 py-1.5 text-center min-w-[90px] shadow-lg transition-all duration-200`}>
         <div className="text-white text-xs font-semibold truncate max-w-[80px]">
-          {player.name.replace("🤖 ", "")}
+          {displayName(player.name)}
         </div>
         <div className="text-yellow-400 text-xs font-bold">{chips.toLocaleString()}</div>
         {player.position && (

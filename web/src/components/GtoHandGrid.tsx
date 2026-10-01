@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { ACTION_COLORS, ACTION_LABELS, ACTION_ORDER, NO_DATA_COLOR, cellBackground } from "./gtoPanelLogic";
+import { pct } from "../format";
 
 interface Props {
   hands: Record<string, Record<string, number>>;
@@ -12,38 +14,6 @@ function cellHand(r: number, c: number): string {
   if (r === c) return RANKS[r] + RANKS[r];               // 페어
   if (r < c)  return RANKS[r] + RANKS[c] + "s";          // suited (상단)
   return RANKS[c] + RANKS[r] + "o";                       // offsuit (하단)
-}
-
-// 액션 색상
-const ACTION_COLORS: Record<string, string> = {
-  allin: "#991b1b",
-  raise: "#ef4444",
-  call:  "#22c55e",
-  fold:  "#3b82f6",
-};
-const ACTION_ORDER = ["allin", "raise", "call", "fold"];
-
-function cellStyle(freqs: Record<string, number> | undefined): React.CSSProperties {
-  if (!freqs) return { backgroundColor: "#3b82f6" };
-
-  const parts = ACTION_ORDER
-    .map(a => ({ action: a, freq: freqs[a] ?? 0 }))
-    .filter(p => p.freq > 0.001);
-
-  if (parts.length === 0) return { backgroundColor: "#3b82f6" };
-  if (parts.length === 1) return { backgroundColor: ACTION_COLORS[parts[0].action] };
-
-  // 그라디언트 빌드
-  let stops = "";
-  let cum = 0;
-  for (const p of parts) {
-    const from = Math.round(cum * 100);
-    const to   = Math.round((cum + p.freq) * 100);
-    const col  = ACTION_COLORS[p.action];
-    stops += `, ${col} ${from}%, ${col} ${to}%`;
-    cum += p.freq;
-  }
-  return { backgroundImage: `linear-gradient(to right${stops})` };
 }
 
 export default function GtoHandGrid({ hands, myHand }: Props) {
@@ -77,9 +47,8 @@ export default function GtoHandGrid({ hands, myHand }: Props) {
                 className={`w-5 h-5 rounded-sm cursor-pointer transition-all duration-100 relative
                   ${isMyHand ? "ring-2 ring-white ring-offset-1 ring-offset-gray-900 z-10" : ""}
                   ${isHovered ? "opacity-80 scale-110 z-20" : ""}
-                  ${!freqs ? "opacity-30" : ""}
                 `}
-                style={cellStyle(freqs)}
+                style={{ background: cellBackground(freqs) }}
                 onMouseEnter={() => setHovered(hand)}
                 onMouseLeave={() => setHovered(null)}
               >
@@ -104,14 +73,14 @@ export default function GtoHandGrid({ hands, myHand }: Props) {
             return (
               <div key={action} className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: ACTION_COLORS[action] }} />
-                <span className="text-gray-300 capitalize w-10">{action}</span>
+                <span className="text-gray-300 w-10">{ACTION_LABELS[action]}</span>
                 <div className="flex-1 bg-gray-700 rounded-full h-1.5">
                   <div
                     className="h-1.5 rounded-full"
                     style={{ width: `${freq * 100}%`, backgroundColor: ACTION_COLORS[action] }}
                   />
                 </div>
-                <span className="text-white w-10 text-right">{(freq * 100).toFixed(1)}%</span>
+                <span className="text-white w-10 text-right">{pct(freq, 1)}</span>
               </div>
             );
           })}
@@ -123,9 +92,13 @@ export default function GtoHandGrid({ hands, myHand }: Props) {
         {ACTION_ORDER.map(a => (
           <div key={a} className="flex items-center gap-1">
             <div className="w-2 h-2 rounded-sm" style={{ backgroundColor: ACTION_COLORS[a] }} />
-            <span className="text-gray-500 capitalize text-[9px]">{a}</span>
+            <span className="text-gray-500 text-[9px]">{ACTION_LABELS[a]}</span>
           </div>
         ))}
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-sm" style={{ backgroundColor: NO_DATA_COLOR }} />
+          <span className="text-gray-500 text-[9px]">데이터 없음</span>
+        </div>
       </div>
     </div>
   );

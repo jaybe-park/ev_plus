@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { EquityInfo } from "../types";
 import { equityView, EQUITY_VS_GTO_TOOLTIP } from "./equityPanelLogic";
+import { pct, displayName } from "../format";
 
 interface Props {
   equity: EquityInfo | null;
@@ -19,10 +20,6 @@ const ROLE_COLORS: Record<string, string> = {
   caller: "bg-green-900/60 text-green-300",
   unknown: "bg-gray-700 text-gray-300",
 };
-
-function pct(v: number): string {
-  return `${(v * 100).toFixed(0)}%`;
-}
 
 export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
   // 내 턴 아닐 때는 마지막 값 유지 (equity가 null이면 이전 값 재사용).
@@ -43,7 +40,7 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
   }
 
   const stale = !isMyTurn || !equity;
-  // 패널의 모든 숫자는 vs_range 한 기준(게이지·팟오즈 색·콜 EV·추이) — T-006
+  // 패널의 모든 숫자는 vs_range 한 기준(게이지·팟오즈 색·콜 EV·추이)
   const view = equityView(display);
   const fillPct = Math.max(0, Math.min(100, view.headline * 100));
   const oddsPct = Math.max(0, Math.min(100, display.pot_odds * 100));
@@ -96,7 +93,7 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
         {sortedOpponents.map((op) => (
           <div key={op.name} className="flex items-center justify-between px-2 py-1 text-xs">
             <div className="flex items-center gap-1.5 min-w-0">
-              <span className="text-gray-300 truncate">{op.name.replace("🤖 ", "")}</span>
+              <span className="text-gray-300 truncate">{displayName(op.name)}</span>
               <span className="text-gray-500">{op.position}</span>
               <span className={`px-1 rounded text-[10px] shrink-0 ${ROLE_COLORS[op.role]}`}>
                 {ROLE_LABELS[op.role]}

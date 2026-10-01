@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { GameState, SetupConfig, GtoRange, SessionReview } from "./types";
+import type { GameState, SetupConfig, SessionReview } from "./types";
 import { api } from "./api";
 import { useEventQueue } from "./hooks/useEventQueue";
 import { panelState, shownState } from "./hooks/eventQueueLogic";
@@ -10,6 +10,8 @@ import ActionLog from "./components/ActionLog";
 import HandResult from "./components/HandResult";
 import GtoPanel from "./components/GtoPanel";
 import EquityPanel from "./components/EquityPanel";
+import { gtoFetchState, type GtoFetchResult } from "./components/gtoPanelLogic";
+import { sessionSummaryText, shouldFetchReview } from "./reviewLogic";
 import {
   readStoredSessionId, storeSessionId, clearStoredSessionId, isSessionGone,
   SESSION_EXPIRED_MESSAGE,
@@ -17,11 +19,28 @@ import {
 
 const HINT_STORAGE_KEY = "ev_plus_hint_enabled";
 
+// 힌트 켜짐 여부는 localStorage — 브라우저 설정(사이트 데이터 차단 등)에 따라 접근이 예외를 던질 수 있다
+function readHintEnabled(): boolean {
+  try {
+    return localStorage.getItem(HINT_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function storeHintEnabled(v: boolean): void {
+  try {
+    localStorage.setItem(HINT_STORAGE_KEY, String(v));
+  } catch {
+    // 저장 실패는 무시(다음 방문에 기본값)
+  }
+}
+
 export default function App() {
   const [state, setState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 서버가 세션을 모름(404: 서버 재시작·오래돼 정리됨) — 액션 잠금 + "세션 만료 — 새 게임" 안내 (T-028)
+  // 서버가 세션을 모름(404: 서버 재시작·오래돼 정리됨) — 액션 잠금 + "세션 만료 — 새 게임" 안내
   const [sessionExpired, setSessionExpired] = useState(false);
   // 설정 화면 안내(새로고침했는데 이전 세션이 사라진 경우)
   const [setupNotice, setSetupNotice] = useState<string | null>(null);
@@ -30,11 +49,8 @@ export default function App() {
   const restoreTried = useRef(false);
   const [myCardsRevealed, setMyCardsRevealed] = useState(false);
   const [rightTab, setRightTab] = useState<"log" | "hint">("log");
-  const [gtoRange, setGtoRange] = useState<GtoRange | null>(null);
-  const [gtoLoading, setGtoLoading] = useState(false);
-  const [hintEnabled, setHintEnabled] = useState<boolean>(
-    () => localStorage.getItem(HINT_STORAGE_KEY) === "true"
-  );
+  const [gtoResult, setGtoResult] = useState<GtoFetchResult | null>(null);
+  const [hintEnabled, setHintEnabled] = useState<boolean>(readHintEnabled);
   const [sessionReview, setSessionReview] = useState<SessionReview | null>(null);
 
   const prevHandNumber = useRef<number>(0);
@@ -51,7 +67,7 @@ export default function App() {
     reset: resetReplay,
   } = useEventQueue();
 
-  // 재생 직전의 상태 — 재생 중 힌트 패널(에퀴티·GTO)과 액션 바는 이 값을 유지한다(T-029).
+  // 재생 직전의 상태 — 재생 중 힌트 패널(에퀴티·GTO)·액션 바·헤더 핸드 번호는 이 값을 유지한다.
   // 새 값(아직 안 깔린 카드가 반영된 에퀴티 등)은 재생이 끝난 뒤에만 보인다.
   const [replayBase, setReplayBase] = useState<GameState | null>(null);
 
@@ -111,45 +127,37 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // GTO 레인지 페치 — 게임 상태의 gto.node_key(advisor 추천이 쓴 노드)가 바뀔 때마다(T-013).
+  // GTO 레인지 페치 — 게임 상태의 gto.node_key(advisor 추천이 쓴 노드)가 바뀔 때마다.
   // 힌트(내 패 빈도)와 레인지가 같은 노드에서 온다. UTG RFI 노드 키는 ""이므로 null과 구분한다.
-  // 재생 중엔 재생 직전 상태의 노드를 유지한다(T-029) — 새 노드 조회는 재생이 끝난 뒤
+  // 재생 중엔 재생 직전 상태의 노드를 유지한다 — 새 노드 조회는 재생이 끝난 뒤.
+  // 결과는 요청한 노드 키와 함께 둔다: 지금 노드의 결과가 없으면 로딩, 실패면 "조회 실패"(gtoFetchState)
   const panelSource = state ? panelState(isReplaying, replayBase, state) : null;
   const gtoNodeKey = panelSource?.gto?.found ? (panelSource.gto.node_key ?? null) : null;
   useEffect(() => {
     if (gtoNodeKey === null) return;
-
     let cancelled = false;
-    // 요청 시작을 알리는 로딩 플래그 — 표준 데이터 페칭 idiom(react.dev 공식 예제와 동일
-    // 형태)이라 여기서는 억제한다. .then/.catch/.finally 안의 setState는 이 규칙 대상이 아니다.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setGtoLoading(true);
     api.getGtoRange(gtoNodeKey)
-      .then(r => { if (!cancelled) setGtoRange(r); })
-      .catch(() => { if (!cancelled) setGtoRange(null); })
-      .finally(() => { if (!cancelled) setGtoLoading(false); });
-
+      .then(r => { if (!cancelled) setGtoResult({ key: gtoNodeKey, range: r }); })
+      .catch(() => { if (!cancelled) setGtoResult({ key: gtoNodeKey, range: null }); });
     return () => { cancelled = true; };
   }, [gtoNodeKey]);
+  const gtoFetch = gtoFetchState(gtoNodeKey, gtoResult);
 
-  // 지금 노드의 레인지만 쓴다 — 노드가 없거나(포스트플랍·데이터 없음) 아직 이전 노드의 응답이면 무시
-  const effectiveGtoRange =
-    gtoNodeKey !== null && gtoRange?.action_seq === gtoNodeKey ? gtoRange : null;
-
-  // 핸드 종료 시마다 세션 평가 요약 페치
+  // 핸드가 끝나고 그 재생도 끝난 뒤 세션 평가 요약 페치 — 헤더가 결과보다 먼저 바뀌지 않게
+  const fetchReview = shouldFetchReview(isReplaying, state);
   useEffect(() => {
-    if (!state?.hand_over || !state.session_id) return;
+    if (!fetchReview || !state?.session_id) return;
     let cancelled = false;
     api.getSessionReview(state.session_id)
       .then(r => { if (!cancelled) setSessionReview(r); })
       .catch(() => { if (!cancelled) setSessionReview(null); });
     return () => { cancelled = true; };
-  }, [state?.hand_over, state?.hand_number, state?.session_id]);
+  }, [fetchReview, state?.hand_number, state?.session_id]);
 
   const toggleHint = () => {
     setHintEnabled((v) => {
       const next = !v;
-      localStorage.setItem(HINT_STORAGE_KEY, String(next));
+      storeHintEnabled(next);
       return next;
     });
   };
@@ -168,31 +176,10 @@ export default function App() {
     setError(null);
     setSessionExpired(false);
     setSetupNotice(null);
-    setSessionReview(null);          // 새 게임 헤더에 이전 게임 요약이 남지 않게 (T-028)
+    setSessionReview(null);          // 새 게임 헤더에 이전 게임 요약이 남지 않게
     prevHandNumber.current = 0;      // 새 게임 첫 핸드도 "새 핸드"로 처리
     clearStoredSessionId();
   };
-
-  // 홀카드 → GTO 핸드 표기 변환
-  function toGtoHand(cards: string[] | null): string | null {
-    if (!cards || cards.length < 2) return null;
-    const RANK_VAL: Record<string, number> = {
-      A:14,K:13,Q:12,J:11,"10":10,T:10,"9":9,"8":8,"7":7,"6":6,"5":5,"4":4,"3":3,"2":2
-    };
-    const GTO_RANK: Record<string, string> = {
-      A:"A",K:"K",Q:"Q",J:"J","10":"T","9":"9","8":"8","7":"7","6":"6","5":"5","4":"4","3":"3","2":"2"
-    };
-    const SUITS = ["♠","♥","♦","♣"];
-    const parse = (c: string) => {
-      const suit = SUITS.find(s => c.endsWith(s)) ?? "";
-      const rank = c.slice(0, -1);
-      return { rank, suit, val: RANK_VAL[rank] ?? 0, gto: GTO_RANK[rank] ?? rank };
-    };
-    const [c1, c2] = [parse(cards[0]), parse(cards[1])];
-    const [hi, lo] = c1.val >= c2.val ? [c1, c2] : [c2, c1];
-    if (hi.rank === lo.rank) return hi.gto + lo.gto;
-    return hi.gto + lo.gto + (hi.suit === lo.suit ? "s" : "o");
-  }
 
   if (!state) {
     if (restoring) {
@@ -207,7 +194,7 @@ export default function App() {
     );
   }
 
-  // 지금 화면에 보일 상태 하나: 재생 중이면 "이전 상태 + 소비한 이벤트"(T-029), 아니면 서버 최종 상태
+  // 지금 화면에 보일 상태 하나: 재생 중이면 "이전 상태 + 소비한 이벤트", 아니면 서버 최종 상태
   const shown = shownState(isReplaying, display, state);
   const panel = panelState(isReplaying, replayBase, state);
   const human = shown.players.find((p) => p.is_human);
@@ -223,17 +210,12 @@ export default function App() {
         <div className="bg-gray-900 border-b border-gray-700 px-4 py-2 flex items-center justify-between shrink-0">
           <h1 className="text-white font-bold text-sm">♠ Texas Hold'em</h1>
           <div className="flex items-center gap-4 text-sm">
-            <span className="text-gray-400">핸드 #{state.hand_number}</span>
+            <span className="text-gray-400">핸드 #{panel.hand_number}</span>
             <span className="text-yellow-400 font-bold">
               {human?.name}: {(human?.chips ?? 0).toLocaleString()} 칩
             </span>
             {sessionReview && (
-              <span className="text-gray-400 text-xs">
-                GTO {sessionReview.gto_match_rate != null ? `${(sessionReview.gto_match_rate * 100).toFixed(0)}%` : "—"}
-                {" · "}
-                EV {sessionReview.total_ev_loss_bb >= 0 ? "+" : ""}
-                {sessionReview.total_ev_loss_bb.toFixed(1)}bb
-              </span>
+              <span className="text-gray-400 text-xs">{sessionSummaryText(sessionReview)}</span>
             )}
             <button
               onClick={toggleHint}
@@ -342,7 +324,7 @@ export default function App() {
               {t === "log" ? "📋 로그" : "💡 힌트"}
               {t === "hint" && hintEnabled && panel.gto && (
                 <span className="ml-1 text-[10px]">
-                  {panel.gto.found && effectiveGtoRange?.found ? "🟢" : "🔴"}
+                  {panel.gto.found && gtoFetch.status === "ok" && gtoFetch.range.found ? "🟢" : "🔴"}
                 </span>
               )}
             </button>
@@ -366,14 +348,7 @@ export default function App() {
                 />
               </div>
               {/* GTO */}
-              <GtoPanel
-                gto={panel.gto}
-                gtoRange={effectiveGtoRange}
-                myHand={toGtoHand(
-                  panel.players.find(p => p.is_human)?.hole_cards ?? null
-                )}
-                isLoading={gtoLoading}
-              />
+              <GtoPanel gto={panel.gto} fetch={gtoFetch} />
             </div>
           ) : (
             <div className="flex items-center justify-center h-32 text-gray-600 text-sm text-center px-4">

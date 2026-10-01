@@ -3,7 +3,7 @@ import PlayerSeat from "./PlayerSeat";
 import CardView from "./CardView";
 
 interface Props {
-  state: GameState;                 // 지금 보일 상태 — 재생 중이면 표시 상태로 덮은 것(projectState, T-029)
+  state: GameState;                 // 지금 보일 상태 — 재생 중이면 표시 상태로 덮은 것(projectState)
   activePlayer: string | null;
   isThinking: boolean;
   badge: ActionBadge | null;

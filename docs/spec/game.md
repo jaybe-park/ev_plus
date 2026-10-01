@@ -175,10 +175,14 @@
   순수 리듀서 `eventQueueLogic.applyEvent`에서 나오고 `projectState(next, display)`로 GameState
   하나가 된다. 그래서 폴드 후 봇들이 진행하는 동안 팟·스트리트·베팅액이 애니메이션과 같은 시점에
   바뀐다. 새 핸드의 시작점은 블라인드 전(칩 = 직전 핸드 종료 칩, 팟 0, 카드 0장), 이어지는
-  액션의 시작점은 요청 직전 상태다. 스킵은 남은 이벤트를 한 번에 소비한다(최종 상태와 같음) —
+  액션의 시작점은 요청 직전 상태다. 스킵은 남은 이벤트를 한 번에 소비한다(최종 상태와 같음).
+  로그는 서버가 끝 30줄(`action_log[-30:]`)만 보내므로 **끝 기준으로** 자른다: 아직 소비하지 않은
+  이벤트의 로그 줄 수(`logPending`)만큼 `next.action_log` 끝에서 숨겨, 30줄이 넘는 핸드에서도 매
+  시점 마지막 줄 = 마지막으로 소비한 이벤트의 로그다 —
   강제 장치: `web/src/hooks/__tests__/replayDisplay.test.ts`(실제 세션 응답 픽스처, 생성 `tests/make_replay_fixture.py`
   `fixtures/replay_session.json`: 시작 화면 = 직전 상태, 팟 = 이벤트 `pot_after`, 스트리트·보드는
-  해당 이벤트에서만, 봇 베팅은 그 봇 액션부터, 전부 소비 = 서버 최종 상태, 스킵 동일, 새 핸드)
+  해당 이벤트에서만, 봇 베팅은 그 봇 액션부터, 전부 소비 = 서버 최종 상태, 스킵 동일, 새 핸드,
+  "재생 중 로그는 끝 기준으로 자른다")
 - 이벤트 페이로드: `blind`/`action`은 `pot_after`(이벤트 직후 팟)·`bet_after`(그 플레이어의
   이번 스트리트 베팅), `street_start`는 `pot_after`를 싣는다. `winner` 이후 표시 팟은 0 — 강제
   장치: `tests/test_poker_full.py::test_8_12_session_fuzz_event_amounts_and_conservation`(누적 이동액
@@ -186,6 +190,19 @@
 - 힌트 패널(에퀴티·GTO)과 액션 바는 재생 중 **재생 직전 상태**를 유지한다(`panelState`). 새
   에퀴티(아직 안 깔린 카드 반영)·새 GTO 노드 조회는 재생이 끝난 뒤에만 보인다 — 강제 장치:
   `web/src/hooks/__tests__/replayDisplay.test.ts`("힌트 패널은 재생이 끝날 때까지 이전 값")
+- 헤더: 핸드 번호는 `panelState`(재생 직전 상태)에서 읽어 재생이 끝난 뒤 바뀐다. 세션 요약
+  "GTO N% · EV 손실 N.Nbb"는 핸드가 끝나고 **그 재생도 끝난 뒤에** `GET /session/{id}/review`로
+  받는다(`shouldFetchReview`). 서버 `total_ev_loss_bb`·`ev_loss_bb`는 양수 = 손실 크기라 헤더에 "+"를
+  붙이지 않는다 — 원본: `web/src/reviewLogic.ts` · 강제 장치: `web/src/__tests__/reviewLogic.test.ts`,
+  `web/src/hooks/__tests__/replayDisplay.test.ts`("헤더 핸드 번호는 재생이 끝난 뒤에 바뀐다")
+- 결과 창: 승자 줄("🏆 이름 승리"), 쇼다운 패, 내 칩, 복기 줄. 복기 줄의 손실은 "−N.Nbb"(빨강,
+  `evLossText` — 손실 없음·판정 안 함은 표시 없음). `GameState.pots`(팟 계층: `amount`·`eligible`·
+  `winners`·`returned`)에 계층이 2개 이상이면 계층별 줄을 보인다 — 첫 일반 계층 "메인 팟 — 금액 —
+  승자", 이후 "사이드 팟 k — 금액 — 승자", `returned=true`(아무도 받지 않은 초과 베팅)는 "반환 N →
+  이름". `pots`가 없거나 null이거나 계층이 하나면 승자 줄만 보인다. 화면의 이름은 봇 접두사 "🤖 "를
+  뗀 표시 이름(`format.ts::displayName`) — 원본: `web/src/components/handResultLogic.ts` · 강제 장치:
+  `web/src/components/__tests__/handResultLogic.test.ts`, `web/src/__tests__/reviewLogic.test.ts`
+  (렌더링 테스트 없음)
 - 타이밍(`eventTiming`): 봇 `action`은 "생각 중"(THINKING_RATIO 구간) → 표시 반영 + 배지 →
   다음. **사람 자신의 액션은 "생각 중" 없이 즉시 반영**하고 배지만 `HUMAN_ACTION_MS`(350ms)
   보인다(봇만 연출). `deal_card`는 지연 끝에 반영, 그 밖의 이벤트는 시작하자마자 반영하고 지연 후
@@ -216,7 +233,7 @@
   "세션 만료 — 새 게임: 서버에서 이 게임을 찾을 수 없습니다." 배너와 "새 게임" 버튼을 띄우고,
   액션 바와 결과 창 "다음 핸드" 버튼을 잠근다. 400 등 다른 오류는 기존 오류 배너 — 원본:
   `web/src/App.tsx` · 강제 장치: `web/src/__tests__/sessionStore.test.ts::세션 만료 판정`(판정만)
-- 새 게임: "새 게임"을 누르면 이전 게임의 세션 요약(헤더 GTO%·EV), 오류·만료 표시, 보관된
+- 새 게임: "새 게임"을 누르면 이전 게임의 세션 요약(헤더 GTO%·EV 손실), 오류·만료 표시, 보관된
   세션 번호, 핸드 번호 비교 기준을 모두 초기화한다 — 원본: `web/src/App.tsx::handleNewGame`
   (장치 없음)
 - 게임 설정 검증(`POST /game/start`, `server/schemas.py::StartGameRequest`): 빅 블라인드
@@ -275,9 +292,6 @@ GTO 관리 API(`/gto/preflop/*`)는 이 문서 담당이 아니다 — 규칙은
 
 ## 알려진 한계
 
-- 사이드팟별 승자 표시는 core 계산(`ShowdownResult.pots`)까지만 되어 있고, 프론트
-  `HandResult` UI에는 아직 팟별 분해가 노출되지 않는다(팟은 합산 지급되어 결과는 맞지만
-  화면에 계층이 안 보임).
 - 런잇트와이스는 미구현.
 - 세션 퍼저(`test_8_12`)는 룰·금액·버튼을 검사하지만, 이벤트 종류 순서·카드 공개 규칙 전체에
   대한 전수 불변식 테스트는 없다.

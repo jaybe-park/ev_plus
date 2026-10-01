@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { formatApiError } from "../api";
 
-describe("formatApiError — FastAPI 422 detail 평탄화 (T-031)", () => {
+describe("formatApiError — FastAPI 422 detail 평탄화", () => {
   it("문자열 detail은 그대로 통과시킨다", () => {
     expect(formatApiError("세션을 찾을 수 없습니다.")).toBe("세션을 찾을 수 없습니다.");
   });
@@ -25,7 +25,7 @@ describe("formatApiError — FastAPI 422 detail 평탄화 (T-031)", () => {
     expect(msg).toBe("chips: 실패");
   });
 
-  it("모델 단위 검증 오류(loc=['body'])는 필드 접두사 없이 안내만 낸다 (T-027)", () => {
+  it("모델 단위 검증 오류(loc=['body'])는 필드 접두사 없이 안내만 낸다", () => {
     const msg = formatApiError([
       { loc: ["body"], msg: "시작 칩은 빅 블라인드의 10배(100) 이상이어야 합니다.", type: "chips_shallow" },
     ]);

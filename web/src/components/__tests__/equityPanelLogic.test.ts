@@ -8,7 +8,7 @@ const info = (over: Partial<EquityInfo> = {}): EquityInfo => ({
   history: [{ street: "프리플랍", vs_range: 0.42 }, { street: "플랍", vs_range: 0.3 }], ...over,
 });
 
-describe("에퀴티 패널 — vs_range 한 기준 (T-006)", () => {
+describe("에퀴티 패널 — vs_range 한 기준", () => {
   it("큰 숫자·팟오즈 색은 vs_random이 아니라 vs_range다", () => {
     const v = equityView(info());
     expect(v.headline).toBe(0.3);
