@@ -1,6 +1,6 @@
 # AI 봇 — 현재 사양
 
-> 최종 갱신: 2026-10-02 · 관련 결정: [0049](../decisions/0049-grader-vs-range-symmetric-band.md), [0039](../decisions/0039-grader-uncertainty-band.md), [0014](../decisions/0014-difficulty-is-mc-resolution.md), [0034](../decisions/0034-abolish-equity-cache.md), [0045](../decisions/0045-equity-precision-1pp-adaptive-mc.md), [0015](../decisions/0015-aggression-margin.md), [0016](../decisions/0016-bot-validation-arena-legacy.md), [0023](../decisions/0023-postflop-range-narrowing.md), [0004](../decisions/0004-raise-size-measured.md), [0005](../decisions/0005-100bb-and-headsup-sb.md), [0007](../decisions/0007-structured-preflop-seq.md)
+> 최종 갱신: 2026-10-02 · 관련 결정: [0049](../decisions/0049-grader-vs-range-symmetric-band.md), [0039](../decisions/0039-grader-uncertainty-band.md), [0014](../decisions/0014-difficulty-is-mc-resolution.md), [0034](../decisions/0034-abolish-equity-cache.md), [0045](../decisions/0045-equity-precision-1pp-adaptive-mc.md), [0015](../decisions/0015-aggression-margin.md), [0016](../decisions/0016-bot-validation-arena-legacy.md), [0041](../decisions/0041-bot-adoption-criterion.md), [0023](../decisions/0023-postflop-range-narrowing.md), [0004](../decisions/0004-raise-size-measured.md), [0005](../decisions/0005-100bb-and-headsup-sb.md), [0007](../decisions/0007-structured-preflop-seq.md)
 > 에퀴티 계산: [equity.md](equity.md) · 프리플랍 GTO 조회 규칙: [gto-preflop.md](gto-preflop.md)
 
 ## 무엇을 하는가
@@ -12,7 +12,7 @@
 ## 규칙 (지금 유효한 것만)
 
 ### 난이도·페르소나
-- 난이도는 **같은 로직, 다른 해상도**다. 포스트플랍 equity(vs 랜덤·레인지 반영 공통): easy는 고정 MC 40샘플(1σ 최대 약 8%p로 자연스럽게 실수), medium·hard는 적응형 MC(1σ ≤ 1%p, 500~2,500샘플, [equity.md](equity.md)). 리버 1:1 전수조사는 모든 난이도가 쓴다(`smart_equity`가 결정). hard만 상대 레인지 반영(`ranged_equity`)을 쓴다. 프리플랍 GTO 준수율 40% / 70% / 95%. 일부러 틀리는 규칙은 두지 않는다 — 근거: [0014](../decisions/0014-difficulty-is-mc-resolution.md), [0045](../decisions/0045-equity-precision-1pp-adaptive-mc.md) · 강제 장치: `tests/test_equity.py::test_mc_precision`(easy 40샘플은 목표보다 거칠고 적응형은 목표 이내) (수치 원본: `ai/bot.py` `POSTFLOP_PROFILES`의 `sims`, `GTO_COMPLIANCE`)
+- 난이도는 **같은 로직, 다른 해상도**다. 포스트플랍 equity(vs 랜덤·레인지 반영 공통): easy는 고정 MC 40샘플(1σ 최대 약 8%p로 자연스럽게 실수), medium·hard는 적응형 MC(1σ ≤ 1%p, 500~2,500샘플, [equity.md](equity.md)). 리버 1:1 전수조사는 모든 난이도가 쓴다(`smart_equity`가 결정). hard만 상대 레인지 반영(`ranged_equity`)을 쓴다(medium에 켠 아레나 측정이 ADR 0041 채택 기준에 못 미쳐 medium은 vs 랜덤, 수치는 "검증·튜닝"). 프리플랍 GTO 준수율 40% / 70% / 95%. 일부러 틀리는 규칙은 두지 않는다 — 근거: [0014](../decisions/0014-difficulty-is-mc-resolution.md), [0045](../decisions/0045-equity-precision-1pp-adaptive-mc.md) · 강제 장치: `tests/test_equity.py::test_mc_precision`(easy 40샘플은 목표보다 거칠고 적응형은 목표 이내) (수치 원본: `ai/bot.py` `POSTFLOP_PROFILES`의 `sims`, `GTO_COMPLIANCE`)
 - 봇 판단은 DB를 열지 않는다(에퀴티 캐시 폐기) — 근거: [0034](../decisions/0034-abolish-equity-cache.md) · 강제 장치: `tests/test_equity.py::test_no_db_writes`(medium 봇 판단 중 `sqlite3.connect` 0회)
 - 페르소나는 난이도 프로파일 위에 얹는 가산(콜/레이즈/밸류 기준)·배율(블러프·세미블러프 빈도, 벳 사이즈) 보정이다. 튜닝 오버라이드가 최우선 — 강제 장치: 장치 없음
 - 웹 게임은 난이도 하나를 전 봇에 적용하고, 페르소나는 좌석 고정: Alpha=tight, Beta=loose, Gamma=aggressive, Delta=passive, Epsilon=balanced (`server/session.py`) — 강제 장치: 장치 없음
@@ -23,7 +23,7 @@
 - 레이즈 사이즈는 GTO 실측 `raise_size`(bb)가 우선이고, 없을 때만 폴백 공식(오픈 2.5bb / 오픈 상대 ×3 / 그 이상 ×2.5, 스택 70%↑ 올인)을 쓴다 — 근거: [0004](../decisions/0004-raise-size-measured.md) · 강제 장치: 장치 없음
 
 ### 포스트플랍
-- equity: hard는 상대 레인지 정보가 하나라도 있으면 `ranged_equity`, 없으면(모두 unknown) `smart_equity`(vs 랜덤). easy·medium은 항상 `smart_equity` — 근거: [0014](../decisions/0014-difficulty-is-mc-resolution.md) · 강제 장치: 장치 없음
+- equity: hard는 상대 레인지 정보가 하나라도 있으면 `ranged_equity`, 없으면(모두 unknown) `smart_equity`(vs 랜덤). easy·medium은 항상 `smart_equity`. 분기는 프로파일의 `use_ranges` 플래그이고 아레나 좌석 오버라이드(`medium:use_ranges=1`)로 켤 수 있다 — 근거: [0014](../decisions/0014-difficulty-is-mc-resolution.md), [0041](../decisions/0041-bot-adoption-criterion.md) · 강제 장치: `tests/test_equity.py::test_medium_range_flag`(QQ on 742r 3벳팟, 상대 UTG {AA,KK}: hard·medium+use_ranges는 last_equity < 0.35, medium 기본은 > 0.65, easy는 레인지 조회 0회)
 - 상대 레인지(hard·에퀴티 패널 공용, `opponent_range_info`)는 core가 넣는 구조화 `preflop_seq`(`[{position, action, amount_bb}]`, 블라인드 제외)만으로 정한다. 한글 `action_log`는 읽지 않으므로 CLI(core `_get_game_state()`)와 웹 세션이 같은 라인에서 같은 레인지를 쓴다. 이름→포지션은 `players[].position` — 근거: [0007](../decisions/0007-structured-preflop-seq.md) · 강제 장치: `tests/test_equity.py::test_range_cli_web_same`(UTG 오픈→HJ 3벳→CO 콜→UTG 콜을 core 상태와 세션 상태로 만들어 상대별 role·레인지·`_count_raises` 동일), `git grep action_log ai/` 0건
   - 레이즈 = `raise`, 또는 그때까지 최고 베팅(시작 1bb)보다 높은 `allin`. 최고 베팅 이하의 올인(콜도 다 못 낸 숏스택)은 콜이다. 프리플랍 레이즈 횟수(`_count_raises`, 3회 이상이면 4벳+ 대응)도 같은 기준으로 올인을 센다
   - 오프너(첫 레이즈) → 그 포지션 RFI 레이즈 레인지. 3벳터(처음 올린 레이즈가 두 번째) → "3벳터 vs 오프너 open" vs_open 노드의 레이즈(+올인) 빈도 레인지(RFI로 대신하지 않는다). 4벳 이상을 처음 올린 사람 → 데이터 없음(랜덤). 오픈 뒤 콜한 사람 → 그 오프너 상대 콜 레인지. 오픈 전 콜(림프)만 한 사람·림프 팟 → 랜덤. 오프너가 3벳에 콜하거나 4벳해도 RFI 레인지다
@@ -52,6 +52,7 @@
 - 튜닝 결과는 `tuning_results.json`에만 쌓이고 봇 코드는 사람이 확인 후 고친다 — 근거: [0016](../decisions/0016-bot-validation-arena-legacy.md) · 강제 장치: 장치 없음
 - 아레나는 매 핸드 칩 총량 보존을 검사하고 위반 시 `chip_violations.log`에 재현 정보를 남기고 멈춘다 — 강제 장치: `scripts/bot_arena.py` 내부 assert
 - 채택 기준: 3,000핸드 × 시드 3, 개선 전후 차이 ≥ 표준오차 × 2(애매하면 핸드 수 늘려 재측정) — 근거: [0041](../decisions/0041-bot-adoption-criterion.md) · 강제 장치: 없음(측정 절차)
+- 측정 2026-10-01 (T-005, medium 레인지 반영): 좌석 `medium,hard,legacy` ×2, 3,000핸드 × 시드 11·22·33, GTO 프리플랍 58노드를 복사한 격리 DB. medium bb/100 — 끔: +30.5 / +48.4 / +18.3(평균 +32.4, 핸드 단위 SE 22.4), 켬: +52.9 / −33.5 / −10.5(평균 +3.0, SE 21.5). 차이 −29.5, 차이 SE 31.0(|차이|/SE 0.95 < 1) → 기각, medium은 끈 채 유지. 핸드 단위 SE가 시드당 약 38 bb/100이라 ADR 0041이 예상한 "약 20bb/100 차이로 2σ"보다 9,000핸드의 분해능이 낮다
 
 ## 화면·경로·데이터
 
@@ -78,7 +79,7 @@ python3 scripts/tune_bot.py --profile hard --param semibluff_freq --evolve --sta
 ## 알려진 한계
 
 - 상대 레인지는 프리플랍 첫 레이즈 노드의 근사다: 림프 뒤 오픈도 RFI(ADR 0046의 vs_limp 노드 아님), 콜러가 낀 3벳(스퀴즈)도 콜러 없는 vs_open 노드, 3벳에 콜한 오프너도 RFI, 3벳에 콜드콜한 사람도 오프너 상대 콜 레인지 — E-2(레인지 출발점)
-- medium 봇 포스트플랍 EV는 vs_random 기준이다(3벳팟에서 과대, 어그레션 마진으로 근사). 패널·Play Grader는 vs_range다 — T-005(아레나 측정 뒤)
+- medium 봇 포스트플랍 EV는 vs_random 기준이다(3벳팟에서 과대, 어그레션 마진으로 근사). 패널·Play Grader는 vs_range다. 레인지를 켠 medium은 아레나에서 나아지지 않았다(2026-10-01, 차이 −29.5 ± 31.0 bb/100, "검증·튜닝") — 측정 당시 레인지 출발점이 3벳한 상대도 RFI로 보던 때라, T-046(3벳터 = vs_open 레이즈 레인지) 이후 같은 방법으로 다시 잴 가치가 있다 — T-005
 - 복기 경계의 최소 1%p는 레인지 추정의 모델 오차를 대신하는 고정값이다(실측값 아님)
 - 포스트플랍 베팅 기반 레인지 좁히기 없음 — E-2
 - medium·hard의 포스트플랍 판단 1회가 약 15~23ms(적응형 MC, 이전 캐시·MC 300~1,200 시절 2.5~9ms)라 아레나 처리량이 그만큼 줄었다 — 측정 `scripts/bench_equity.py`, 수치는 [equity.md](equity.md)
