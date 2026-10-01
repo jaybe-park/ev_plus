@@ -6,13 +6,10 @@
 
 - `_replay`: 순수 포커 규칙으로 토큰을 재생해 토큰별 행동 좌석과 다음 행동 좌석을 구한다.
 - `derive_node_meta`: 노드 키 → 3종 키(hero/vs_position/range_type) + 라벨. 저장 API는
-  클라이언트가 보낸 3종 키를 이 값과 대조하고(ADR 0038), 감사 스크립트는 저장된 행이
+  클라이언트가 보낸 3종 키를 이 값과 대조하고(ADR 0044), 감사 스크립트는 저장된 행이
   이 값과 같은지 검사한다.
 - `has_caller`: 노드 키에 콜(`C`) 토큰이 있는지 — 간단 라벨 조회는 콜러 없는 노드만 쓴다
-  (ADR 0035, 0038).
-
-(원래 scripts/collect_gto_tree.py에 있던 함수를 서버·로더도 쓰도록 옮겼다. 수집 스크립트는
-이 모듈을 그대로 재노출한다.)
+  (ADR 0035, 0044).
 """
 
 from collections import deque
@@ -86,7 +83,7 @@ def derive_node_meta(node_key: str) -> Optional[dict]:
     결정 노드가 아니면(베팅 종료) None. 라벨 규칙:
       open      → "{H} RFI"                       (vs_position=None, 레이즈 0회 + 콜 없음)
       vs_limp   → "{H} vs {limper(s)} limp"        (vs_position="limper" 또는 "limper1/limper2",
-                                                     레이즈 0회 + 콜(림프) 1회 이상 — T-016,
+                                                     레이즈 0회 + 콜(림프) 1회 이상 — ADR 0046,
                                                      레이즈 전 콜은 항상 림프다)
       vs_open   → "{H} vs {opener} open"          (vs_position="opener")
       vs_3bet   → "{H} vs {3bettor} 3bet"         (vs_position="opener/3bettor")
