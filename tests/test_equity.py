@@ -651,6 +651,97 @@ def test_headsup_range_uses_sb():
             os.remove(tmp)
 
 
+def _three_bet_pot_state():
+    """UTG(Villain) 2.5bb 오픈 → BTN(Bot) 8bb 3벳 → UTG 콜, 플랍 Q 아래 로우 보드.
+    레인지 출발점이 action_log든 preflop_seq든 같은 핸드가 되도록 둘 다 채운다."""
+    st = _bot_state("플랍", ["7c", "4d", "2s"], 340, 0,
+                    positions={"Bot": "BTN", "Villain": "UTG"})
+    st["action_log"] = ["[UTG] Villain: 레이즈 (50)", "[BTN] Bot: 레이즈 (160)",
+                        "[UTG] Villain: 콜 (110)", "── 플랍 ──"]
+    st["preflop_seq"] = [
+        {"position": "UTG", "action": "raise", "amount_bb": 2.5},
+        {"position": "BTN", "action": "raise", "amount_bb": 8.0},
+        {"position": "UTG", "action": "call", "amount_bb": 8.0},
+    ]
+    return st
+
+
+def test_medium_range_flag():
+    print("\n[E-6d] 3벳팟 레인지 분기: hard·medium+use_ranges는 ranged_equity, medium 기본·easy는 vs 랜덤 (T-005)")
+    import gto.loader as gto_loader
+    import ai.bot as bot_mod
+    from db.connection import get_connection
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    prev_env = os.environ.get("EV_PLUS_DB")
+    os.environ["EV_PLUS_DB"] = tmp
+    try:
+        conn = get_connection()
+        # UTG 레인지를 AA·KK만으로 좁게 심는다(RFI 오픈 + BTN 3벳에 대한 콜 노드 둘 다)
+        for pos, vs, rtype, seq, col in (
+                ("UTG", None, "open", "", "freq_raise"),
+                ("UTG", "BTN", "vs_3bet", "R2.5-F-F-R8-F-F", "freq_call")):
+            sid = conn.execute(
+                "INSERT INTO gto_preflop_situations (position, vs_position, range_type, "
+                "raise_size, situation_label, action_seq) VALUES (?,?,?,2.5,?,?)",
+                (pos, vs, rtype, f"{pos} {rtype}", seq),
+            ).lastrowid
+            for hand in ("AA", "KK"):
+                conn.execute(
+                    f"INSERT INTO gto_preflop_hands (situation_id, hand, freq_fold, {col}) "
+                    "VALUES (?,?,0,1)", (sid, hand))
+        conn.commit()
+        conn.close()
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+
+        # T-005 아레나 측정(ADR 0041)에서 채택 기준 미달 → medium 기본값은 vs 랜덤 유지
+        check("medium 프로파일 use_ranges = False (T-005 측정 결과 미채택)",
+              bot_mod.POSTFLOP_PROFILES["medium"]["use_ranges"] is False)
+        check("hard 프로파일 use_ranges = True",
+              bot_mod.POSTFLOP_PROFILES["hard"]["use_ranges"] is True)
+        check("easy 프로파일 use_ranges = False (vs 랜덤 40샘플 유지)",
+              bot_mod.POSTFLOP_PROFILES["easy"]["use_ranges"] is False)
+
+        # QQ on 742r: vs 랜덤 ≈ 0.82, vs {AA,KK} ≈ 0.085
+        eq_u = smart_equity(cards("Qh", "Qd"), cards("7c", "4d", "2s"), 1, None)
+        random.seed(5)
+        med = _make_bot(["Qh", "Qd"], BotDifficulty.MEDIUM)
+        med.decide_action(_three_bet_pot_state())
+        check(f"medium(기본) 3벳팟 last_equity(={med.last_equity})는 vs 랜덤 쪽(> 0.65)",
+              med.last_equity is not None and med.last_equity > 0.65)
+        # 아레나 측정에 쓴 경로: medium + use_ranges 오버라이드 → ranged_equity
+        random.seed(5)
+        bot = PokerBot(med.player, BotDifficulty.MEDIUM, overrides={"use_ranges": 1.0})
+        bot.decide_action(_three_bet_pot_state())
+        eq_r = bot.last_equity
+        check(f"medium+use_ranges 3벳팟 last_equity(={eq_r}) ≈ vs AA·KK(< 0.35), vs 랜덤(={eq_u:.3f})과 다름",
+              eq_r is not None and eq_r < 0.35 and eq_u > 0.65)
+        hard = _make_bot(["Qh", "Qd"], BotDifficulty.HARD)
+        hard.decide_action(_three_bet_pot_state())
+        check(f"hard 3벳팟 last_equity(={hard.last_equity}) < 0.35 (레인지 반영)",
+              hard.last_equity is not None and hard.last_equity < 0.35)
+
+        # 같은 상황에서 easy는 레인지를 조회하지 않는다(경로 분기 확인)
+        easy = _make_bot(["Qh", "Qd"], BotDifficulty.EASY)
+        called = []
+        easy._opponent_ranges = lambda state, opps: called.append(1) or None
+        easy.decide_action(_three_bet_pot_state())
+        check("easy는 상대 레인지를 조회하지 않음", not called, f"={len(called)}회")
+        check("easy last_equity는 vs 랜덤 쪽(> 0.5)", easy.last_equity is not None
+              and easy.last_equity > 0.5, f"={easy.last_equity}")
+    finally:
+        gto_loader._cache = {}
+        gto_loader._loaded = False
+        if prev_env is None:
+            os.environ.pop("EV_PLUS_DB", None)
+        else:
+            os.environ["EV_PLUS_DB"] = prev_env
+        for suffix in ("", "-wal", "-shm"):
+            if os.path.exists(tmp + suffix):
+                os.remove(tmp + suffix)
+
+
 def test_fast_evaluator():
     print("\n[E-9] 고속 7카드 평가기 등가성")
     from core.evaluator import HandEvaluator, evaluate_rank
@@ -879,6 +970,7 @@ if __name__ == "__main__":
     test_bot_decisions()
     test_ranged_equity()
     test_headsup_range_uses_sb()
+    test_medium_range_flag()
     test_fast_evaluator()
     test_made_hand_rank()
     test_has_draw()
