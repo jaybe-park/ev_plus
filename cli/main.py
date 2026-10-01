@@ -208,6 +208,9 @@ class GameController:
         big_blind = self.game.big_blind
         # 레이즈 권한은 core 판정(불완전 올인 뒤 닫힌 액션이면 콜/폴드만, TDA Rule 47)
         can_raise = self.game.can_raise(player) and player.chips > call_amount
+        # 레이즈 안내는 최소 레이즈-투를 낼 스택이 있을 때만(웹 ActionBar의 maxRaise >= min_raise_to와 같음).
+        # 모자라면 올인만 안내한다 — "내 칩 → 음수"가 보이지 않는다.
+        can_min_raise = can_raise and player.chips + player.current_bet >= min_raise_to
 
         options = []
         if call_amount == 0:
@@ -215,7 +218,7 @@ class GameController:
         else:
             options.append(("f", "폴드", Action.FOLD, 0))
             options.append(("c", f"콜", Action.CALL, call_amount))
-        if can_raise:
+        if can_min_raise:
             options.append(("r", f"레이즈", Action.RAISE, min_raise_to))
         if can_raise or player.chips <= call_amount:
             options.append(("a", f"올인", Action.ALL_IN, 0))
@@ -237,7 +240,7 @@ class GameController:
             print(f"  [c] 콜          {call_amount} 베팅 (내 칩: {player.chips} → {player.chips - call_amount})")
         else:
             print(f"  [c] 체크")
-        if can_raise:
+        if can_min_raise:
             raise_cost = min_raise_to - player.current_bet  # 내가 실제 내야 할 금액
             print(f"  [r] 레이즈       총액 {min_raise_to} 이상 지정 (추가 {raise_cost} 이상, 내 칩: {player.chips} → {player.chips - raise_cost})")
         if can_raise or player.chips <= call_amount:
@@ -329,10 +332,12 @@ class GameController:
             print()
             if len(result.pots) > 1:
                 for i, pot in enumerate(result.pots):
-                    label = "메인 팟" if i == 0 else f"사이드 팟 {i}"
                     names = ", ".join(w.name for w in pot.winners)
-                    note = " (초과 베팅 반환)" if len(pot.eligible) == 1 else ""
-                    print(f"  {label} {pot.amount}: {names}{note}")
+                    if pot.returned:
+                        print(f"  반환 {pot.amount} → {names} (콜되지 않은 초과 베팅)")
+                        continue
+                    label = "메인 팟" if i == 0 else f"사이드 팟 {i}"
+                    print(f"  {label} {pot.amount}: {names}")
                 print()
 
         print("  🏆 승자: " + ", ".join(w.name for w in result.winners))

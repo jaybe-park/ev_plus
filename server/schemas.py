@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 from typing import Optional, List, Dict, Any, Literal
 
-# 게임 설정 한계 (T-027). 위반 시 422 — detail[].msg는 설정 화면에 그대로 보이는 한국어 안내.
+# 게임 설정 한계. 위반 시 422 — detail[].msg는 설정 화면에 그대로 보이는 한국어 안내.
 MIN_BIG_BLIND = 2            # SB = BB/2 가 1 이상이어야 한다
 MIN_STACK_IN_BB = 10         # 시작 칩 ≥ BB × 10 (블라인드 몇 번에 파산하는 게임 방지)
 MAX_CHIPS = 10_000_000
@@ -108,8 +108,8 @@ class GameEvent(BaseModel):
     round: Optional[int] = None                      # deal_card: 1 or 2
     log: Optional[str] = None                        # 액션 로그 텍스트
     chips_after: Optional[int] = None                # action/blind: 액션 후 플레이어 잔여 칩
-    pot_after: Optional[int] = None                  # blind/action/street_start: 이벤트 직후 팟 (T-029)
-    bet_after: Optional[int] = None                  # blind/action: 그 플레이어의 이번 스트리트 베팅 (T-029)
+    pot_after: Optional[int] = None                  # blind/action/street_start: 이벤트 직후 팟
+    bet_after: Optional[int] = None                  # blind/action: 그 플레이어의 이번 스트리트 베팅
     winner_chips: Optional[Dict[str, int]] = None    # winner: 승자별 최종 칩
 
 
@@ -122,7 +122,7 @@ class EquityOpponent(BaseModel):
 
 class EquityHistoryEntry(BaseModel):
     street: str               # 프리플랍 / 플랍 / 턴 / 리버
-    vs_range: float           # 그 스트리트 첫 결정의 vs_range (패널과 같은 기준, T-006)
+    vs_range: float           # 그 스트리트 첫 결정의 vs_range (패널과 같은 기준)
 
 
 class EquityInfo(BaseModel):
@@ -158,7 +158,7 @@ class SessionReviewResponse(BaseModel):
 
 
 class GtoPanelInfo(BaseModel):
-    """GTO 패널 — advisor 추천 하나에서 만든다(T-013). 레인지는 node_key로 /gto/preflop/range 조회."""
+    """GTO 패널 — advisor 추천 하나에서 만든다. 레인지는 node_key로 /gto/preflop/range 조회."""
     found: bool                                   # 추천(정확한 노드 또는 라벨 예비)이 있나
     position: str = ""                            # 히어로 포지션(게임 라벨, 헤즈업은 BTN/SB)
     node_key: Optional[str] = None                # 쓰인 노드의 action_seq (UTG RFI는 "")
@@ -166,6 +166,14 @@ class GtoPanelInfo(BaseModel):
     situation: str = ""                           # "BTN RFI" 등
     hand: Optional[str] = None                    # "AKs"
     frequencies: Optional[Dict[str, float]] = None  # 내 패의 액션 빈도
+
+
+class PotShareOut(BaseModel):
+    """핸드 종료 시 팟 한 계층(메인 → 사이드 → 반환 순). 전원 폴드로 끝난 핸드는 1계층."""
+    amount: int
+    eligible: List[str]           # 이 계층을 다툰 사람(폴드하지 않고 이 금액까지 낸 사람)
+    winners: List[str]            # 이 계층을 받은 사람(스플릿이면 여럿)
+    returned: bool = False        # 아무도 콜하지 않은 초과 베팅을 본인에게 돌려준 계층
 
 
 class GameStateResponse(BaseModel):
@@ -183,6 +191,7 @@ class GameStateResponse(BaseModel):
     game_over: bool
     winners: List[str] = []
     showdown_hands: Dict[str, str] = {}
+    pots: Optional[List[PotShareOut]] = None  # 팟 계층별 분배 (hand_over=true일 때)
     action_log: List[str] = []
     call_amount: int = 0
     min_raise_to: int = 0             # 레이즈 불가(액션 닫힘·스택 부족)면 0

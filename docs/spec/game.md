@@ -1,6 +1,6 @@
 # 게임 엔진 / 웹 게임 흐름 — 현재 사양
 
-> 최종 갱신: 2026-09-27 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md), [0036](../decisions/0036-moving-button.md), [0038](../decisions/0038-action-validation-and-real-amounts.md), [0043](../decisions/0043-restore-session-on-reload.md), [0048](../decisions/0048-cumulative-short-allins-reopen.md), [0047](../decisions/0047-rules-live-in-core.md)
+> 최종 갱신: 2026-10-01 · 관련 결정: [0024](../decisions/0024-hj-position-naming.md), [0025](../decisions/0025-ports-and-https.md), [0036](../decisions/0036-moving-button.md), [0038](../decisions/0038-action-validation-and-real-amounts.md), [0043](../decisions/0043-restore-session-on-reload.md), [0048](../decisions/0048-cumulative-short-allins-reopen.md), [0047](../decisions/0047-rules-live-in-core.md)
 
 ## 무엇을 하는가
 
@@ -23,8 +23,8 @@
 ### 룰
 - 좌석 수 2~7인 지원. 포지션 라벨(딜러 기준 상대 위치)은 `core/game.py::get_positions()`가
   좌석 수별 고정 배열로 정한다 — 근거: [0024](../decisions/0024-hj-position-naming.md)
-  · 강제 장치: 장치 없음(그 자체를 검사하는 테스트는 없음. 6인 좌석 순서 사용 예:
-    `tests/test_poker_full.py::test_2_5_preflop_betting_order_3players`)
+  · 강제 장치: 장치 없음(배열 전체를 검사하는 테스트는 없음. 헤즈업 라벨은
+    `tests/test_poker_full.py::test_2_6_headsup_btn_acts_first_preflop`가 확인)
 - 행동 순서는 core `TexasHoldem._betting_order`, 다음 차례는 `next_to_act()`가 정한다(웹 세션
   `_next_to_act`는 위임만). 라운드는 acted(마지막 풀 레이즈 이후 행동한 사람) 빈 집합으로
   시작한다 — 블라인드 포스팅은 행동이 아니다.
@@ -55,6 +55,19 @@
   `::test_8_7_incomplete_raise_allin_call_or_fold_only`, `::test_8_8_full_allin_updates_min_raise`,
   `::test_8_25_cumulative_short_allins_reopen`, `::test_8_26_cumulative_short_allins_below_full_raise_stay_closed`
   · core 베팅 루프(CLI 경로): `::test_2_8_core_cumulative_short_allins_reopen`, `::test_2_3_raise_reopens_action`
+- 콜할 상대가 없으면 레이즈할 수 없다: 나 외에 행동 가능한(폴드·올인 아닌) 플레이어가 없으면
+  `raise_allowed`가 거짓이라 레이즈·올인-레이즈는 불법이고 콜·폴드만 된다(응답 `can_raise=false`,
+  봇 요청은 콜로 대체). 예: 3인 BTN 폴드 · SB 올인 30 → BB는 콜 30 또는 폴드 — 강제 장치:
+  `tests/test_poker_full.py::test_8_29_no_raise_when_no_opponent_can_act`,
+  `::test_8_12_session_fuzz_event_amounts_and_conservation`(참조 모델 `may_raise`가 같은 규칙)
+- 블라인드: 숏스택 BB가 BB보다 적게 내도 프리플랍 `current_bet`은 BB 전액이라 다른 사람의 콜
+  금액은 BB 기준이다(표준 관행) — 강제 장치: `tests/test_poker_full.py::test_8_12_session_fuzz_event_amounts_and_conservation`
+  (참조 모델이 블라인드 뒤 `level = BB`로 대조)
+- 포스트플랍 최소 벳 = BB: 스트리트가 바뀌면 `current_bet = 0`, `min_raise = BB`로 다시 시작하므로
+  첫 벳의 최소 도달 베팅은 BB다 — 강제 장치: `tests/test_poker_full.py::test_4_4_street_bet_reset`
+- 오픈 폴드(콜할 금액이 없는데 폴드)는 룰상 합법이라 core가 받는다. 사람 화면은 체크할 수 있으면
+  폴드 버튼을 잠그고(`ActionBar`, CLI는 `[f]`를 보이지 않음), 봇은 쓰지 않는다(봇 쪽은
+  [`bot.md`](bot.md)) — 강제 장치: 장치 없음(화면 렌더링 테스트 없음)
 - 최소 레이즈: 요청 금액이 `현재 베팅 + min_raise` 미만이면 그 값으로 자동 보정한다.
   보정 후 금액이 스택(`chips + current_bet`) 이상이면 올인으로 적용한다 — 스택보다 큰 레이즈
   요청이 실제로 걸리지 않은 `current_bet`을 만들지 않는다 — 강제 장치:
@@ -80,22 +93,33 @@
 - 세션 퍼저: `test_8_12`가 시드 고정(액션·덱 셔플)으로 2~6인·무작위 스택(절반은 1bb 미만씩
   올라가는 숏스택 사다리)·불법 포함 무작위 액션 400핸드를 돌리며, 테스트 쪽에 따로 적은 참조
   모델(`_RefTable`)과 매 이벤트를 대조한다: 행동 순서(헤즈업·BB 옵션·런아웃), 최소 레이즈,
-  누적 재오픈(TDA 47), 이벤트·로그 금액 = 실제 칩 이동, 봇 불법 요청의 폴백, 사람 화면 값
-  (`call_amount`·`can_raise`·`min_raise_to`)과 불법 판정, 칩 보존, 무빙 버튼. T-019~T-023·T-038
-  버그 10종을 되살리면 모두 실패함을 확인했다(2026-09-27, 일회성 확인) — 강제 장치: 그 자체,
-  퍼저 분포 회귀는 `tests/test_poker_full.py::test_8_28_fuzzer_catches_reverted_cumulative_reopen`
-  (T-038을 되돌리면 퍼저가 실패해야 함)
+  누적 재오픈(TDA 47), 콜할 상대 없는 레이즈 금지, 이벤트·로그 금액 = 실제 칩 이동, 봇 불법
+  요청의 폴백, 사람 화면 값(`call_amount`·`can_raise`·`min_raise_to`)과 불법 판정, 칩 보존,
+  무빙 버튼 — 강제 장치: 그 자체, 퍼저 분포 회귀는
+  `tests/test_poker_full.py::test_8_28_fuzzer_catches_reverted_cumulative_reopen`
+  (누적 재오픈을 되돌리면 퍼저가 실패해야 함)
 - 사이드팟: core `TexasHoldem.calculate_side_pots`/`showdown()`이 `total_bet_this_round`
-  오름차순으로 계층을 나누고, 각 계층은 그 금액을 낸 플레이어(eligible)끼리만 나눈다. **eligible이
-  1명뿐인 계층(초과 베팅 반환)은 승자 집계에서 제외**한다. 결과는 `ShowdownResult`(총액·승자·
-  계층별 `PotShare`·평가·쇼다운 여부)로 돌려주고 웹 세션·CLI가 그대로 표시한다(CLI는 팟이
-  여럿이면 계층별 금액·승자도 출력) — 강제 장치:
-  `tests/test_poker_full.py::test_6_5_sidepot_shortstack_wins_mainpot_only`,
-  `::test_6_6_sidepot_three_allins`, `::test_6_7_sidepot_folded_player_contribution`,
-  `::test_3_5_allin_player_cannot_win_more_than_contributed`(core),
-  `::test_4_9_cli_sidepot_and_moving_button`(CLI)
+  오름차순으로 계층을 나누고, 각 계층은 그 금액을 낸(폴드 안 한) 플레이어(eligible)끼리만 나눈다.
+  아무도 콜하지 않은 초과 베팅(최대 기여 − 두 번째 기여)은 쇼다운에서 본인에게 **반환**하는
+  별도 계층(`PotShare.returned=True`, 맨 끝)이고, 반환만 받은 사람은 승자가 아니다. eligible이
+  1명이어도 폴드한 사람의 돈이 든 계층은 반환이 아니라 그 사람이 이긴 팟이다. 전원 폴드로 끝난
+  핸드는 팟 전액 1계층(반환 아님). 결과는 `ShowdownResult`(총액·승자·계층별 `PotShare`·평가·
+  쇼다운 여부)로 돌려준다 — 강제 장치:
+  `tests/test_poker_full.py::test_3_6_sidepot_independent_calculator_2000`(코드를 공유하지 않는
+  독립 계산기 `tests/test_sidepot_indep.py`와 시드 고정 2,000 시나리오의 칩 증가분·홀수 칩
+  수령자·계층·반환 대조), `::test_6_6_sidepot_three_allins`(100/300/600 → 메인·사이드·반환),
+  `::test_6_5_sidepot_shortstack_wins_mainpot_only`, `::test_6_7_sidepot_folded_player_contribution`,
+  `::test_3_5_allin_player_cannot_win_more_than_contributed`
+- 팟 결과 전달: 웹 세션은 핸드가 끝나면 `GameState.pots`(`[{amount, eligible, winners,
+  returned}]`, 메인 → 사이드 → 반환 순, 핸드 진행 중 `null`)를 싣는다. `winner` 이벤트의
+  `pot`과 로그 "🏆 … 승리 (N)"의 N은 반환분을 뺀 실제 수령 합이고, `winner_chips`에는 반환받은
+  사람을 포함해 팟을 받은 전원의 최종 칩이 들어간다. CLI는 팟이 여럿이면 계층별 금액·승자와
+  "반환 N → 이름"을 출력한다 — 강제 장치:
+  `tests/test_poker_full.py::test_8_30_hand_over_pots_main_side_returned`,
+  `::test_8_31_fold_win_pots_single_layer`, `::test_4_9_cli_sidepot_and_moving_button`(CLI 분배)
 - 칩 보존: 모든 핸드에서 `모든 플레이어 chips 합 + pot == 핸드 시작 시 총합`이 성립한다
-  (헤즈업·사이드팟 포함) — 강제 장치: `tests/test_poker_full.py::test_3_1_pot_conservation`,
+  (헤즈업·사이드팟 포함) — 강제 장치: `tests/test_poker_full.py::test_3_1_pot_conservation`
+  (시드 고정 100핸드, 사람·봇 레이즈·올인 포함, 레이즈·올인·사이드팟 발생까지 확인),
   `::test_6_4_headsup_chip_conservation`, `::test_6_8_sidepot_conservation`
 - 홀수 칩: 스플릿 팟(사이드팟 계층 포함)을 나누고 남는 칩은 버튼 왼쪽(SB 자리)부터 시계
   방향으로 돌아 처음 만나는 승자가 받는다(헤즈업은 BB, core `order_from_button_left`) — 강제 장치:
@@ -138,7 +162,7 @@
   종료까지 진행하고 그 이벤트를 싣는다(경고 로그). 정상 세션에서 GET은 상태를 바꾸지 않는다
   (`events=[]`) — 강제 장치: `tests/test_poker_full.py::test_8_20_get_state_recovers_stuck_bot_turn`
 - 런아웃: 행동 가능한(폴드·올인 아닌) 플레이어가 1명뿐이고 그가 콜할 금액이 없으면 라운드가
-  끝난 것으로 본다(core `_is_round_over`, 사람·봇 공통). 남은 스트리트는 액션 이벤트 없이
+  끝난 것으로 본다(core `round_over`, 사람·봇 공통). 남은 스트리트는 액션 이벤트 없이
   `street_start`·`community_card`만 나오고 쇼다운으로 간다 — 무의미한 체크·"올인!" 이벤트,
   RL 기록, 봇 MC 계산이 생기지 않는다. 콜할 금액이 있으면(예: 상대가 더 큰 올인) 그 사람에게는
   묻는다 — 강제 장치: `tests/test_poker_full.py::test_8_13_runout_when_one_player_can_act`
@@ -230,8 +254,8 @@
   `tests/test_poker_full.py::test_8_21_start_game_rejects_invalid_settings`,
   `::test_8_22_session_registered_only_after_successful_start`, 설정 화면 문구는
   `web/src/__tests__/api.test.ts`(422 평탄화)까지만(렌더링 테스트 없음)
-- 레이즈할 수 없는 사람(`GameState.can_raise=false` — 불완전 올인으로 액션이 닫힘, 또는 스택이
-  콜 이하)에게 `ActionBar`는 레이즈·올인 버튼을 보이지 않는다(눌러도 400이라). 스택이 콜 이하면
+- 레이즈할 수 없는 사람(`GameState.can_raise=false` — 불완전 올인으로 액션이 닫힘, 콜할 상대
+  없음, 또는 스택이 콜 이하)에게 `ActionBar`는 레이즈·올인 버튼을 보이지 않는다(눌러도 400이라). 스택이 콜 이하면
   콜 버튼이 "콜 N (올인)"으로 남은 칩 전부를 낸다 — 강제 장치: 서버 `can_raise`는
   `tests/test_poker_full.py::test_8_7_incomplete_raise_allin_call_or_fold_only`, 버튼 판단은
   `web/src/components/__tests__/actionBarLogic.test.ts`(렌더링 테스트 없음)
@@ -275,15 +299,13 @@ GTO 관리 API(`/gto/preflop/*`)는 이 문서 담당이 아니다 — 규칙은
 
 ## 알려진 한계
 
-- 사이드팟별 승자 표시는 core 계산(`ShowdownResult.pots`)까지만 되어 있고, 프론트
-  `HandResult` UI에는 아직 팟별 분해가 노출되지 않는다(팟은 합산 지급되어 결과는 맞지만
-  화면에 계층이 안 보임).
+- 사이드팟 계층은 서버 응답(`GameState.pots`)까지 내려가지만, 결과 창(`HandResult`)은 아직
+  계층을 그리지 않는다(칩 결과는 맞음).
 - 런잇트와이스는 미구현.
 - 세션 퍼저(`test_8_12`)는 룰·금액·버튼을 검사하지만, 이벤트 종류 순서·카드 공개 규칙 전체에
   대한 전수 불변식 테스트는 없다.
 - `get_state()`는 게임 상태·이벤트를 바꾸지 않지만, 에퀴티 패널 계산 결과를 결정 지점 단위
   캐시(`_equity_cache`)와 스트리트별 history에 한 번 기록한다(같은 결정 지점 재조회는 같은
-  값). 에퀴티 모듈의 전역 캐시 기여 버퍼는 세션 락 밖이라 세션 간 동시 접근에 무락이다 —
-  에퀴티 캐시 폐기(T-036)에서 버퍼 자체가 사라질 예정이라 여기서 따로 잠그지 않았다.
+  값).
 - CLI의 액션 출력 줄은 봇·사람이 요청한 액션 기준이라, 불법 요청이 폴백으로 바뀐 경우(예:
   닫힌 액션의 봇 레이즈 → 콜) 화면 줄과 실제 적용이 다를 수 있다(칩·팟은 core 기준으로 정확).
