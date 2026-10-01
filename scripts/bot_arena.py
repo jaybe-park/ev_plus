@@ -118,6 +118,7 @@ def run_arena(seats: list, hands: int, big_blind: int, seed=None, verbose=False)
         difficulty="medium",
         small_blind=big_blind // 2,
         equity_enabled=False,  # 아레나는 순수 시뮬레이션 — 사람 좌석도 봇 드라이버라 패널 불필요
+        record=False,  # 봇 전용 핸드는 DB에 기록하지 않는다(Seat0이 is_human=1로 남는 문제, ADR 0051)
     )
 
     # 좌석별 프로파일 배정

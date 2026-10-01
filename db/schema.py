@@ -4,7 +4,7 @@ poker_simulator DB 스키마 정의 및 마이그레이션
 
 import sqlite3
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 CREATE_GAMES = """
 CREATE TABLE IF NOT EXISTS games (
@@ -60,11 +60,7 @@ CREATE TABLE IF NOT EXISTS preflop_actions (
     amount          INTEGER NOT NULL DEFAULT 0,
     amount_bb       REAL    NOT NULL DEFAULT 0,  -- BB 기준 환산 (2.5, 7.5, 22.0 ...)
 
-    -- RL 학습용 컨텍스트
-    equity          REAL,               -- 결정 시점 봇 계산 equity
     bot_profile     TEXT,               -- "hard/balanced", "human" 등
-    players_state   TEXT,               -- 결정 직전 전원 상태 JSON
-    reward          REAL,               -- 핸드 종료 후 역산 (bb 단위)
 
     -- GTO 빈도 (베팅 라운드 내 액션 단위, 사이즈는 amount_bb로 기록)
     gto_fold        REAL    CHECK(gto_fold  BETWEEN 0 AND 1),
@@ -102,10 +98,7 @@ CREATE TABLE IF NOT EXISTS postflop_actions (
     action          TEXT    NOT NULL CHECK(action IN ('fold','check','call','raise','allin')),
     amount          INTEGER NOT NULL DEFAULT 0,
 
-    -- RL 학습용 컨텍스트
-    equity          REAL,
     bot_profile     TEXT,
-    players_state   TEXT,
 
     -- GTO 빈도 (팟 기준 이산화)
     gto_fold        REAL    CHECK(gto_fold       BETWEEN 0 AND 1),
@@ -117,10 +110,6 @@ CREATE TABLE IF NOT EXISTS postflop_actions (
     gto_raise_100   REAL    CHECK(gto_raise_100  BETWEEN 0 AND 1),
     gto_raise_150   REAL    CHECK(gto_raise_150  BETWEEN 0 AND 1),
     gto_allin       REAL    CHECK(gto_allin      BETWEEN 0 AND 1),
-
-    -- RL 학습용 (포스트플랍만)
-    state_vector    TEXT,   -- JSON, RL 붙일 때 채움
-    reward          REAL,   -- 핸드 종료 후 역산해서 업데이트
 
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
 
@@ -145,7 +134,7 @@ CREATE INDEX IF NOT EXISTS idx_games_played    ON games(played_at);
 """
 
 # v8: game_uuid 단일 컬럼 인덱스를 (game_uuid, position) 복합 인덱스로 대체.
-# reward 역산 UPDATE(WHERE game_uuid=? AND position=?)가 왼쪽 접두로 이 인덱스를 탄다.
+# (v8 당시 용도였던 reward 역산 UPDATE는 v15에서 없어졌다 — 게임 단위 조회용으로 남는다.)
 CREATE_GAME_POS_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_preflop_game_pos  ON preflop_actions(game_uuid, position);
 CREATE INDEX IF NOT EXISTS idx_postflop_game_pos ON postflop_actions(game_uuid, position);
@@ -384,6 +373,25 @@ def relabel_limp_nodes_v14(conn):
         )
 
 
+# v15 (ADR 0051): RL용 컬럼 삭제. 읽는 코드가 없고 DB의 약 70%를 차지했다.
+# 이 컬럼들에 걸린 인덱스는 없다(DROP COLUMN은 인덱스·제약이 걸린 컬럼이면 실패한다).
+# DROP COLUMN은 SQLite 3.35+ 필요. 페이지는 freelist로 돌아갈 뿐 파일은 줄지 않는다
+# — 공간 회수는 scripts/vacuum_db.py --apply.
+_RL_COLUMNS_V15 = {
+    "preflop_actions": ("players_state", "equity", "reward"),
+    "postflop_actions": ("players_state", "equity", "reward", "state_vector"),
+}
+
+
+def drop_rl_columns_v15(conn):
+    """v15: 액션 테이블의 RL 컬럼을 DROP COLUMN. 이미 없는 컬럼은 건너뛴다."""
+    for table, cols in _RL_COLUMNS_V15.items():
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col in cols:
+            if col in existing:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
+
+
 # 버전별 1회성 마이그레이션 (connection._migrate가 현재버전 초과분만 실행)
 # 각 스텝은 SQL 문자열(executescript) 또는 콜러블(conn을 받는 파이썬 함수)일 수 있다.
 MIGRATIONS = {
@@ -439,6 +447,10 @@ MIGRATIONS = {
         # ADR 0046: 림프 노드가 'open'/"{H} RFI"로 저장된 기존 행을 'vs_limp'로 재라벨링.
         relabel_limp_nodes_v14,
     ],
+    15: [
+        # ADR 0051: RL용 컬럼(players_state·equity·reward·state_vector) 삭제.
+        drop_rl_columns_v15,
+    ],
 }
 
 ALL_STATEMENTS = [
@@ -458,6 +470,6 @@ ALL_STATEMENTS = [
     # v3: 미수집 스팟 큐 (v11: gto_missing_spots → gto_missing_spots_preflop 개명)
     CREATE_GTO_MISSING_SPOTS_PREFLOP,
     CREATE_GTO_MISSING_PREFLOP_INDEX,
-    # v8: (game_uuid, position) 복합 인덱스 — reward 역산 UPDATE 최적화
+    # v8: (game_uuid, position) 복합 인덱스
     CREATE_GAME_POS_INDEXES,
 ]

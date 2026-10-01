@@ -1821,6 +1821,7 @@ def test_7_6_save_normalizes_vs3bet_half_format():
 # 아래 테스트는 서로의 시딩이 섞이지 않도록 각자 새 임시 DB를 쓴다.
 
 import contextlib
+import io
 
 
 @contextlib.contextmanager
@@ -2355,6 +2356,235 @@ def test_7_22_short_handed_table_has_no_label_fallback():
         assert advisor._recommend_by_enum([c("A", "S"), c("K", "S")], "BTN", three, gs, 20) is None
         assert advisor.get_recommendation([c("A", "S"), c("K", "S")], "BTN", three, gs, 20) is None
         assert _queued_seq_keys() == set(), _queued_seq_keys()
+
+
+# ── ADR 0051: RL용 컬럼 삭제(v15) · 아레나 미기록 · VACUUM 스크립트 ─────────
+_RL_COLS = {"players_state", "equity", "reward", "state_vector"}
+
+# v14 시점의 두 액션 테이블 DDL(RL 컬럼 포함) — 마이그레이션 입력 재현용
+_V14_ACTIONS_DDL = [
+    """CREATE TABLE games (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, game_uuid TEXT NOT NULL UNIQUE,
+        played_at TEXT NOT NULL, num_players INTEGER NOT NULL, small_blind INTEGER NOT NULL,
+        big_blind INTEGER NOT NULL, dealer_pos TEXT NOT NULL, hole_cards TEXT NOT NULL,
+        flop_1 TEXT, flop_2 TEXT, flop_3 TEXT, turn_card TEXT, river_card TEXT,
+        pot_total INTEGER NOT NULL, winner_pos TEXT NOT NULL, player_results TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))""",
+    """CREATE TABLE preflop_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        game_uuid TEXT NOT NULL REFERENCES games(game_uuid),
+        action_seq INTEGER NOT NULL, street_seq INTEGER NOT NULL,
+        position TEXT NOT NULL CHECK(position IN ('BTN','SB','BB','UTG','HJ','MP','CO','BTN/SB')),
+        is_human INTEGER NOT NULL CHECK(is_human IN (0,1)),
+        bet_round TEXT NOT NULL CHECK(bet_round IN ('open','3bet','4bet','5bet')),
+        pot_before INTEGER NOT NULL, stack_before INTEGER NOT NULL,
+        current_bet INTEGER NOT NULL, call_amount INTEGER NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('fold','call','raise','allin')),
+        amount INTEGER NOT NULL DEFAULT 0, amount_bb REAL NOT NULL DEFAULT 0,
+        equity REAL, bot_profile TEXT, players_state TEXT, reward REAL,
+        gto_fold REAL CHECK(gto_fold BETWEEN 0 AND 1), gto_call REAL CHECK(gto_call BETWEEN 0 AND 1),
+        gto_raise REAL CHECK(gto_raise BETWEEN 0 AND 1), gto_allin REAL CHECK(gto_allin BETWEEN 0 AND 1),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(game_uuid, action_seq))""",
+    """CREATE TABLE postflop_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        game_uuid TEXT NOT NULL REFERENCES games(game_uuid),
+        action_seq INTEGER NOT NULL, street_seq INTEGER NOT NULL,
+        position TEXT NOT NULL CHECK(position IN ('BTN','SB','BB','UTG','HJ','MP','CO','BTN/SB')),
+        is_human INTEGER NOT NULL CHECK(is_human IN (0,1)),
+        street TEXT NOT NULL CHECK(street IN ('flop','turn','river')),
+        pot_before INTEGER NOT NULL, stack_before INTEGER NOT NULL,
+        current_bet INTEGER NOT NULL, call_amount INTEGER NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('fold','check','call','raise','allin')),
+        amount INTEGER NOT NULL DEFAULT 0,
+        equity REAL, bot_profile TEXT, players_state TEXT,
+        gto_fold REAL, gto_check REAL, gto_call REAL, gto_raise_33 REAL, gto_raise_50 REAL,
+        gto_raise_75 REAL, gto_raise_100 REAL, gto_raise_150 REAL, gto_allin REAL,
+        state_vector TEXT, reward REAL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(game_uuid, action_seq))""",
+    "CREATE INDEX idx_preflop_pos ON preflop_actions(position)",
+    "CREATE INDEX idx_preflop_human ON preflop_actions(is_human)",
+    "CREATE INDEX idx_postflop_street ON postflop_actions(street)",
+    "CREATE INDEX idx_postflop_human ON postflop_actions(is_human)",
+    "CREATE INDEX idx_preflop_game_pos ON preflop_actions(game_uuid, position)",
+    "CREATE INDEX idx_postflop_game_pos ON postflop_actions(game_uuid, position)",
+]
+
+
+def _make_v14_action_db(n_games=1, blob=200):
+    """v14 운영 DB 모양(RL 컬럼에 값이 찬)의 임시 DB. blob: players_state 길이."""
+    import sqlite3
+    path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL, "
+                 "applied_at TEXT NOT NULL DEFAULT (datetime('now')))")
+    conn.execute("INSERT INTO schema_version(version) VALUES (14)")
+    for ddl in _V14_ACTIONS_DDL:
+        conn.execute(ddl)
+    state = "x" * blob
+    for g in range(n_games):
+        uid = f"g{g}"
+        conn.execute("INSERT INTO games (game_uuid, played_at, num_players, small_blind, big_blind, "
+                     "dealer_pos, hole_cards, pot_total, winner_pos, player_results) "
+                     "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (uid, "2026-10-01", 2, 10, 20, "BTN", '{"BTN":"AsKs"}', 60, '["BTN"]', "{}"))
+        conn.execute("INSERT INTO preflop_actions (game_uuid, action_seq, street_seq, position, "
+                     "is_human, bet_round, pot_before, stack_before, current_bet, call_amount, "
+                     "action, amount, amount_bb, equity, bot_profile, players_state, reward, "
+                     "gto_fold, gto_call, gto_raise, gto_allin) "
+                     "VALUES (?,0,0,'BTN',1,'open',30,1000,20,20,'raise',60,3.0,0.55,'human',?,1.5,"
+                     "0.1,0.2,0.7,0.0)", (uid, state))
+        conn.execute("INSERT INTO postflop_actions (game_uuid, action_seq, street_seq, position, "
+                     "is_human, street, pot_before, stack_before, current_bet, call_amount, action, "
+                     "amount, equity, bot_profile, players_state, gto_check, state_vector, reward) "
+                     "VALUES (?,1,0,'BB',0,'flop',120,940,0,0,'check',0,0.4,'hard/tight',?,0.8,?,-3.0)",
+                     (uid, state, state))
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _cols(conn, table):
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def test_7_23_migration_v15_drops_rl_columns():
+    """ADR 0051: v14 DB를 열면 v15가 되고 두 액션 테이블에서 RL 컬럼(players_state·equity·
+    reward, postflop state_vector)이 사라진다. 다른 컬럼 값·games 행·인덱스는 그대로다.
+    새 DB도 처음부터 그 컬럼이 없다."""
+    from db.connection import get_connection
+    from db.schema import SCHEMA_VERSION
+    assert SCHEMA_VERSION == 15
+    path = _make_v14_action_db(n_games=2)
+    conn = get_connection(path)
+    try:
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 15
+        for t in ("preflop_actions", "postflop_actions"):
+            assert not (_cols(conn, t) & _RL_COLS), (t, _cols(conn, t) & _RL_COLS)
+        pre = [tuple(r) for r in conn.execute(
+            "SELECT game_uuid, position, is_human, bet_round, action, amount, amount_bb, bot_profile, "
+            "gto_fold, gto_call, gto_raise, gto_allin FROM preflop_actions ORDER BY game_uuid")]
+        assert pre == [(f"g{i}", "BTN", 1, "open", "raise", 60, 3.0, "human", 0.1, 0.2, 0.7, 0.0)
+                       for i in range(2)], pre
+        post = [tuple(r) for r in conn.execute(
+            "SELECT game_uuid, street, action, bot_profile, gto_check FROM postflop_actions "
+            "ORDER BY game_uuid")]
+        assert post == [(f"g{i}", "flop", "check", "hard/tight", 0.8) for i in range(2)], post
+        assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 2
+        idx = {r[1] for r in conn.execute("PRAGMA index_list(preflop_actions)")}
+        assert "idx_preflop_game_pos" in idx, idx
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        conn.close()
+    # 한 번 더 열어도(이미 v15) 문제없음
+    get_connection(path).close()
+
+    fresh = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    conn = get_connection(fresh)
+    try:
+        for t in ("preflop_actions", "postflop_actions"):
+            assert not (_cols(conn, t) & _RL_COLS), (t, _cols(conn, t))
+    finally:
+        conn.close()
+
+
+def test_7_24_record_false_session_writes_nothing():
+    """ADR 0051: record=False 세션(아레나·그라인드·튜닝 경로)은 핸드를 끝내도 games 행이
+    0이다. 기본(record=True) 세션은 games와 액션 행을 쓰고, 액션 행에는 RL 컬럼이 없다.
+    아레나(run_arena)도 DB에 아무것도 남기지 않는다."""
+    from server.session import WebGameSession
+    from db.connection import get_connection
+    with _fresh_gto_db() as path:
+        sess = WebGameSession("nr", "Human", 1000, 2, "easy", 10, equity_enabled=False,
+                              record=False)
+        assert sess.recorder is None
+        for _ in range(3):
+            _finish_hand_by_folding(sess)
+            sess.next_hand()
+        conn = get_connection(path)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM preflop_actions").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+        from scripts.bot_arena import run_arena
+        with contextlib.redirect_stdout(io.StringIO()):
+            run_arena(["easy", "easy", "easy"], 5, big_blind=20, seed=1)
+        conn = get_connection(path)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 0, "아레나가 기록함"
+        finally:
+            conn.close()
+
+        sess = WebGameSession("rec", "Human", 1000, 2, "easy", 10, equity_enabled=False)
+        assert sess.recorder is not None
+        _finish_hand_by_folding(sess)
+        conn = get_connection(path)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 1
+        finally:
+            conn.close()
+
+        # 기록기 직접: 액션 행이 RL 컬럼 없이 들어간다(세션 핸드는 봇 액션이 무작위라 직접 구성)
+        from db.recorder import GameRecorder
+        rec = GameRecorder(big_blind=20)
+        p1, p2 = Player("A", 1000), Player("B", 1000)
+        rec.start_hand([p1, p2], "BTN/SB", {"BTN/SB": [c("A", "S"), c("K", "S")],
+                                             "BB": [c("2", "H"), c("7", "D")]})
+        ctx = {"pot": 30, "current_bet": 20, "stack_before": 990}
+        rec.record_action("BTN/SB", True, Street.PREFLOP, ctx, Action.RAISE, 60, call_amount=10,
+                          bot_profile="human", gto={"fold": 0.0, "call": 0.2, "raise": 0.8})
+        rec.record_action("BB", False, Street.PREFLOP, ctx, Action.FOLD, 0, call_amount=40,
+                          bot_profile="easy/tight")
+        rec.finish_hand([], 80, ["BTN/SB"], {"BTN/SB": {"start": 1000, "end": 1020},
+                                             "BB": {"start": 1000, "end": 980}})
+        conn = get_connection(path)
+        try:
+            rows = [tuple(r) for r in conn.execute(
+                "SELECT position, is_human, action, amount, amount_bb, bot_profile, gto_raise "
+                "FROM preflop_actions WHERE game_uuid=? ORDER BY action_seq", (rec.game_uuid,))]
+            assert rows == [("BTN/SB", 1, "raise", 60, 3.0, "human", 0.8),
+                            ("BB", 0, "fold", 0, 0.0, "easy/tight", None)], rows
+            assert not (_cols(conn, "preflop_actions") & _RL_COLS)
+        finally:
+            conn.close()
+
+
+def test_7_25_vacuum_db_dry_run_and_apply():
+    """ADR 0051: scripts/vacuum_db.py — 기본(=--dry-run)은 파일·스키마를 바꾸지 않고 크기·
+    page_count·freelist·RL 컬럼 추정·예상 회수량을 출력한다. --apply는 v15로 올린 뒤
+    VACUUM해서 파일이 줄고 quick_check ok."""
+    import scripts.vacuum_db as vac
+    import sqlite3
+    path = _make_v14_action_db(n_games=300, blob=2000)
+    before = (os.path.getsize(path), os.path.getmtime(path))
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        rc = vac.main(["--db", path])
+    text = out.getvalue()
+    assert rc == 0, text
+    assert (os.path.getsize(path), os.path.getmtime(path)) == before, "dry-run이 파일을 바꿈"
+    for key in ("page_count=", "freelist_count=", "예상 회수량", "v15 미적용", "[dry-run]"):
+        assert key in text, (key, text)
+    raw = sqlite3.connect(path)
+    assert raw.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 14
+    assert "players_state" in {r[1] for r in raw.execute("PRAGMA table_info(preflop_actions)")}
+    raw.close()
+
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        rc = vac.main(["--apply", "--db", path])
+    text = out.getvalue()
+    assert rc == 0, text
+    after = os.path.getsize(path) + (os.path.getsize(path + "-wal")
+                                     if os.path.exists(path + "-wal") else 0)
+    assert after < before[0] * 0.5, (before[0], after, text)
+    assert "VACUUM 완료" in text and "quick_check=ok" in text, text
+    raw = sqlite3.connect(path)
+    try:
+        assert raw.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 15
+        assert not ({r[1] for r in raw.execute("PRAGMA table_info(postflop_actions)")} & _RL_COLS)
+        assert raw.execute("SELECT COUNT(*) FROM preflop_actions").fetchone()[0] == 300
+    finally:
+        raw.close()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -3852,6 +4082,9 @@ ALL_TESTS = [
     ("7-20 올인 시퀀스는 라벨 예비 None+큐(ADR 0037)", test_7_20_allin_in_seq_label_fallback_none_and_queued),
     ("7-21 림프 팟은 RFI 아님(ADR 0046)",          test_7_21_limped_pot_is_not_rfi),
     ("7-22 3~5인은 라벨 예비도 None(ADR 0005)",    test_7_22_short_handed_table_has_no_label_fallback),
+    ("7-23 v15 마이그레이션 RL 컬럼 삭제(ADR 0051)", test_7_23_migration_v15_drops_rl_columns),
+    ("7-24 record=False·아레나는 DB 미기록(ADR 0051)", test_7_24_record_false_session_writes_nothing),
+    ("7-25 vacuum_db dry-run 무변경·apply 회수(ADR 0051)", test_7_25_vacuum_db_dry_run_and_apply),
     # 영역 8 — 세션 경로 룰
     ("8-1  next_hand 연타 → 한 핸드만, 칩 보존",  test_8_1_next_hand_double_call_keeps_chips),
     ("8-2  핸드 중 next_hand 무시",              test_8_2_next_hand_during_hand_ignored),

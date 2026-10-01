@@ -37,6 +37,7 @@ class WebGameSession:
         difficulty: str,
         small_blind: int,
         equity_enabled: bool = True,
+        record: bool = True,
     ):
         self.session_id = session_id
         # 에퀴티/플레이 평가 계산 스위치. 아레나처럼 순수 시뮬레이션 성능이 중요한
@@ -63,7 +64,9 @@ class WebGameSession:
             for i, p in enumerate(bot_players)
         }
         self.gto = GTOAdvisor()
-        self.recorder = GameRecorder(big_blind=small_blind * 2)
+        # 핸드 기록(DB). 아레나·그라인드·튜닝은 record=False — 봇 전용 핸드를 쌓지 않는다(ADR 0051).
+        self.recorder: Optional[GameRecorder] = (
+            GameRecorder(big_blind=small_blind * 2) if record else None)
         self._hand_start_chips: Dict[str, int] = {}
 
         # 에퀴티 패널 (Feature A): 스트리트+current_bet 단위 캐시(재계산 방지), 스트리트별 history
@@ -76,7 +79,7 @@ class WebGameSession:
         self.session_reviews: List[dict] = []
 
         # 룰(베팅 순서·액션 판정·라운드 진행·팟 분배·버튼)은 전부 core TexasHoldem이 갖는다.
-        # 세션은 그 결과를 이벤트·로그·RL 기록·평가로 옮길 뿐이다(ADR 0047).
+        # 세션은 그 결과를 이벤트·로그·핸드 기록·평가로 옮길 뿐이다(ADR 0047).
 
         # 핸드/게임 상태
         self.hand_number: int = 0
@@ -275,17 +278,18 @@ class WebGameSession:
 
         positions = self.game.get_positions()
 
-        # RL 학습 데이터: 핸드 기록 시작
-        try:
-            dealer_pos = positions.get(
-                self.game.players[self.game.dealer_index].name, "BTN")
-            self.recorder.start_hand(
-                self.game.players, dealer_pos,
-                {positions[p.name]: p.hole_cards for p in self.game.players},
-                small_blind=self.game.small_blind,
-            )
-        except Exception:
-            pass  # 기록 실패가 게임을 막지 않음
+        # 핸드 기록 시작 (기록 실패가 게임을 막지 않음)
+        if self.recorder is not None:
+            try:
+                dealer_pos = positions.get(
+                    self.game.players[self.game.dealer_index].name, "BTN")
+                self.recorder.start_hand(
+                    self.game.players, dealer_pos,
+                    {positions[p.name]: p.hole_cards for p in self.game.players},
+                    small_blind=self.game.small_blind,
+                )
+            except Exception:
+                pass
 
         # 1. 카드 딜 이벤트 먼저 — SB부터 시작해서 2라운드 딜링
         n = len(self.game.players)
@@ -352,47 +356,40 @@ class WebGameSession:
         # 콜 금액은 act 전에 계산
         call_amt = max(0, self.game.current_bet - player.current_bet)
 
-        # RL 학습 데이터: 결정 직전 상태 캡처
-        import json as _json
+        # 핸드 기록용: 결정 직전 팟·베팅·스택
         _ctx = {
             "pot": self.game.pot,
             "current_bet": self.game.current_bet,
             "stack_before": player.chips,
         }
-        _players_state = _json.dumps([
-            {"pos": positions.get(p.name, ""), "chips": p.chips,
-             "bet": p.current_bet, "folded": p.is_folded, "allin": p.is_all_in}
-            for p in self.game.players
-        ])
         _bot = self.bots.get(player.name)
         _profile = (f"{_bot.difficulty.value}/{_bot.persona}"
                     if _bot else "human")
-        _equity = _bot.last_equity if _bot else None
         _gto_for_record = None
 
         # 사람 액션: 적용 전 equity 계산 + 플레이 평가 (Feature B)
         # (equity_enabled=False인 아레나 등에서는 건너뛰어 성능을 지킨다)
         if player is self.human and self.equity_enabled:
-            _equity, _gto_for_record = self._grade_human_action(
+            _, _gto_for_record = self._grade_human_action(
                 player, action, amount, self.game.current_street, call_amt,
             )
 
         result = self.game.act(player, action, amount)
         action = result.action
-        # 로그·이벤트·RL 기록의 금액은 요청값이 아니라 실제 칩 이동에서 만든다:
+        # 로그·이벤트·기록의 금액은 요청값이 아니라 실제 칩 이동에서 만든다:
         # 콜 = 이동액, 레이즈/올인 = 도달 베팅(to_amount = 이전 베팅 + 이동액), 폴드/체크 = 0
         real_amount = self._event_amount(result)
 
-        try:
-            self.recorder.record_action(
-                positions.get(player.name, "BTN"), player.is_human,
-                self.game.current_street, _ctx, action, real_amount,
-                call_amount=call_amt, equity=_equity,
-                bot_profile=_profile, players_state=_players_state,
-                gto=_gto_for_record,
-            )
-        except Exception:
-            pass
+        if self.recorder is not None:
+            try:
+                self.recorder.record_action(
+                    positions.get(player.name, "BTN"), player.is_human,
+                    self.game.current_street, _ctx, action, real_amount,
+                    call_amount=call_amt, bot_profile=_profile,
+                    gto=_gto_for_record,
+                )
+            except Exception:
+                pass
 
         log_text = self._fmt_log(player, action, real_amount)
         self._append_log(log_text)
@@ -518,20 +515,21 @@ class WebGameSession:
                 "winner_chips": {name: p.chips for name, p in receivers.items()},
             })
 
-        # RL 학습 데이터: 핸드 결과 + reward 역산
-        try:
-            positions = self.game.get_positions()
-            self.recorder.finish_hand(
-                self.game.community_cards,
-                result.pot,
-                [positions.get(w, "") for w in self.winners],
-                {positions.get(p.name, ""): {
-                    "start": self._hand_start_chips.get(p.name, p.chips),
-                    "end": p.chips}
-                 for p in self.game.players},
-            )
-        except Exception:
-            pass
+        # 핸드 기록: 보드·팟·승자·손익
+        if self.recorder is not None:
+            try:
+                positions = self.game.get_positions()
+                self.recorder.finish_hand(
+                    self.game.community_cards,
+                    result.pot,
+                    [positions.get(w, "") for w in self.winners],
+                    {positions.get(p.name, ""): {
+                        "start": self._hand_start_chips.get(p.name, p.chips),
+                        "end": p.chips}
+                     for p in self.game.players},
+                )
+            except Exception:
+                pass
 
         # 세션 전체 누적 (요약 API용) — 이번 핸드 평가를 합산
         self.session_reviews.extend(self.hand_reviews)
@@ -729,7 +727,7 @@ class WebGameSession:
         판정 에퀴티는 패널과 같은 vs_range다(ADR 0049). 상대 레인지를 하나도 모르면
         (`range_applied=False`) vs_random과 같은 값이고 grader가 사유에 그 사실을 붙인다.
 
-        반환: (equity|None, gto_frequencies|None) — recorder.record_action에 채워 넣을 값.
+        반환: (equity|None, gto_frequencies|None) — gto_frequencies는 recorder.record_action의 GTO 컬럼에 쓴다.
         """
         try:
             equity_info = self._get_equity_info(call_amt)

@@ -281,7 +281,7 @@ class PokerBot:
         self.difficulty = difficulty
         self.persona = persona if persona in PERSONAS else "balanced"
         self.overrides = overrides or {}  # 프로파일 수치 직접 덮어쓰기 (튜닝용)
-        self.last_equity = None  # 직전 결정의 equity (기록용, 프리플랍은 None)
+        self.last_equity = None  # 직전 결정의 equity (진단·테스트용, 프리플랍은 None)
 
     def _effective_profile(self) -> dict:
         """난이도 프로파일 + 페르소나 보정 합성"""

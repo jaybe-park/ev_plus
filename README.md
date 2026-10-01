@@ -50,7 +50,7 @@ ev_plus/
 | 에퀴티 패널 + 플레이 복기 | ✅ 패널·복기 모두 vs_range 기준, 대칭 경계 판정(ADR 0049) |
 | 확률 검증 장치 | ✅ 공개 기준값 23개, 독립 평가기 대조, 레인지 샘플러 전수 대조, 정밀도·응답 시간 회귀 |
 | 프리플랍 GTO 수집 | ✅ 운영 루틴(Playwright 워커) — 절차는 [gto-preflop.md](docs/spec/gto-preflop.md) |
-| 핸드 기록(RL용) | ⚠️ 기록은 되지만 읽는 코드가 없다 — 계속할지는 결정 대기(D-31) |
+| 핸드 기록 | ✅ 사람 참여 세션만, 액션·금액·GTO 빈도(통계용) — RL 컬럼은 삭제(ADR 0051) |
 | 포스트플랍 GTO | ❌ 수집 폐기 → 레인지 기반 핸드 리딩으로 근사 예정(E-2) |
 
 ## 운영 명령
@@ -58,7 +58,8 @@ ev_plus/
 ```bash
 python3 scripts/bot_arena.py --hands 600 --seats hard,medium,legacy --seed 99   # 봇 비교(bb/100)
 python3 scripts/ai_regression.py          # legacy 대비 후퇴 검사(exit 1)
-pypy3 scripts/grind.py                    # 아레나 반복(핸드 기록이 쌓인다 — D-31 참고)
+pypy3 scripts/grind.py                    # 아레나 반복(DB에 기록하지 않음)
+python3 scripts/vacuum_db.py              # DB 공간 회수 미리보기(--apply로 VACUUM)
 python3 scripts/collect_gto_tree.py --limit 90   # GTO 수집(디버그 크롬 + 로그인 필요)
 python3 scripts/audit_gto_preflop.py      # GTO 데이터 무결성(부모-자식 레인지·frontier 포함)
 python3 scripts/gto_tree_report.py        # 수집 현황 → docs/gto-preflop-progress.md(git 제외)

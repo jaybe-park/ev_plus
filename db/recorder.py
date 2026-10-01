@@ -133,9 +133,7 @@ class GameRecorder:
         amount: int,
         gto: Optional[dict] = None,
         call_amount: Optional[int] = None,
-        equity: Optional[float] = None,
         bot_profile: Optional[str] = None,
-        players_state: Optional[str] = None,
     ):
         """
         액션 1건 기록.
@@ -170,7 +168,7 @@ class GameRecorder:
                 position, is_human, seq, s_seq,
                 pot_before, game_state.get("stack_before", 0),
                 current_bet, call_amount,
-                action_str, amount, gto, equity, bot_profile, players_state
+                action_str, amount, gto, bot_profile
             )
             self._preflop_history.append({"action": action_str})
         else:
@@ -178,13 +176,13 @@ class GameRecorder:
                 position, is_human, street_key, seq, s_seq,
                 pot_before, game_state.get("stack_before", 0),
                 current_bet, call_amount,
-                action_str, amount, gto, equity, bot_profile, players_state
+                action_str, amount, gto, bot_profile
             )
 
     def _buffer_preflop(
         self, position, is_human, seq, s_seq,
         pot_before, stack_before, current_bet, call_amount,
-        action, amount, gto, equity=None, bot_profile=None, players_state=None
+        action, amount, gto, bot_profile=None
     ):
         bet_round = _detect_bet_round(self._preflop_history, action)
         amount_bb = round(amount / self.big_blind, 2) if amount > 0 else 0.0
@@ -194,14 +192,14 @@ class GameRecorder:
             position, int(is_human), bet_round,
             pot_before, stack_before, current_bet, call_amount,
             action, amount, amount_bb,
-            equity, bot_profile, players_state,
+            bot_profile,
             g.get("fold"), g.get("call"), g.get("raise"), g.get("allin"),
         ))
 
     def _buffer_postflop(
         self, position, is_human, street, seq, s_seq,
         pot_before, stack_before, current_bet, call_amount,
-        action, amount, gto, equity=None, bot_profile=None, players_state=None
+        action, amount, gto, bot_profile=None
     ):
         g = gto or {}
         self._pending_postflop.append((
@@ -209,7 +207,7 @@ class GameRecorder:
             position, int(is_human), street,
             pot_before, stack_before, current_bet, call_amount,
             action, amount,
-            equity, bot_profile, players_state,
+            bot_profile,
             g.get("fold"), g.get("check"), g.get("call"),
             g.get("raise_33"), g.get("raise_50"), g.get("raise_75"),
             g.get("raise_100"), g.get("raise_150"), g.get("allin"),
@@ -223,8 +221,8 @@ class GameRecorder:
         player_results: dict,   # {"BTN": {"start":1000,"end":1150}, ...}
     ):
         """
-        핸드 종료 — pending 액션 일괄 INSERT, games 테이블 업데이트,
-        postflop/preflop reward 역산까지 전부 한 트랜잭션으로 처리 후 commit.
+        핸드 종료 — pending 액션 일괄 INSERT와 games 테이블 업데이트를
+        한 트랜잭션으로 처리 후 commit.
         """
         comm = cards_to_str(community_cards)
         flop  = comm[:3] if len(comm) >= 3 else [None, None, None]
@@ -240,9 +238,9 @@ class GameRecorder:
                         position, is_human, bet_round,
                         pot_before, stack_before, current_bet, call_amount,
                         action, amount, amount_bb,
-                        equity, bot_profile, players_state,
+                        bot_profile,
                         gto_fold, gto_call, gto_raise, gto_allin
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, self._pending_preflop)
                 cur.close()
 
@@ -253,11 +251,11 @@ class GameRecorder:
                         position, is_human, street,
                         pot_before, stack_before, current_bet, call_amount,
                         action, amount,
-                        equity, bot_profile, players_state,
+                        bot_profile,
                         gto_fold, gto_check, gto_call,
                         gto_raise_33, gto_raise_50, gto_raise_75,
                         gto_raise_100, gto_raise_150, gto_allin
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, self._pending_postflop)
                 cur.close()
 
@@ -278,16 +276,6 @@ class GameRecorder:
                 self.game_uuid,
             ))
             cur.close()
-
-            # postflop reward 역산: 포지션별 손익 / big_blind
-            for pos, result in player_results.items():
-                reward = (result["end"] - result["start"]) / self.big_blind
-                for table in ("postflop_actions", "preflop_actions"):
-                    cur = conn.execute(
-                        f"UPDATE {table} SET reward = ? "
-                        "WHERE game_uuid = ? AND position = ?",
-                        (reward, self.game_uuid, pos))
-                    cur.close()
 
             conn.commit()
         finally:

@@ -31,7 +31,7 @@
 | [0025](0025-ports-and-https.md) | 포트 고정(8765/5766) + 백엔드 HTTPS 필수 | 유효 | game |
 | [0026](0026-stubbot-and-isolated-test-db.md) | 로직 테스트는 StubBot + 테스트별 임시 DB로 격리 | 유효 | testing |
 | [0030](0030-sqlite-over-server-db.md) | SQLite 유지, 서버형 DB(MySQL 등) 전환 반려 | 유효 | db |
-| [0031](0031-bot-hand-archive-human-hand-retain.md) | 봇 전용 핸드는 아카이브 후 삭제, 사람 참여 핸드는 영구 보존 | 유효 | db |
+| [0031](0031-bot-hand-archive-human-hand-retain.md) | 봇 전용 핸드는 아카이브 후 삭제, 사람 참여 핸드는 영구 보존 | 유효 (아레나 미기록([0051](0051-drop-rl-columns-arena-not-recorded.md))으로 분류가 맞게 됨) | db |
 | [0032](0032-partial-index-only-for-pending-queues.md) | 대기 큐 인덱스는 부분 인덱스로만, 인덱스 삭제 전 EXPLAIN QUERY PLAN 확인 | 대체됨 → 0034 | db |
 | [0033](0033-no-direct-writes-to-shared-db.md) | 공유 운영 DB에 직접 쓰지 않는다 — 스크립트 경유 | 유효 | db |
 | [0034](0034-abolish-equity-cache.md) | 에퀴티 캐시 폐기 — 프리플랍 상수 테이블 + 실시간 계산, 정밀도 목표 ±0.5%p | 일부 대체됨 → [0045](0045-equity-precision-1pp-adaptive-mc.md) (정밀도 목표 ±0.5%p·샘플 수. 캐시 폐기·계산 경로는 유효) | equity |
@@ -50,3 +50,5 @@
 | [0047](0047-rules-live-in-core.md) | 포커 룰은 core 한 곳에 — 웹 세션·CLI는 호출만, 세션 경로는 참조 모델 퍼저로 지킨다 | 유효 | game |
 | [0048](0048-cumulative-short-allins-reopen.md) | 불완전 올인 여러 개의 합이 풀 레이즈면 재오픈한다 (TDA Rule 47) | 유효 | game |
 | [0049](0049-grader-vs-range-symmetric-band.md) | 복기 콜·폴드 판정은 vs_range 입력·대칭 경계(max(2σ, 1%p)) | 유효 | bot |
+| [0050](0050-replace-db-with-slim-copy.md) | 운영 DB를 에퀴티 캐시를 뺀 슬림 사본으로 교체하고 15GB 원본은 삭제한다 | 유효 | db |
+| [0051](0051-drop-rl-columns-arena-not-recorded.md) | RL용 기록(players_state·equity·reward) 중단과 삭제 — 아레나는 기록하지 않는다 | 유효 | db |

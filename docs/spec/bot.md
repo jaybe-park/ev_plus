@@ -62,7 +62,6 @@
 | `gto/grader.py` | 평가 순수 함수 | 호출: `server/session.py::_grade_human_action` |
 | `core/pot_odds.py` | 유효 콜·유효 팟·팟오즈·콜 EV | 봇·grader·패널 공용 |
 | 게임 상태 `hand_review` / `/session/review` | 핸드·세션 평가 결과 | 필드는 FastAPI `/docs` |
-| `players_state`/액션 기록의 `equity` | 봇은 직전 포스트플랍 결정 equity(프리플랍 None), 사람은 평가에 쓴 vs_range(레인지 없으면 vs_random과 같음) | `db/recorder.py` |
 | `tuning_results.json` | 튜닝 이력(누적, gitignore) | 루트 |
 | `chip_violations.log` | 아레나 칩 보존 위반 기록 | 루트 |
 
