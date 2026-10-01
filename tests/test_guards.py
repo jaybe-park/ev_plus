@@ -145,6 +145,56 @@ def test_equity_duplicate_cards():
         check("보드 내부 중복 → ValueError", True)
 
 
+# 함수 목록(ALL_TESTS 또는 __main__ 호출)으로 테스트를 직접 돌리는 파일 — 정의만 하고
+# 목록에 넣지 않은 test_* 함수는 조용히 빠진다(docs/spec/testing.md)
+REGISTRY_FILES = [
+    "test_poker_full.py", "test_gto_tree.py", "test_workflow.py",
+    "test_equity.py", "test_grader.py", "test_equity_verify.py", "test_guards.py",
+]
+
+
+def unregistered_tests(source: str):
+    """모듈 최상위 `def test_*` 중 실행 목록(`ALL_TESTS = [...]` 값 또는
+    `if __name__ == "__main__":` 블록)에서 이름으로 참조되지 않는 것의 목록."""
+    import ast
+    tree = ast.parse(source)
+    defined = [n.name for n in tree.body
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test_")]
+    roots = []
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "ALL_TESTS"
+                                             for t in n.targets):
+            roots.append(n.value)
+        elif isinstance(n, ast.If) and "__main__" in ast.unparse(n.test) and "__name__" in ast.unparse(n.test):
+            roots.extend(n.body)
+    used = {x.id for r in roots for x in ast.walk(r) if isinstance(x, ast.Name)}
+    return [name for name in defined if name not in used]
+
+
+def test_all_tests_registered():
+    print("\n[GD-4] 테스트 등록 가드 — test_* 함수가 모두 실행 목록에 있는가")
+
+    # 가드 자체: 빠진 함수를 이름으로 잡는다
+    sample = (
+        "def test_a(): pass\n"
+        "def test_b(): pass\n"
+        "def test_c(): pass\n"
+        "def helper(): pass\n"
+        "ALL_TESTS = [('a', test_a)]\n"
+        "if __name__ == '__main__':\n"
+        "    test_b()\n"
+    )
+    missing = unregistered_tests(sample)
+    check("가드 자체: 목록에 없는 test_c만 잡음(헬퍼는 무시)", missing == ["test_c"], f"={missing}")
+
+    for fname in REGISTRY_FILES:
+        path = os.path.join(TESTS_DIR, fname)
+        with open(path, encoding="utf-8") as f:
+            missing = unregistered_tests(f.read())
+        check(f"{fname}: 모든 test_* 함수가 실행 목록에 있음", not missing,
+              f"— 빠진 함수: {', '.join(missing)}")
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("  테스트 인프라 가드 테스트")
@@ -153,6 +203,7 @@ if __name__ == "__main__":
     test_run_all_db_snapshot_guard()
     test_db_size_guard()
     test_equity_duplicate_cards()
+    test_all_tests_registered()
 
     print(f"\n{'='*50}")
     print(f"  결과: {PASS} 통과 / {FAIL} 실패")
