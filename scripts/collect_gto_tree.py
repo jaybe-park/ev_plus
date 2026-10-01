@@ -1,73 +1,18 @@
 #!/usr/bin/env python3
 """
-④ 데이터 기반 프리플랍 트리 워커 — Playwright(CDP) 자동화 드라이버.
+프리플랍 트리 수집 드라이버 — 디버그 크롬(CDP)에 붙어 GTO Wizard 노드를 추출·저장한다.
 
-설계 근거: docs/spec/gto-preflop.md "수집" 규칙, ADR 0009~0012.
-순수 로직(집계/분기/우선순위 큐/토큰화)은 scripts/gto_tree_worker.py를 **그대로 재사용**하고,
-이 파일은 그 로직에 브라우저(navigate/추출)와 저장(POST)을 붙인 얇은 드라이버다.
-
-핵심 원칙(전부 준수):
-  ADR 0009  저장 노드 키(action_seq)의 레이즈 토큰은 **화면 실측 사이즈** verbatim.
-      깊이-캐노니컬/추측 테이블 사용 금지.
-  ε   분기는 gto_tree_worker.branch_actions(ε=0.05%) — 레인지 콤보가중 합산 빈도가
-      ε를 넘는 액션만 자식으로 확장. "버튼 존재"로 판단하지 않는다.
-  검증 badSum(핸드별 fold+call+raise+allin 합)이 [0.9,1.1] 밖이면 저장하지 않고 스킵.
-  우선순위 gto_tree_worker.FrontierQueue — 도달확률(경로 빈도 누적) 내림차순 best-first.
-
-수집 흐름(노드 1개):
-  url_from_node_key(node_key) 로 GTO Wizard로 navigate
-    → 169핸드 CSS 레이어 파싱(colorToAction/parseCell, 이번 세션 라이브 수집서 검증한 파서)
-    → badSum 검증 → 화면에서 raise/allin 실측 사이즈 읽기
-    → POST /gto/preflop/save (action_seq=실측 키, raise_size=실측)
-    → 저장된 hands로 aggregate_frequencies+branch_actions → 자식 노드를 도달확률 가중으로 push.
-
-CDP 연결:
-  사용자가 아래처럼 크롬을 디버그 포트로 미리 띄우고 GTO Wizard에 로그인해 둬야 한다.
-    /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\
-        --remote-debugging-port=9222 --user-data-dir="$HOME/chrome-gto-debug"
-  그 뒤 이 스크립트가 playwright.chromium.connect_over_cdp("http://localhost:9222")로 접속한다.
-  (connect_over_cdp는 사용자의 기존 크롬에 붙는 것이라 playwright의 번들 크로미움을
-   반드시 내려받을 필요는 없다. 다만 `python3 -m playwright install chromium`을 해두면
-   드라이버 바이너리가 준비돼 import/실행이 안정적이다 — 이 저장소에선 설치 완료 확인함.)
-
-중단-재개:
-  노드 하나를 저장할 때마다 체크포인트 JSON(--checkpoint)에 visited/frontier/failed를 남긴다.
-  스크립트가 죽어도 재실행하면 체크포인트+DB(action_seq)에서 이어서 진행한다.
-  체크포인트가 없거나 비면 DB의 이미 수집된 트리에서 프론티어를 재구성(seed)한다.
-
-사용법:
-  python3 scripts/collect_gto_tree.py                 # 기본 --limit 90 실전 수집
-  python3 scripts/collect_gto_tree.py --dry-run       # 추출/검증만, 저장 안 함
-  python3 scripts/collect_gto_tree.py --limit 5       # 이번 실행 신규 노드 5개까지
-  python3 scripts/collect_gto_tree.py --cdp-url http://localhost:9333
-
-CLI:
-  --limit N     이번 실행에서 처리할 최대 신규 노드 수(기본 90 — 무료 100/일 안전마진).
-  --dry-run     추출+검증만 하고 저장/큐 확장 없이 첫 노드 결과를 상세 출력(파서 눈검증).
-  --cdp-url     크롬 디버그 CDP 엔드포인트(기본 http://localhost:9222).
-  --server      로컬 FastAPI 베이스 URL(기본 https://localhost:8765, 자체서명 → 검증 스킵).
-  --checkpoint  진행상황 JSON 경로(기본 <repo>/gto_tree_checkpoint.json).
-  --epsilon     분기 빈도 컷(기본 gto_tree_worker.EPSILON=0.0005).
-  --nav-timeout navigate/셀 대기 타임아웃 ms(기본 30000).
-  --safety-margin 남은 스팟이 이 값 이하면 새 수집 중단(기본 5, 무료 100/일 보호).
-
-실측 사이즈 스크레이프(2026-07-17 라이브 확정):
-  히어로가 지금 취할 수 있는 액션(사이즈 포함)은 페이지 하단 "Actions" 패널의
-  [data-tst="study_action_btns"] 컨테이너 안 [data-tst^="action_"] 버튼에만 있다.
-  버튼 data-tst가 액션+사이즈를 인코딩(action_R8_1=Raise 8, action_RAI_0=Allin,
-  action_C_2=Call, action_F_3=Fold)하고 화면 표시 텍스트와 verbatim 일치한다.
-  헤더 카드(hspotcrd_action_text: 다른 포지션이 이미 취한 과거 액션)와 접두어가
-  달라 절대 겹치지 않는다 → 이전 "body 전체 정규식" 오탐(헤더의 완료 액션을 잘못
-  집던 버그) 해소.
-
-일일 한도 신호(2026-07-17 라이브 확정):
-  상단 "X/100" 사용량 카운터가 유일한 권위 신호. "Free accounts can browse 100
-  preflop spots per day." 문구는 평상시에도 항상 떠 있어(호버 툴팁) 단독 판단 불가 →
-  카운터를 파싱해 남은 여유(100-X)를 계산, 안전마진 이하면 새 navigate 없이 안전 종료.
+규칙: docs/spec/gto-preflop.md "수집" 절(ADR 0009~0012). 순수 로직은 gto_tree_worker.py.
+노드 1개: url_from_node_key로 이동 → 169셀 레이어 파싱 + 실측 사이즈 → badSum 검증 →
+POST /gto/preflop/save → 콤보 가중 빈도 > ε 액션만 자식으로 frontier에 push(도달확률 순).
+체크포인트(visited/frontier/failed)는 저장마다 기록, 없거나 비면 DB 트리에서 다시 시드한다.
+사용: --dry-run(첫 노드 추출만) · --limit N · --reseed-checkpoint [--dry-run](브라우저 없이
+DB에서 frontier 재시드, 기존 파일은 .json.bak) · 운영 방법은 spec "운영 방법".
 """
 import argparse
 import json
 import random
+import shutil
 import sys
 import time
 from collections import deque
@@ -80,37 +25,25 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import gto_tree_worker as tw  # 순수 로직 재사용 (집계/분기/토큰/큐)
 from gto.url_generator import url_from_node_key
-
-from gto.node_key import POSITIONS  # noqa: E402
+from gto.loader import freq_sum_ok, read_preflop_nodes, collected_by_seq
+from gto.node_key import POSITIONS, split_key, _replay, derive_node_meta  # noqa: E402,F401
 
 DEFAULT_CHECKPOINT = ROOT / "gto_tree_checkpoint.json"
 DEFAULT_SERVER = "https://localhost:8765"
 DEFAULT_CDP = "http://localhost:9222"
 
-# 100bb 가정에서 올인 to-amount = 시작 스택(정의상 결정론적, 추측 아님).
-# 화면에서 올인 사이즈를 읽지 못했을 때만 이 값으로 폴백한다.
+# 100bb 트리에서 올인 to-amount = 시작 스택(정의상 결정론적). 화면에서 올인 사이즈를
+# 읽지 못했을 때와, DB에 올인 사이즈가 없는 시드 경로에서 쓴다.
 ALLIN_FALLBACK_BB = 100.0
 
-# ── 일일 한도 신호 (2026-07-17 라이브 실측으로 확정, 추측 키워드 폐기) ──────────
-# GTO Wizard 무료 계정은 페이지 상단에 "X/100" 사용량 카운터를 항상 노출하고,
-# 그 옆에 "Free accounts can browse 100 preflop spots per day." 고정 문구를
-# (호버 툴팁으로) 항상 표시한다. 문구는 한도 도달 여부와 무관하게 늘 떠 있으므로
-# **문구 존재만으로 한도로 판단하면 안 된다** — 카운터가 유일한 권위 신호다.
-#   - 스팟을 새로 볼 때마다 카운터가 +1 된다(실측: 18→19→20). 즉 navigate=1스팟 소모.
-#   - 남은 여유 = DAILY_LIMIT - used. 안전마진(SAFETY_MARGIN) 이하로 떨어지면
-#     새 노드 navigate를 멈추고 안전 종료(체크포인트 보존 → 재실행 시 이어감).
+# 일일 한도: 상단 "X/100" 카운터가 유일한 권위 신호다. 안내 문구는 평상시에도 떠 있어
+# 카운터를 못 읽을 때만 폴백으로 쓴다. 스팟 이동 1회 = 1 소모.
 DAILY_LIMIT = 100
-SAFETY_MARGIN = 5  # 남은 스팟이 이 값 이하가 되면 새 수집을 멈춘다(무료 100/일 보호).
-# 카운터를 읽지 못할 때(파싱 실패)만 폴백으로 쓰는 한도 확정 문구(부분 매칭).
+SAFETY_MARGIN = 5  # 남은 스팟이 이 값 이하가 되면 새 수집을 멈춘다.
 LIMIT_WARN_PHRASE = "Free accounts can browse 100 preflop spots per day"
 
-# ──────────────────────────────────────────────────────────────────────────
-# 크래시/환경 오류 복구 (2026-07-17, 실전 발견 — 크롬 렌더러 크래시로 84개
-# 노드가 잘못 "검증 실패"로 영구 기록될 뻔한 사고 후 추가)
-# ──────────────────────────────────────────────────────────────────────────
-# extract_node()의 res.reason 중 "진짜 데이터 이상(badSum 등, 사람 확인 필요)"이
-# 아니라 "환경 오류(크래시/타임아웃/네트워크, 재시도하면 되는 것)"를 구분하는 마커.
-# 이 마커에 걸리면 failed(영구 no-retry)에 넣지 않고 frontier로 되돌려 자동 재시도한다.
+# 환경 오류(크래시·타임아웃·네트워크)는 데이터 이상이 아니라 재시도 대상 — failed에 넣지 않고
+# frontier로 되돌린다(ADR 0012).
 ENV_FAILURE_MARKERS = ("navigate 실패", "렌더 대기 타임아웃", "추출 JS 실패")
 CONSEC_ENV_RECOVERY_THRESHOLD = 2   # 연속 환경오류 이 횟수부터 탭 재생성 시도
 CONSEC_ENV_ABORT_THRESHOLD = 6      # 재생성해도 계속 실패하면 이 횟수에서 안전 중단
@@ -130,13 +63,6 @@ def recreate_page(ctx, old_page):
         pass
     new_page = ctx.new_page()
     return new_page
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# 프리플랍 베팅 순서 시뮬레이터 / 노드 메타 유도 — gto/node_key.py로 이동(서버 저장 API·
-# 로더·감사 스크립트와 단일 소스 공유, T-001). 기존 호출부 호환을 위해 여기서 재노출한다.
-# ──────────────────────────────────────────────────────────────────────────
-from gto.node_key import _replay, derive_node_meta  # noqa: E402,F401
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -170,36 +96,20 @@ def compute_children(node_key: str, hands: dict, size_map: dict, reach_prob: flo
 # ──────────────────────────────────────────────────────────────────────────
 # DB 조회 (이미 수집된 노드 재수집 방지 + 프론티어 시드)
 # ──────────────────────────────────────────────────────────────────────────
-def load_collected_from_db() -> dict:
-    """DB의 gto_preflop_situations를 읽어 {action_seq: {hands, raise_size}} 반환.
+def load_collected_from_db(conn=None) -> dict:
+    """DB의 수집 노드 → {action_seq: {hands, raise_size}} (gto.loader.read_preflop_nodes).
 
-    action_seq가 NULL인 레거시 행은 노드 키가 없어 제외(트리 좌표 불명).
+    conn을 주지 않으면 앱 연결(get_connection)을 열고 닫는다. 읽기 전용 연결도 된다.
     """
-    from db.connection import get_connection
-    conn = get_connection()
-    cur = conn.cursor()
-    rows = cur.execute(
-        "SELECT id, action_seq, raise_size FROM gto_preflop_situations "
-        "WHERE action_seq IS NOT NULL"
-    ).fetchall()
-    collected = {}
-    for r in rows:
-        hands_rows = cur.execute(
-            "SELECT hand, freq_fold, freq_call, freq_raise, freq_allin "
-            "FROM gto_preflop_hands WHERE situation_id=?",
-            (r["id"],),
-        ).fetchall()
-        hands = {}
-        for h in hands_rows:
-            freqs = {}
-            if h["freq_fold"] > 0:  freqs["fold"] = h["freq_fold"]
-            if h["freq_call"] > 0:  freqs["call"] = h["freq_call"]
-            if h["freq_raise"] > 0: freqs["raise"] = h["freq_raise"]
-            if h["freq_allin"] > 0: freqs["allin"] = h["freq_allin"]
-            hands[h["hand"]] = freqs
-        collected[r["action_seq"]] = {"hands": hands, "raise_size": r["raise_size"]}
-    conn.close()
-    return collected
+    own = conn is None
+    if own:
+        from db.connection import get_connection
+        conn = get_connection()
+    try:
+        return collected_by_seq(read_preflop_nodes(conn))
+    finally:
+        if own:
+            conn.close()
 
 
 def load_missing_queue_from_db() -> list:
@@ -221,35 +131,65 @@ def load_missing_queue_from_db() -> list:
 QUEUE_FRONTIER_REACH = 1e-9
 
 
-def queue_frontier_additions(missing_keys: list, collected: dict) -> list:
+def next_action_freq(node: dict, token: str) -> float:
+    """수집된 노드에서 다음 토큰 액션의 콤보 가중 빈도(0~1).
+
+    F=fold, C/X=call. 레이즈 토큰은 노드의 실측 raise_size와 같으면 raise, 올인 사이즈
+    (ALLIN_FALLBACK_BB)면 allin, raise_size를 모르면 raise+allin, 그 밖의 사이즈는 0
+    (이 노드의 화면에 없는 사이즈 — 트리 밖).
+    """
+    agg = tw.aggregate_frequencies(node.get("hands") or {})
+    if token == "F":
+        return agg.get("fold", 0.0)
+    if token in ("C", "X"):
+        return agg.get("call", 0.0)
+    try:
+        size = float(token[1:])
+    except ValueError:
+        return 0.0
+    raise_size = node.get("raise_size")
+    freq = 0.0
+    if raise_size is None:
+        return agg.get("raise", 0.0) + agg.get("allin", 0.0)
+    if abs(size - raise_size) < 1e-9:
+        freq += agg.get("raise", 0.0)
+    if abs(size - ALLIN_FALLBACK_BB) < 1e-9:
+        freq += agg.get("allin", 0.0)
+    return freq
+
+
+def queue_frontier_additions(missing_keys: list, collected: dict,
+                             epsilon: float = tw.EPSILON) -> list:
     """미수집 큐 키들 → 프론티어에 추가할 (tokens, reach) 목록 (ADR 0011 "큐=2순위").
 
-    각 큐 키에 대해 결정 노드가 아니면(derive_node_meta None — 잘못 들어온 항목) 스킵.
-    이미 수집됐으면(collected 갱신이 아직 안 왔거나 다른 경로로 먼저 수집된 경우의 방어)
-    스킵. 그 밖엔 **가장 얕은 미수집 조상**(자기 자신 포함, 루트부터 훑어 처음 만나는
-    미수집 프리픽스)만 하나 추가한다 — 조상이 먼저 수집돼야 그 자식들이 정상 확장
-    (compute_children)으로 이어지고, 다음 실행에서 이 함수가 다시 불릴 때(collected가
-    갱신된 상태로) 한 단계 더 깊은 조상 또는 이 키 자신을 추가한다(조상·자손 순차 수집).
-    reach_prob은 항상 QUEUE_FRONTIER_REACH로 고정한다 — 실제 도달확률을 몰라도(큐는 정상
-    트리 순회 밖에서 옴) 보조 2순위라는 사실만 중요하기 때문이다.
+    건너뛰는 키: 이미 수집됨 / 결정 노드 아님 / **트리 밖**(경로의 수집된 조상 노드에서 다음
+    액션 빈도가 epsilon 이하 — 예: UTG RFI에서 림프 `C`, 화면에 없는 사이즈 `R2.9`).
+    그 밖엔 **가장 얕은 미수집 조상**(자기 자신 포함)만 하나 추가한다 — 조상이 먼저 수집돼야
+    자식이 정상 확장(compute_children)으로 이어지고, 다음 실행에서 한 단계 더 깊은 조상
+    또는 키 자신으로 넘어간다. reach는 QUEUE_FRONTIER_REACH로 고정(보조 2순위).
     """
     out = []
     seen = set()
     for key in missing_keys:
         if key in collected:
             continue
-        meta = derive_node_meta(key)
-        if meta is None:
-            continue  # 결정 노드 아님(베팅 종료 등) — 큐에 잘못 들어온 항목 방어
-        tokens = key.split("-") if key else []
+        if derive_node_meta(key) is None:
+            continue
+        tokens = split_key(key)
         target_tokens = None
+        off_tree = False
         for i in range(len(tokens) + 1):
             prefix_key = "-".join(tokens[:i])
-            if prefix_key not in collected:
-                target_tokens = tokens[:i]
+            node = collected.get(prefix_key)
+            if node is None:
+                if target_tokens is None:
+                    target_tokens = tokens[:i]
+                continue
+            if i < len(tokens) and next_action_freq(node, tokens[i]) <= epsilon:
+                off_tree = True
                 break
-        if target_tokens is None:
-            continue  # 조상까지 전부 이미 수집됨 — collected=1 갱신 지연 등, 스킵
+        if off_tree or target_tokens is None:
+            continue
         target_key = "-".join(target_tokens)
         if target_key in seen:
             continue
@@ -293,6 +233,45 @@ def seed_frontier_from_db(collected: dict, epsilon: float):
     return frontier, visited
 
 
+def lost_visited_keys(visited, failed, collected: dict) -> set:
+    """visited 중 결정 노드인데 DB·failed에 없는 키(덮어써져 사라진 노드)."""
+    failed = set(failed)
+    return {k for k in visited
+            if k not in collected and k not in failed and derive_node_meta(k) is not None}
+
+
+def reseed_checkpoint(ckpt: "Checkpoint", collected: dict, epsilon: float = tw.EPSILON) -> dict:
+    """체크포인트 frontier를 DB 트리에서 다시 만든다(브라우저·네트워크 없음).
+
+    - visited: 기존 visited 보존 + DB 수집 키 추가. 단 "visited인데 DB·failed에 없는" 결정
+      노드는 빼서 다시 수집되게 한다. failed는 그대로.
+    - frontier: DB 시드(seed_frontier_from_db) ∪ 기존 frontier, visited 제외, 같은 키는 큰 reach.
+    ckpt를 제자리에서 바꾸고 변경 요약 dict를 돌려준다(저장은 호출자).
+    """
+    seed, _ = seed_frontier_from_db(collected, epsilon)
+    lost = lost_visited_keys(ckpt.visited, ckpt.failed, collected)
+    visited = (set(ckpt.visited) - lost) | set(collected)
+    merged: dict = {}
+    for tokens, reach in list(ckpt.frontier_items) + list(seed):
+        key = "-".join(tokens)
+        if key in visited:
+            continue
+        if key not in merged or reach > merged[key][1]:
+            merged[key] = (list(tokens), reach)
+    old_keys = {"-".join(t) for t, _ in ckpt.frontier_items}
+    summary = {
+        "visited_before": len(ckpt.visited), "visited_after": len(visited),
+        "frontier_before": len(ckpt.frontier_items), "frontier_after": len(merged),
+        "added": sorted(k for k in merged if k not in old_keys),
+        "dropped": sorted(k for k in old_keys if k not in merged),
+        "lost_requeued": sorted(lost),
+        "failed": list(ckpt.failed),
+    }
+    ckpt.visited = visited
+    ckpt.frontier_items = sorted(merged.values(), key=lambda tr: -tr[1])
+    return summary
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # 체크포인트
 # ──────────────────────────────────────────────────────────────────────────
@@ -317,6 +296,13 @@ class Checkpoint:
 
     def save(self, frontier: "tw.FrontierQueue"):
         items = [{"tokens": n.path_tokens, "reach": n.reach_prob} for n in frontier._items]
+        self._write(items)
+
+    def save_items(self):
+        """frontier_items 그대로 기록(재시드용)."""
+        self._write([{"tokens": t, "reach": r} for t, r in self.frontier_items])
+
+    def _write(self, items: list):
         data = {
             "visited": sorted(self.visited),
             "failed": self.failed,
@@ -429,12 +415,7 @@ EXTRACT_JS = r"""
 
 
 def _badsum_count(hands: dict) -> int:
-    bad = 0
-    for freqs in hands.values():
-        s = sum(freqs.values())
-        if not (0.9 <= s <= 1.1):
-            bad += 1
-    return bad
+    return sum(1 for freqs in hands.values() if not freq_sum_ok(freqs))
 
 
 import re as _re
@@ -496,13 +477,8 @@ def extract_node(page, node_key: str, nav_timeout: int) -> ExtractResult:
     except Exception as e:
         return ExtractResult(False, reason=f"navigate 실패: {e}")
 
-    # 레인지 테이블 셀 렌더 대기(고정 sleep 대신 조건 대기)
-    #
-    # ⚠️ 실측으로 발견된 함정(2026-07-17): 깊은 노드(4벳+)는 오프너의 계속 레인지가
-    # 원래 좁아서(예: 88/169 — 나머지는 오프닝 레인지 밖이라 정당하게 background:none)
-    # "색칠된 셀 ≥150개" 같은 절대 임계값으로는 절대 통과 못 하고 영원히 타임아웃난다.
-    # "로딩 중"과 "이미 다 됐는데 원래 좁은 레인지"를 구분 못 하는 게 근본 문제.
-    # → 절대 개수가 아니라 **색칠된 셀 개수가 더 이상 안 바뀌는(안정화) 시점**으로 판정.
+    # 레인지 테이블 셀 렌더 대기 — 색칠된 셀 수가 600ms 이상 변하지 않으면 완료.
+    # 깊은 노드는 레인지가 원래 좁아(예 88/169) 절대 개수 임계값으로는 판정할 수 없다.
     rendered = True
     try:
         page.wait_for_selector('[data-tst^="range_table_cell_0_"]', timeout=nav_timeout)
@@ -563,7 +539,7 @@ def extract_node(page, node_key: str, nav_timeout: int) -> ExtractResult:
         return ExtractResult(False, reason=f"badSum 검증 실패({bad}핸드)", used=used, raw=raw)
 
     # 실측 사이즈: 히어로 Actions 패널 버튼에서 읽은 값(헤더/과거 액션과 분리됨).
-    # ③ 실측대로 노드당 논-올인 레이즈는 1개 → 첫(유일한) 레이즈 사이즈를 쓴다.
+    # 노드당 논-올인 레이즈는 1개 → 첫(유일한) 레이즈 사이즈를 쓴다.
     raise_sizes = raw.get("raiseSizes") or []
     allin_sizes = raw.get("allinSizes") or []
     raise_size = raise_sizes[0] if raise_sizes else None
@@ -681,14 +657,13 @@ def run(args) -> int:
     # DB에 이미 있는 노드는 항상 visited로 취급(중복 재수집 방지)
     ckpt.visited |= set(collected.keys())
 
-    # T-015/ADR 0011: 미수집 큐(range_type='seq')를 프론티어에 2순위로 반영.
-    # 체크포인트를 이어가는 경우에도 매 실행 재확인(새로 쌓인 큐 항목 + 이전 실행에서
-    # 조상만 수집돼 다음 조상/자기 자신으로 넘어갈 항목 모두 반영).
+    # 미수집 큐(range_type='seq')를 프론티어에 2순위로 반영(ADR 0011). 체크포인트를 이어가도
+    # 매 실행 다시 본다(새 큐 항목, 조상이 수집돼 한 단계 깊어진 항목).
     missing_keys = load_missing_queue_from_db()
     if missing_keys:
         existing_frontier_keys = {n.node_key for n in frontier._items}
         added = 0
-        for tokens, reach in queue_frontier_additions(missing_keys, collected):
+        for tokens, reach in queue_frontier_additions(missing_keys, collected, epsilon):
             key = "-".join(tokens)
             if key in ckpt.visited or key in existing_frontier_keys:
                 continue
@@ -723,7 +698,7 @@ def run(args) -> int:
     processed = 0
     saved = 0
     consec_env_fail = 0  # 연속 환경오류(크래시/타임아웃 등) 카운터 — 성공하면 리셋
-    consec_save_fail = 0  # 연속 저장(POST) 실패 카운터 — 성공하면 리셋 (T-012)
+    consec_save_fail = 0  # 연속 저장(POST) 실패 카운터 — 성공하면 리셋
     since_recycle = 0    # 마지막 탭 재생성 이후 처리한 노드 수 — 예방적 재생성용
     try:
         while len(frontier) > 0 and processed < args.limit:
@@ -753,19 +728,13 @@ def run(args) -> int:
             if res.limit_hit:
                 print("        !! 일일 한도/제한 신호 감지 — 안전하게 중단하고 재개 가능 상태로 저장")
                 processed -= 1  # 이 노드는 처리 못 함
-                # ⚠️ 버그 수정(2026-07-17, 사용자 지적): frontier.pop()으로 이미 꺼낸
-                # node를 다시 넣지 않고 break하면, 이 노드가 visited에도 frontier에도
-                # 없는 상태로 체크포인트에 저장돼 사실상 영구 유실됐다(체크포인트가
-                # 있으면 다음 실행 때 DB reseed를 안 하므로 다시 나타날 기회가 없음).
-                # 반드시 되돌려 넣고 나서 중단해야 다음 실행에서 이어서 처리된다.
+                # 꺼낸 노드를 되돌린 뒤 중단해야 체크포인트에서 유실되지 않는다.
                 frontier.push(node)
                 break
 
             if not res.ok:
                 if is_env_failure(res.reason):
-                    # ⚠️ 환경 오류(크래시/타임아웃/네트워크) — 진짜 데이터 이상이 아니므로
-                    # failed(영구 no-retry)에 넣지 않고 그냥 큐에 되돌려 자동 재시도한다
-                    # (2026-07-17, 실전 크래시로 84개 노드가 영구 실패 처리될 뻔한 사고 이후 추가).
+                    # 환경 오류 — failed(영구 no-retry)에 넣지 않고 큐에 되돌려 재시도한다.
                     consec_env_fail += 1
                     processed -= 1  # 실제로 처리 못 함 — limit 카운트에서 제외
                     print(f"        [환경오류 {consec_env_fail}/{CONSEC_ENV_ABORT_THRESHOLD}] "
@@ -826,10 +795,8 @@ def run(args) -> int:
                 print(f"        [저장 실패 {consec_save_fail}/{CONSEC_ENV_ABORT_THRESHOLD}] {e} "
                       f"(서버 실행 중인지 확인) — 재시도 대상으로 큐에 되돌림")
                 frontier.push(node)
-                # ⚠️ T-012: 저장 실패가 연속되면(백엔드가 꺼져 있는 등) 같은 노드를
-                # 무한 재시도해 GTO Wizard 일일 한도를 헛되이 소진할 수 있다. 환경오류와
-                # 같은 기준(CONSEC_ENV_ABORT_THRESHOLD)으로 안전 중단한다. 노드는 이미
-                # frontier로 되돌렸으므로 유실되지 않는다(visited/failed 둘 다 미기입).
+                # 저장이 연속 실패하면(백엔드가 꺼짐 등) 같은 노드를 무한 재시도해 일일 한도를
+                # 소진하지 않도록 환경오류와 같은 기준으로 안전 중단한다(노드는 frontier에 보존).
                 if consec_save_fail >= CONSEC_ENV_ABORT_THRESHOLD:
                     print(f"        [안전 중단] 저장이 {consec_save_fail}회 연속 실패 — "
                           f"서버 확인(백엔드가 켜져 있는지 https://localhost:8765). "
@@ -896,11 +863,15 @@ def run(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        description="④ 데이터 기반 프리플랍 트리 워커 (Playwright/CDP 드라이버)")
+        description="프리플랍 GTO 트리 수집 (Playwright/CDP 드라이버)")
     ap.add_argument("--limit", type=int, default=90,
                     help="이번 실행 최대 신규 노드 수(기본 90, 무료 100/일 안전마진)")
     ap.add_argument("--dry-run", action="store_true",
-                    help="추출/검증만, 저장 안 함(첫 노드 상세 출력)")
+                    help="추출/검증만, 저장 안 함(첫 노드 상세 출력). --reseed-checkpoint와 함께면 "
+                         "바뀔 내용만 출력")
+    ap.add_argument("--reseed-checkpoint", action="store_true",
+                    help="브라우저 없이 DB(읽기 전용, EV_PLUS_DB → poker.db)에서 체크포인트 "
+                         "frontier를 다시 만든다. 기존 파일은 <checkpoint>.bak으로 복사")
     ap.add_argument("--cdp-url", default=DEFAULT_CDP, help="크롬 CDP 엔드포인트")
     ap.add_argument("--server", default=DEFAULT_SERVER, help="로컬 FastAPI 베이스 URL")
     ap.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT), help="진행상황 JSON 경로")
@@ -915,8 +886,41 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def run_reseed(args) -> int:
+    """--reseed-checkpoint: DB를 읽기 전용으로 열어 체크포인트를 재시드한다(네트워크 없음)."""
+    from db.connection import get_readonly_connection
+    conn = get_readonly_connection()
+    try:
+        collected = load_collected_from_db(conn)
+    finally:
+        conn.close()
+    path = Path(args.checkpoint)
+    ckpt = Checkpoint(path)
+    existed = ckpt.load()
+    summary = reseed_checkpoint(ckpt, collected, args.epsilon)
+    print(f"[재시드] DB 수집 노드 {len(collected)}개, 체크포인트 {'있음' if existed else '없음'}({path})")
+    print(f"  failed: {summary['failed'] or '[]'}")
+    print(f"  visited {summary['visited_before']} → {summary['visited_after']}, "
+          f"frontier {summary['frontier_before']} → {summary['frontier_after']}")
+    print(f"  frontier 추가 {len(summary['added'])}: {summary['added']}")
+    print(f"  frontier 제외(이미 visited) {len(summary['dropped'])}: {summary['dropped']}")
+    print(f"  visited에서 빼 재수집 {len(summary['lost_requeued'])}: {summary['lost_requeued']}")
+    if args.dry_run:
+        print("[dry-run] 체크포인트를 쓰지 않았습니다.")
+        return 0
+    if existed:
+        backup = path.with_name(path.name + ".bak")
+        shutil.copy2(path, backup)
+        print(f"  백업: {backup}")
+    ckpt.save_items()
+    print(f"  저장: {path}")
+    return 0
+
+
 def main():
     args = build_parser().parse_args()
+    if args.reseed_checkpoint:
+        sys.exit(run_reseed(args))
     try:
         sys.exit(run(args))
     except KeyboardInterrupt:
