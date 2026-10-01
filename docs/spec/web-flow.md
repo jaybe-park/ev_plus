@@ -110,6 +110,18 @@
   뗀 표시 이름(`format.ts::displayName`) — 원본: `web/src/components/handResultLogic.ts` · 강제 장치:
   `web/src/components/__tests__/handResultLogic.test.ts`, `web/src/__tests__/reviewLogic.test.ts`
   (렌더링 테스트 없음)
+- 스킵 모드(헤더 우측 "⏭ 자동" 토글): 켜짐 여부는 `localStorage`(`ev_plus_skip_mode`)에 보관해 새로고침해도
+  유지된다(접근 예외는 꺼짐으로 처리, 저장 실패는 무시). 켜져 있으면 ① 사람이 폴드해 끝난 핸드의 응답은 재생
+  없이 남은 이벤트를 즉시 소비한다(`enqueue(..., immediate)` → 스킵 버튼과 같은 `applyEvents` 경로, 결과 =
+  서버 최종 상태)라 결과 창이 바로 뜬다. 폴드한 핸드의 재생 도중에 켜도 그 자리에서 스킵한다. 쇼다운까지 간 내
+  핸드는 평소처럼 재생한다(`shouldAutoSkip`). ② 결과 창이 뜨면 5초(`AUTO_NEXT_MS`) 카운트다운("N초 후 다음
+  핸드") 후 자동으로 "다음 핸드"를 누른다. 마우스가 결과 창 카드 위에 있는 동안은 멈추고("자동 진행 멈춤"),
+  벗어나면 남은 시간부터 이어간다. 파산·클리어(게임 오버) 화면, 요청 중, 세션 만료, 직전 요청 오류 뒤에는 자동
+  진행하지 않는다(`autoNextActive`). 꺼져 있으면 재생·결과 창은 수동 그대로다(자동 진행도 스킵 모드에 묶임) —
+  원본: `web/src/autoAdvance.ts`, `web/src/components/HandResult.tsx`, `web/src/App.tsx` · 강제 장치:
+  `web/src/__tests__/autoAdvance.test.ts`(보관·예외, 즉시 소비 판단과 실제 세션 픽스처 결과, 자동 진행 조건,
+  남은 시간 계산, `vi.useFakeTimers` 카운트다운 5초·멈춤·이어가기·stop). hover 연결 자체는 장치 없음(렌더링
+  테스트 없음)
 - 타이밍(`eventTiming`): 봇 `action`은 "생각 중"(THINKING_RATIO 구간) → 표시 반영 + 배지 →
   다음. **사람 자신의 액션은 "생각 중" 없이 즉시 반영**하고 배지만 `HUMAN_ACTION_MS`(350ms)
   보인다(봇만 연출). `deal_card`는 지연 끝에 반영, 그 밖의 이벤트는 시작하자마자 반영하고 지연 후

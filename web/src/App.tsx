@@ -12,6 +12,7 @@ import HandResult from "./components/HandResult";
 import HintPanel from "./components/HintPanel";
 import { gtoFetchState, type GtoFetchResult } from "./components/gtoPanelLogic";
 import { sessionSummaryText, shouldFetchReview } from "./reviewLogic";
+import { readSkipMode, storeSkipMode, shouldAutoSkip, autoNextActive } from "./autoAdvance";
 import {
   readStoredSessionId, storeSessionId, clearStoredSessionId, isSessionGone,
   SESSION_EXPIRED_MESSAGE,
@@ -51,6 +52,8 @@ export default function App() {
   const [rightTab, setRightTab] = useState<"log" | "hint">("log");
   const [gtoResult, setGtoResult] = useState<GtoFetchResult | null>(null);
   const [hintEnabled, setHintEnabled] = useState<boolean>(readHintEnabled);
+  // 스킵 모드(⏭): 폴드한 핸드는 재생 없이 바로 결과, 결과 창은 5초 뒤 자동 다음 핸드
+  const [skipMode, setSkipMode] = useState<boolean>(readSkipMode);
   const [sessionReview, setSessionReview] = useState<SessionReview | null>(null);
 
   const prevHandNumber = useRef<number>(0);
@@ -82,9 +85,10 @@ export default function App() {
       setState(next);
       storeSessionId(next.session_id);
       // 재생 시작점 = 요청 직전 상태(state). 새 핸드면 블라인드 전부터.
-      enqueue(next.events, state, next, isNewHand);
+      // 스킵 모드에서 사람이 폴드한 핸드는 남은 이벤트를 즉시 소비해 결과 창을 바로 띄운다.
+      enqueue(next.events, state, next, isNewHand, shouldAutoSkip(skipMode, next));
     },
-    [state, enqueue]
+    [state, enqueue, skipMode]
   );
 
   const run = useCallback(
@@ -162,6 +166,14 @@ export default function App() {
     });
   };
 
+  const toggleSkipMode = () => {
+    const next = !skipMode;
+    setSkipMode(next);
+    storeSkipMode(next);
+    // 폴드한 핸드의 재생 중에 켜면 그 자리에서 남은 재생을 건너뛴다
+    if (next && isReplaying && state && shouldAutoSkip(true, state)) skip();
+  };
+
   const handleStart    = (config: SetupConfig) => run(() => api.startGame(config));
   const handleAction   = (action: string, amount = 0) => {
     if (!state) return;
@@ -227,6 +239,18 @@ export default function App() {
             >
               힌트 👁
             </button>
+            <button
+              onClick={toggleSkipMode}
+              aria-pressed={skipMode}
+              title={"스킵 모드: 폴드한 핸드는 바로 결과, 결과 창은 5초 뒤 자동으로 다음 핸드(마우스를 올리면 멈춤)"}
+              className={`text-xs border rounded px-2 py-0.5 transition-colors ${
+                skipMode
+                  ? "text-sky-300 border-sky-600 bg-sky-900/30"
+                  : "text-gray-500 border-gray-600"
+              }`}
+            >
+              ⏭ 자동
+            </button>
             {isReplaying && (
               <button
                 onClick={skip}
@@ -266,6 +290,9 @@ export default function App() {
                 onNextHand={handleNextHand}
                 onNewGame={handleNewGame}
                 loading={loading || sessionExpired}
+                autoNext={autoNextActive({
+                  skipMode, gameOver: state.game_over, loading, sessionExpired, hasError: !!error,
+                })}
               />
             )}
           </div>

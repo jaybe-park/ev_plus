@@ -1,4 +1,6 @@
+import { useEffect, useRef, useState } from "react";
 import type { GameState } from "../types";
+import { AUTO_NEXT_MS, autoNextLabel, createCountdown, type Countdown } from "../autoAdvance";
 import { displayName } from "../format";
 import { evLossText } from "../reviewLogic";
 import { potLines, potLineText } from "./handResultLogic";
@@ -8,9 +10,27 @@ interface Props {
   onNextHand: () => void;
   onNewGame: () => void;
   loading: boolean;
+  autoNext: boolean;   // 스킵 모드 자동 진행(파산·클리어 화면에선 App이 false로 준다)
 }
 
-export default function HandResult({ state, onNextHand, onNewGame, loading }: Props) {
+export default function HandResult({ state, onNextHand, onNewGame, loading, autoNext }: Props) {
+  // 자동 진행: 결과 창이 뜨면 AUTO_NEXT_MS 카운트다운 후 "다음 핸드". 마우스가 결과 창 위에 있으면 멈춘다.
+  const [remaining, setRemaining] = useState(AUTO_NEXT_MS);
+  const [hovered, setHovered] = useState(false);
+  const countdown = useRef<Countdown | null>(null);
+  const onNextRef = useRef(onNextHand);
+  useEffect(() => { onNextRef.current = onNextHand; }, [onNextHand]);
+  const active = autoNext && !state.game_over;
+  useEffect(() => {
+    if (!active) return;
+    const c = createCountdown(AUTO_NEXT_MS, setRemaining, () => onNextRef.current());
+    countdown.current = c;
+    return () => { c.stop(); countdown.current = null; };
+  }, [active]);
+  useEffect(() => {
+    if (hovered) countdown.current?.pause();
+    else countdown.current?.resume();
+  }, [hovered, active]);
   const { winners, showdown_hands, game_over, players, hand_number, hand_review, pots } = state;
   const human = players.find((p) => p.is_human);
   const humanWon = human ? winners.includes(human.name) : false;
@@ -18,7 +38,11 @@ export default function HandResult({ state, onNextHand, onNewGame, loading }: Pr
 
   return (
     <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-20 rounded-xl">
-      <div className="bg-gray-800 border border-gray-600 rounded-2xl p-6 max-w-sm w-full mx-4 text-center shadow-2xl">
+      <div
+        className="bg-gray-800 border border-gray-600 rounded-2xl p-6 max-w-sm w-full mx-4 text-center shadow-2xl"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
         {game_over ? (
           <>
             <div className="text-4xl mb-2">{humanWon ? "🏆" : "💸"}</div>
@@ -99,6 +123,11 @@ export default function HandResult({ state, onNextHand, onNewGame, loading }: Pr
             >
               다음 핸드 →
             </button>
+            {active && (
+              <div className="mt-2 text-xs text-gray-400" aria-live="polite">
+                ⏭ {autoNextLabel(remaining, hovered)}
+              </div>
+            )}
           </>
         )}
       </div>
