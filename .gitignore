@@ -57,3 +57,4 @@ chip_violations.log
 *.db.slim
 *.db.slim-shm
 *.db.slim-wal
+gto_tree_checkpoint.json.bak
