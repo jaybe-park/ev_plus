@@ -12,13 +12,6 @@
 - 강제 장치: 조건마다 테스트 이름 · 영향: spec/ADR · 의존: T-NNN / D-NN
 ```
 
-## 게임 룰 (spec/game-rules.md)
-
-### T-046 — ADR 0007 위반: 봇 상대 레인지·3벳 판정의 한글 로그 파싱 제거
-- 왜: `ai/bot.py`의 `opponent_range_info`·`_count_raises`가 한글 `action_log` 문자열 매칭. 코드가 ADR과 다르면 버그. CLI는 `action_log`를 넘기지 않아 CLI 봇이 웹 봇과 다르게 행동한다.
-- 완료 조건: [ ] 봇이 `preflop_seq`(구조화)만으로 레이저·콜러·레이즈 횟수를 판정한다 [ ] CLI와 웹에서 같은 상황의 hard 봇 레인지 판정이 같다 [ ] 3벳한 상대는 RFI가 아니라 수집된 vs_open 노드의 레이즈 레인지(없으면 랜덤)
-- 의존: T-040(bot.py 소유) 완료 뒤
-
 ## 웹 (spec/web-flow.md)
 
 ### T-004 — 통계 화면
@@ -30,15 +23,10 @@
 
 ## 에퀴티 → 판단·평가 (spec/equity.md, spec/bot.md)
 
-### T-005 — medium 봇 레인지 반영
-- 왜: medium 봇 포스트플랍 EV가 vs 랜덤 기준(복기는 T-040에서 vs_range로 바뀜).
-- 완료 조건: [ ] medium 봇이 3벳팟에서 상대 레인지를 반영한다 [ ] 아레나에서 medium 봇이 ADR 0041 기준으로 나빠지지 않았다
-- 채택 기준: ADR 0041
-
 ### T-047 — 봇 상수 1회 측정
 - 왜: 임플라이드 −0.04, 멀티웨이 +0.04/명, aggression_margin 0.06/0.08의 근거가 60핸드 1회 튜닝뿐.
 - 완료 조건: [ ] T-040(is_draw) 뒤 `tune_bot.py`로 aggression_margin·임플라이드 보정을 3,000핸드×3시드 측정, 결과를 bot.md에 수치로 [ ] 채택은 ADR 0041 기준
-- 의존: T-040
+- 의존: 없음(T-040·T-046 완료). medium 레인지 반영은 T-046 뒤 재측정 가치 있음(bot.md 알려진 한계)
 
 ## Epic
 

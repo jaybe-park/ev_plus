@@ -430,7 +430,6 @@ class WebGameSession:
             return self.game.fallback_action(player, Action.CHECK), 0
         try:
             gs = self.game._get_game_state()
-            gs["action_log"] = self.action_log  # 봇이 레이즈 횟수 파악에 사용
             action, amount = bot.decide_action(gs)
             if not isinstance(action, Action):
                 raise TypeError(f"봇이 Action이 아닌 값을 반환: {action!r}")
@@ -608,10 +607,8 @@ class WebGameSession:
     # ──────────────────────────────────────────
 
     def _build_gs_for_ranges(self) -> dict:
-        """opponent_range_info에 넘길 state — game._get_game_state()에 action_log 부착"""
-        gs = self.game._get_game_state()
-        gs["action_log"] = self.action_log
-        return gs
+        """opponent_range_info에 넘길 state(core `_get_game_state()`의 preflop_seq를 쓴다 — ADR 0007)."""
+        return self.game._get_game_state()
 
     def _human_stack(self) -> tuple:
         """유효 콜·팟 계산용 (내 남은 칩, 내 핸드 기여, 다른 모두의 핸드 기여 — 폴드 포함)."""

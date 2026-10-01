@@ -143,7 +143,6 @@ def run_arena(seats: list, hands: int, big_blind: int, seed=None, verbose=False)
             if player is None or not player.is_human:
                 break  # 방어적 탈출 (정상 흐름에선 발생 안 함)
             gs = session.game._get_game_state()
-            gs["action_log"] = session.action_log
             action, amount = drivers[player.name].decide_action(gs)
             try:
                 session.submit_action(action.value, amount)

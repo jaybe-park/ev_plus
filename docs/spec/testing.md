@@ -25,7 +25,7 @@ exit code 1.
 - 파일 역할: `test_poker_full.py` = 포커 로직(핸드 평가/베팅/팟 분배/게임 흐름/웹 세션/헤즈업·
   사이드팟/프리플랍 GTO 조회·저장/세션 경로 룰) · `test_equity.py` = 에퀴티 엔진 + 봇 의사결정 ·
   `test_grader.py` = 플레이 평가(Play Grader) 판정 엔진 · `test_gto_tree.py` = GTO 트리
-  수집기·감사·재시드·큐 정리 스크립트의 순수 로직(브라우저·네트워크 없음) · `test_guards.py` =
+  수집기·감사·재시드·큐 정리 스크립트의 순수 로직(브라우저·네트워크 없음) · `test_guards.py`(테스트 등록 가드 GD-4 포함) =
   테스트 인프라 가드(운영 DB 스냅샷 비교, DB 크기 임계치, `equity_detail` 중복 카드 입력 검증) ·
   `test_workflow.py` = Claude Code hook(`.claude/hooks/block_dangerous.py`)의 차단 패턴·동시
   실행 금지·등록 여부(1초 이내).
