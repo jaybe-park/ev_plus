@@ -8,7 +8,7 @@
 | [0002](0002-gto-values-verbatim.md) | GTO Wizard 값은 화면 그대로만 저장(추측·보간 금지) | 유효 | gto-preflop |
 | [0003](0003-layered-css-parser.md) | 레이어 기반 CSS 파서로 GTO Wizard 빈도 추출 | 유효 | gto-preflop |
 | [0004](0004-raise-size-measured.md) | raise_size는 실측 bb(REAL), 공식은 폴백에만 | 유효 | gto-preflop |
-| [0005](0005-100bb-and-headsup-sb.md) | 100bb 고정 근사, 헤즈업은 6-max SB 재사용, 3~5인은 제외 | 유효 | gto-preflop |
+| [0005](0005-100bb-and-headsup-sb.md) | 100bb 고정 근사, 헤즈업은 6-max SB 재사용, 3~5인은 제외 | 유효 (결과 절의 "시퀀스 경로 미구현"은 0044로 해소됨) | gto-preflop |
 | [0006](0006-enum-first-and-model-guards.md) | enum 경로 우선·시퀀스 폴백 병렬 공존 + 데이터 모델 밖 가드 | 일부 대체됨 → 0035 (조회 순서. 데이터 모델 밖 가드는 유효) | gto-preflop |
 | [0007](0007-structured-preflop-seq.md) | advisor 입력은 구조화 프리플랍 시퀀스(한글 로그 파싱 금지) | 유효 | gto-preflop |
 | [0008](0008-node-key-action-seq.md) | 노드 키 = GTO Wizard preflop_actions 문자열, 스키마 안 A, DB가 source of truth | 일부 대체됨 → 0044 (enum 3종 UNIQUE 유지 부분. 노드 키 포맷·DB source of truth는 유효) | gto-preflop |
@@ -16,16 +16,16 @@
 | [0010](0010-runtime-sibling-snap.md) | 런타임 스냅 = 수집된 레이즈 형제, 없으면 큐+휴리스틱 | 유효 | gto-preflop |
 | [0011](0011-data-driven-tree-collection.md) | 데이터 기반 트리 수집(가정 금지, ε 분기, 도달확률 best-first) | 유효 | gto-preflop |
 | [0012](0012-collector-operational-safety.md) | 수집 운영 안전장치 — 한도·환경오류·자격증명·지연 | 유효 | gto-preflop |
-| [0013](0013-no-arena-gate-collection-as-routine.md) | 아레나 검증 게이트 폐기, 수집은 운영 루틴 | 유효 | gto-preflop |
+| [0013](0013-no-arena-gate-collection-as-routine.md) | 아레나 검증 게이트 폐기, 수집은 운영 루틴 | 유효 (결과 절의 DECISIONS 참조는 0040으로 해소됨) | gto-preflop |
 | [0014](0014-difficulty-is-mc-resolution.md) | 봇 난이도 = MC 샘플 수(판단 해상도), 일부러 약하게 코딩하지 않는다 | 일부 대체됨 → [0045](0045-equity-precision-1pp-adaptive-mc.md) (샘플 수치·"hard만 리버 전수". "난이도 = 해상도, 일부러 약하게 코딩하지 않는다" 원칙은 유효) | bot |
 | [0015](0015-aggression-margin.md) | 어그레션 마진 — 벳을 받으면 콜 기준을 벳 크기에 비례해 올린다 | 유효 | bot |
 | [0016](0016-bot-validation-arena-legacy.md) | 봇 검증 = 아레나 bb/100 + legacy 베이스라인, 튜닝 결과는 사람이 반영 | 유효 | bot |
 | [0017](0017-equity-canonical-key-exact-protection.md) | equity_cache 키 = 수트 정규화, exact 값은 보호, 레인지 조건부 equity는 저장하지 않는다 | 대체됨 → 0034 | equity |
 | [0018](0018-equity-fast-paths.md) | 에퀴티 계산 고속화 경로 — 계산용 평가기, 스트리트 분해 DP, 보드 중심 리버 테이블, PyPy | 일부 대체됨 → 0034 (캐시·DP 메모 부분. 고속 평가기·board table은 유효) | equity |
 | [0019](0019-equity-worker-priority.md) | 에퀴티 워커 우선순위 — 게임에서 만난 스팟 먼저, 싼 스트리트 먼저, 스윕은 마지막 | 대체됨 → 0034 | equity |
-| [0020](0020-sqlite-single-writer.md) | SQLite 쓰기 원칙 — 쓰기는 메인 프로세스, 계산만 Pool, 짧은 트랜잭션, 멱등 저장 | 유효 | equity |
+| [0020](0020-sqlite-single-writer.md) | SQLite 쓰기 원칙 — 쓰기는 메인 프로세스, 계산만 Pool, 짧은 트랜잭션, 멱등 저장 | 일부 대체됨 → 0034 (워커·계산 Pool 부분. 쓰기는 메인 프로세스 1개·짧은 트랜잭션·멱등 저장은 유효) | equity |
 | [0021](0021-equity-stats-incremental.md) | `--status`는 증분 통계 테이블을 읽는다 — 모든 쓰기가 같은 트랜잭션에서 델타 반영 | 대체됨 → 0034 | equity |
-| [0022](0022-equity-cache-rebuildable-vsrandom-ui.md) | equity_cache는 재계산 가능한 캐시로 유지, vs_random은 계산만 유지하고 UI에서는 뺀다 | 대체됨 → 0034 | equity |
+| [0022](0022-equity-cache-rebuildable-vsrandom-ui.md) | equity_cache는 재계산 가능한 캐시로 유지, vs_random은 계산만 유지하고 UI에서는 뺀다 | 일부 대체됨 → 0034 (캐시 유지 부분. vs_random은 계산만 유지하고 UI에서 뺀다는 유효) | equity |
 | [0023](0023-postflop-range-narrowing.md) | 포스트플랍 GTO 수집 폐기 → 프리플랍 GTO 기반 레인지 좁히기, Epic 설계 확정분 | 유효 | bot |
 | [0024](0024-hj-position-naming.md) | 포지션 네이밍은 GTO Wizard 기준(HJ, MP 아님) | 유효 | game |
 | [0025](0025-ports-and-https.md) | 포트 고정(8765/5766) + 백엔드 HTTPS 필수 | 유효 | game |

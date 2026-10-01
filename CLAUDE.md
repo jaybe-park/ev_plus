@@ -18,7 +18,7 @@ cd web && npm run build            # 프론트 빌드 확인
 - 커밋은 바꾼 파일만 경로 지정(`git add -- <경로>`). 전체 add·`commit -a` 금지 — 강제 장치: hook `.claude/hooks/block_dangerous.py`
 - `poker.db`에 직접 쓰기(sqlite3/`python -c`) 금지 — `--dry-run`을 지원하는 스크립트로만 — 강제 장치: hook
 - 그라인드·튜닝 동시 실행 금지(CPU/DB 경합) — 강제 장치: hook(에이전트 실행분만)
-- 테스트는 `EV_PLUS_DB` 임시 DB로 격리한다. 공유 `poker.db`를 테스트에서 쓰지 않는다 — 강제 장치: `tests/test_poker_full.py` 픽스처(부분)
+- 테스트는 `EV_PLUS_DB` 임시 DB로 격리한다. 공유 `poker.db`를 테스트에서 쓰지 않는다 — 강제 장치: `tests/run_all.py`의 운영 DB (mtime, size) 스냅샷 가드(바뀌면 실패) + `tests/test_guards.py`
 - GTO 값은 화면에서 읽은 그대로만. 추측·보간·잔여를 fold로 채우기 금지 — 강제 장치: `tests/test_poker_full.py` 영역 6·7, `tests/test_gto_tree.py` · 근거 ADR 0002
 - 사용자 확인은 **결정할 거리가 있을 때만**: 되돌리기 어려운 변경(스키마·데이터 삭제·구조 폐기)이나 방향이 갈리는 화면·기능 변경. 버그 수정 성격의 UI 변경·문서·설정·테스트는 바로 커밋·병합하고 보고한다 — 장치 없음
 
@@ -27,7 +27,7 @@ cd web && npm run build            # 프론트 빌드 확인
 | 층 | 문서 |
 |---|---|
 | 현재 상태 | `docs/spec/` — `game.md`(룰·웹 흐름·API) · `bot.md`(봇·플레이 평가) · `equity.md`(에퀴티 엔진·워커·패널) · `gto-preflop.md`(GTO 수집·저장·조회) · `db.md`(연결·마이그레이션·기록·보존) · `testing.md`(테스트 체계) |
-| 로컬 생성 (git 제외) | `docs/gto-preflop-progress.md` — 수집 현황, `python3 scripts/gto_tree_report.py` |
+| 로컬 생성 (git 제외, 문서가 아니라 리포트) | `docs/gto-preflop-progress.md` — `python3 scripts/gto_tree_report.py`가 만든다. 규칙을 적지 않는다 |
 | 결정 | `docs/decisions/` (목록: `README.md`) |
 | 결정 대기 | `DECISIONS.md` |
 | 할 일 | `TODO.md` |
