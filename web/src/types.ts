@@ -25,6 +25,7 @@ export interface GameState {
   winners: string[];
   showdown_hands: Record<string, string>;
   action_log: string[];
+  log_entries?: LogEntry[]; // action_log와 1:1 — 줄마다 그 시점 스트리트·보드·내 홀카드(서버 schemas.LogEntry)
   call_amount: number;
   min_raise_to: number;
   can_raise: boolean;       // 사람이 지금 레이즈/올인-레이즈를 할 수 있나(false면 버튼 숨김)
@@ -33,6 +34,14 @@ export interface GameState {
   equity: EquityInfo | null;
   hand_review: HandReviewEntry[] | null;
   pots?: PotShare[] | null; // 핸드 종료 시 팟 계층(없거나 null이면 계층 표시 없이 승자만)
+}
+
+// 로그 한 줄 + 그 줄이 생긴 시점의 보드·내 홀카드(서버 server/schemas.py::LogEntry)
+export interface LogEntry {
+  text: string;
+  street: string;
+  board: string[];
+  hero_cards: string[];
 }
 
 // 팟 계층 하나. returned=true는 아무도 받지 않은 초과 베팅을 낸 사람에게 돌려준 몫.

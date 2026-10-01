@@ -3559,6 +3559,55 @@ def test_8_30_hand_over_pots_main_side_returned():
     assert sess.get_state()["pots"] is None
 
 
+def test_8_32_log_entries_carry_board_and_hero_cards():
+    """T-008: 게임 상태 log_entries는 action_log와 1:1(같은 길이·같은 text)이고, 각 줄에 그 시점의
+    스트리트·보드(깔린 커뮤니티 카드)·사람 홀카드가 실린다. 응답 스키마도 통과한다."""
+    from server.schemas import GameStateResponse
+    # 헤즈업, 사람 BTN/SB. 사람 림프 → 봇 체크 → 이후 체크다운(쇼다운까지)
+    sess, _ = _scripted_session(1, dealer_index=0)
+    hero = [str(c) for c in sess.human.hole_cards]
+    seen_lens = set()
+    st = sess.get_state(sess.submit_action("call", 0))
+    for _ in range(10):
+        entries, log = st["log_entries"], st["action_log"]
+        assert [e["text"] for e in entries] == log, "log_entries text가 action_log와 다름"
+        for e in entries:
+            assert e["hero_cards"] == hero, f"내 홀카드가 아님: {e}"
+            want = {"프리플랍": 0, "플랍": 3, "턴": 4, "리버": 5}.get(e["street"])
+            if want is not None:
+                assert len(e["board"]) == want, f"{e['street']} 줄의 보드 장수: {e}"
+            seen_lens.add(len(e["board"]))
+        GameStateResponse(**st)
+        if st["hand_over"]:
+            break
+        st = sess.get_state(sess.submit_action("check", 0))
+    assert st["hand_over"], "체크다운이 끝나지 않음"
+    assert seen_lens == {0, 3, 4, 5}, f"프리플랍~리버 보드가 모두 나와야 함: {seen_lens}"
+    # 스트리트 헤더 줄 = 새로 깔린 보드, 승리 줄 = 최종 보드
+    by_text = {e["text"]: e for e in st["log_entries"]}
+    assert len(by_text["── 플랍 ──"]["board"]) == 3
+    assert st["log_entries"][-1]["text"].startswith("🏆")
+    assert st["log_entries"][-1]["board"] == st["community_cards"]
+    # 새 핸드는 로그를 비우고 새 홀카드로 시작
+    sess.next_hand()
+    st = sess.get_state()
+    assert [e["text"] for e in st["log_entries"]] == st["action_log"]
+    assert all(e["hero_cards"] == [str(c) for c in sess.human.hole_cards] and e["board"] == []
+               for e in st["log_entries"])
+
+
+def test_8_33_log_entries_window_matches_action_log_tail():
+    """T-008: 30줄이 넘어도 log_entries는 action_log[-30:]와 같은 창(끝 기준)이다 — 프론트가 logPending으로
+    두 목록을 같은 개수만큼 끝에서 숨긴다."""
+    sess, _ = _scripted_session(1, dealer_index=0)
+    for i in range(40):
+        sess._append_log(f"줄 {i}")
+    st = sess.get_state()
+    assert len(st["action_log"]) == len(st["log_entries"]) == 30
+    assert [e["text"] for e in st["log_entries"]] == st["action_log"]
+    assert st["action_log"][-1] == "줄 39"
+
+
 def test_8_31_fold_win_pots_single_layer():
     """전원 폴드로 끝난 핸드도 pots는 1계층(반환 아님), winner pot = 팟 전액."""
     # 좌석 [Human, Alpha, Beta], 딜러 Human → UTG=Human
@@ -3710,6 +3759,8 @@ ALL_TESTS = [
     ("8-29 콜할 상대 없으면 레이즈 불가",            test_8_29_no_raise_when_no_opponent_can_act),
     ("8-30 핸드 종료 pots: 메인·사이드·반환",        test_8_30_hand_over_pots_main_side_returned),
     ("8-31 전원 폴드 핸드 pots 1계층",              test_8_31_fold_win_pots_single_layer),
+    ("8-32 log_entries: 줄마다 보드·내 홀카드",      test_8_32_log_entries_carry_board_and_hero_cards),
+    ("8-33 log_entries 창 = action_log[-30:]",      test_8_33_log_entries_window_matches_action_log_tail),
 ]
 
 

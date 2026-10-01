@@ -15,7 +15,8 @@ export interface EventQueueState {
   isThinking: boolean;
   badge: ActionBadge | null;
   bettingPlayer: string | null;
-  enqueue: (events: GameEvent[], prevState: GameState | null, next: GameState, isNewHand: boolean) => void;
+  /** immediate=true면 재생 없이 이벤트를 전부 소비한다(스킵 모드 — 스킵 버튼과 같은 결과). */
+  enqueue: (events: GameEvent[], prevState: GameState | null, next: GameState, isNewHand: boolean, immediate?: boolean) => void;
   skip: () => void;
   reset: () => void;
 }
@@ -40,12 +41,16 @@ export function useEventQueue(): EventQueueState {
   };
 
   const enqueue = useCallback(
-    (events: GameEvent[], prevState: GameState | null, next: GameState, isNewHand: boolean) => {
+    (events: GameEvent[], prevState: GameState | null, next: GameState, isNewHand: boolean, immediate = false) => {
       clearTimers();
       setHumanName(next.players.find((p) => p.is_human)?.name ?? null);
       // 시작점 = 요청 직전 상태(새 핸드면 블라인드 전). 좌석 레이블은 직전 표시에서 이어받는다.
-      setDisplay((prevDisplay) => initialDisplay(prevState, prevDisplay, next, isNewHand));
-      setQueue(events);
+      // immediate: 시작점에 이벤트 전부를 한 번에 적용(skip과 같은 applyEvents 경로) — 큐는 비운다
+      setDisplay((prevDisplay) => {
+        const start = initialDisplay(prevState, prevDisplay, next, isNewHand);
+        return immediate ? applyEvents(start, events) : start;
+      });
+      setQueue(immediate ? [] : events);
     },
     []
   );

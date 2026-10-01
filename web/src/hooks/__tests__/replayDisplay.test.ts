@@ -8,6 +8,7 @@ import {
   panelState, shownState,
   type DisplayState,
 } from "../eventQueueLogic";
+import { logLines } from "../../components/actionLogLogic";
 
 const fold = fixture.fold_to_showdown as unknown as { prev: GameState; next: GameState };
 const newHand = fixture.new_hand as unknown as { prev: GameState; next: GameState };
@@ -191,6 +192,23 @@ describe("재생 중 로그는 끝 기준으로 자른다 — 서버는 action_l
       if (e.log) last = e.log;
       const log = projectState(fold.next, d).action_log;
       expect(log[log.length - 1]).toBe(last);
+    }
+  });
+
+  it("log_entries(줄마다 보드·내 홀카드)도 같은 개수만큼 끝에서 숨겨 action_log와 1:1을 유지한다", () => {
+    expect(fold.next.log_entries?.length).toBe(fold.next.action_log.length);
+    let d = initialDisplay(fold.prev, null, fold.next, false);
+    const check = () => {
+      const s = projectState(fold.next, d);
+      expect(s.log_entries?.map((e) => e.text)).toEqual(s.action_log);
+      // 그 줄의 보드는 화면 보드를 앞지르지 않는다(아직 안 깔린 카드가 로그에 먼저 보이지 않음)
+      for (const l of logLines(s)) expect(l.board).toEqual(s.community_cards.slice(0, l.board.length));
+      expect(logLines(s).every((l) => l.board.length <= s.community_cards.length)).toBe(true);
+    };
+    check();
+    for (const e of fold.next.events) {
+      d = applyEvent(d, e);
+      check();
     }
   });
 });

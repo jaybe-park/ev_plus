@@ -74,6 +74,22 @@
   `fixtures/replay_session.json`: 시작 화면 = 직전 상태, 팟 = 이벤트 `pot_after`, 스트리트·보드는
   해당 이벤트에서만, 봇 베팅은 그 봇 액션부터, 전부 소비 = 서버 최종 상태, 스킵 동일, 새 핸드,
   "재생 중 로그는 끝 기준으로 자른다")
+- 구조화 로그 `log_entries`: 게임 상태는 `action_log`(문자열, 끝 30줄)와 함께 같은 창의
+  `log_entries: [{text, street, board, hero_cards}]`를 싣는다 — `action_log`와 1:1(같은 길이, `text` = 같은 위치
+  문자열), `street`·`board`(그 줄이 생긴 시점까지 깔린 커뮤니티 카드)·`hero_cards`(사람 홀카드)는 그 줄을 쓸
+  때의 값이다. 스트리트 헤더 줄("── 플랍 ──")은 카드를 깐 뒤 기록하므로 새 보드를, 승리 줄은 최종 보드를 싣는다.
+  세션은 로그를 `_append_log` 한 곳에서만 쌓는다 — 원본: `server/session.py::_append_log`, `server/schemas.py::LogEntry`
+  · 강제 장치: `tests/test_poker_full.py::test_8_32_log_entries_carry_board_and_hero_cards`,
+  `::test_8_33_log_entries_window_matches_action_log_tail`
+- 로그 화면(사이드 "📋 로그" 탭): 줄마다 오른쪽에 그 시점의 내 핸드 | 보드를 작게 보인다(♥♦ 빨강). 재생 중에는
+  `projectState`가 `log_entries`도 `action_log`와 같은 개수(`logPending`)만큼 끝에서 숨기고, 줄의 보드는 지금
+  화면 보드 장수까지만 보인다(`street_start`가 `community_card`보다 먼저 소비되므로 아직 안 깔린 카드를 로그가
+  먼저 보이지 않게). `log_entries`가 없거나 길이·텍스트가 어긋나면 텍스트만 보인다. 로그 영역은 내용만큼
+  늘어나고 사이드 패널 높이(좁은 화면은 60vh)를 넘으면 안에서 스크롤한다. 우상단 "복사" 버튼은 로그 텍스트만
+  (카드 표시 없이 줄바꿈으로 이어) `navigator.clipboard`에 넣고 잠깐 "복사됨"을 보인다. 클립보드 실패·미지원은
+  조용히 무시 — 원본: `web/src/components/actionLogLogic.ts`, `web/src/components/ActionLog.tsx` · 강제 장치:
+  `web/src/components/__tests__/actionLogLogic.test.ts`(줄 구성·보드 자르기·복사 문자열·클립보드 실패),
+  `web/src/hooks/__tests__/replayDisplay.test.ts`("log_entries … 1:1을 유지한다"), 늘어나는 높이는 장치 없음
 - 이벤트 페이로드: `blind`/`action`은 `pot_after`(이벤트 직후 팟)·`bet_after`(그 플레이어의
   이번 스트리트 베팅), `street_start`는 `pot_after`를 싣는다. `winner` 이후 표시 팟은 0 — 강제
   장치: `tests/test_poker_full.py::test_8_12_session_fuzz_event_amounts_and_conservation`(누적 이동액
@@ -94,6 +110,18 @@
   뗀 표시 이름(`format.ts::displayName`) — 원본: `web/src/components/handResultLogic.ts` · 강제 장치:
   `web/src/components/__tests__/handResultLogic.test.ts`, `web/src/__tests__/reviewLogic.test.ts`
   (렌더링 테스트 없음)
+- 스킵 모드(헤더 우측 "⏭ 자동" 토글): 켜짐 여부는 `localStorage`(`ev_plus_skip_mode`)에 보관해 새로고침해도
+  유지된다(접근 예외는 꺼짐으로 처리, 저장 실패는 무시). 켜져 있으면 ① 사람이 폴드해 끝난 핸드의 응답은 재생
+  없이 남은 이벤트를 즉시 소비한다(`enqueue(..., immediate)` → 스킵 버튼과 같은 `applyEvents` 경로, 결과 =
+  서버 최종 상태)라 결과 창이 바로 뜬다. 폴드한 핸드의 재생 도중에 켜도 그 자리에서 스킵한다. 쇼다운까지 간 내
+  핸드는 평소처럼 재생한다(`shouldAutoSkip`). ② 결과 창이 뜨면 5초(`AUTO_NEXT_MS`) 카운트다운("N초 후 다음
+  핸드") 후 자동으로 "다음 핸드"를 누른다. 마우스가 결과 창 카드 위에 있는 동안은 멈추고("자동 진행 멈춤"),
+  벗어나면 남은 시간부터 이어간다. 파산·클리어(게임 오버) 화면, 요청 중, 세션 만료, 직전 요청 오류 뒤에는 자동
+  진행하지 않는다(`autoNextActive`). 꺼져 있으면 재생·결과 창은 수동 그대로다(자동 진행도 스킵 모드에 묶임) —
+  원본: `web/src/autoAdvance.ts`, `web/src/components/HandResult.tsx`, `web/src/App.tsx` · 강제 장치:
+  `web/src/__tests__/autoAdvance.test.ts`(보관·예외, 즉시 소비 판단과 실제 세션 픽스처 결과, 자동 진행 조건,
+  남은 시간 계산, `vi.useFakeTimers` 카운트다운 5초·멈춤·이어가기·stop). hover 연결 자체는 장치 없음(렌더링
+  테스트 없음)
 - 타이밍(`eventTiming`): 봇 `action`은 "생각 중"(THINKING_RATIO 구간) → 표시 반영 + 배지 →
   다음. **사람 자신의 액션은 "생각 중" 없이 즉시 반영**하고 배지만 `HUMAN_ACTION_MS`(350ms)
   보인다(봇만 연출). `deal_card`는 지연 끝에 반영, 그 밖의 이벤트는 시작하자마자 반영하고 지연 후
@@ -147,8 +175,22 @@
   "[object Object]"가 뜬다 — `web/src/api.ts::formatApiError`가 `loc`/`msg`를 사람이 읽는
   한 줄 문장으로 평탄화한다 — 강제 장치: `web/src/__tests__/api.test.ts`
 - `GtoRange.raise_size`는 `number | null`이다(서버 `raise_size: Optional[float]`,
-  bb 단위 실측값). 패널은 값이 있을 때만 "(N bb)"로 표시 — 원본: `web/src/types.ts`,
-  `web/src/components/GtoPanel.tsx`
+  bb 단위 실측값). 힌트 패널 상황 라벨은 값이 있을 때만 "(Nbb)"를 붙인다 — 원본: `web/src/types.ts`,
+  `web/src/components/hintPanelLogic.ts::situationText`
+- 힌트 패널(사이드 "💡 힌트" 탭)은 위에서부터 ① 상황 라벨(예 "HJ vs UTG open (7.5bb)", 근사면
+  "(근사)") ② GTO 빈도(노드 전체 레인지 `summary` 막대, 올인·레이즈·콜·폴드 순, 0.1% 미만 제외)
+  ③ 내 패 액션 %(advisor 추천 `frequencies` = 그리드에서 내 패 칸의 값, 예 "레이즈 65.0% · 콜 35.0%",
+  없으면 레인지의 그 핸드) ④ 에퀴티(큰 숫자·게이지·팟오즈·콜 EV) 순서로만 보인다. 그 밖의 것은
+  접힌 "자세히"로 뒤에 둔다 — "에퀴티 자세히"(상대별 1:1·스트리트 추이·출처), "GTO 자세히"(레이즈 비교 한
+  줄·13×13 레인지 그리드, 데이터 없음이면 GTO Wizard 수집 링크). GTO 데이터 없음은 ① "포지션 — GTO 데이터
+  없음" + ④, 포스트플랍·사람 차례 아님은 ④만, 레인지 로딩·조회 실패는 ②③ 자리에 안내 한 줄. 없는 액션을
+  폴드로 채우지 않는다(ADR 0002) — 원본: `web/src/components/hintPanelLogic.ts::hintLayout`,
+  `web/src/components/HintPanel.tsx` · 강제 장치: `web/src/components/__tests__/hintPanelLogic.test.ts`
+  (순서·문자열. 렌더링 테스트 없음)
+- 화면 높이: 넓은 화면(`lg`, 1024px 이상)에서 페이지 전체가 뷰포트 높이(`lg:h-screen`)에 고정되고 페이지
+  스크롤이 없다. 액션 바는 메인 열 아래 `shrink-0`이라 항상 보이고, 사이드 패널(로그·힌트)과 테이블 영역은
+  넘치면 각자 안에서 스크롤한다 — vs_3bet처럼 액션 갈래가 많은 노드에서도 1080px 높이 화면에서 액션 버튼이
+  밀려나지 않는다 — 원본: `web/src/App.tsx` · 강제 장치: 장치 없음(레이아웃 렌더링 테스트 없음)
 
 ## 화면·경로·데이터
 
@@ -159,6 +201,7 @@
 | `server/schemas.py` | 응답/이벤트 Pydantic 모델 |
 | `web/src/hooks/useEventQueue.ts` | 이벤트 큐 재생 타이머·하이라이트 연출 |
 | `web/src/hooks/eventQueueLogic.ts` | 재생 표시 상태 리듀서·투영, 패널 상태, 타이밍, 배지/레이블(순수 함수, vitest 대상) |
+| `web/src/components/HintPanel.tsx` · `hintPanelLogic.ts` | 힌트 탭 구성(① 상황 ② GTO 빈도 ③ 내 패 ④ 에퀴티 + 접힌 자세히), 순서·문자열은 순수 함수 |
 | `web/src/api.ts` | fetch 래퍼 + 422 detail 배열 평탄화(`formatApiError`) + 상태 코드 실은 `ApiError` |
 | `web/src/sessionStore.ts` | 세션 번호 `sessionStorage` 보관(새로고침 후 이어하기)·404 만료 판정 |
 | `db/recorder.py` | 핸드/액션 RL 기록(세션과 별개 관심사, 실패해도 게임 진행에 영향 없음) |

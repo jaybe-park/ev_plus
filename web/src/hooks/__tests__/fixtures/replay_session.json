@@ -59,6 +59,7 @@
    "game_over": false,
    "winners": [],
    "showdown_hands": {},
+   "pots": null,
    "gto": {
     "found": false,
     "position": "UTG"
@@ -66,6 +67,26 @@
    "action_log": [
     "[SB] 🤖 Beta: 스몰 블라인드 (10)",
     "[BB] 🤖 Gamma: 빅 블라인드 (20)"
+   ],
+   "log_entries": [
+    {
+     "text": "[SB] 🤖 Beta: 스몰 블라인드 (10)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 빅 블라인드 (20)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    }
    ],
    "call_amount": 20,
    "min_raise_to": 40,
@@ -154,6 +175,20 @@
     "🤖 Beta": "투 페어 [J♥ J♦ 8♣ 8♠ 6♦]",
     "🤖 Gamma": "풀 하우스 [J♥ J♦ 8♥ 8♣ 8♠]"
    },
+   "pots": [
+    {
+     "amount": 240,
+     "eligible": [
+      "🤖 Alpha",
+      "🤖 Beta",
+      "🤖 Gamma"
+     ],
+     "winners": [
+      "🤖 Gamma"
+     ],
+     "returned": false
+    }
+   ],
    "gto": null,
    "action_log": [
     "[SB] 🤖 Beta: 스몰 블라인드 (10)",
@@ -174,7 +209,246 @@
     "[SB] 🤖 Beta: 체크",
     "[BB] 🤖 Gamma: 체크",
     "[BTN] 🤖 Alpha: 체크",
-    "🏆 🤖 Gamma 승리"
+    "🏆 🤖 Gamma 승리 (240)"
+   ],
+   "log_entries": [
+    {
+     "text": "[SB] 🤖 Beta: 스몰 블라인드 (10)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 빅 블라인드 (20)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[UTG] Human: 폴드",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BTN] 🤖 Alpha: 콜 (20)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[SB] 🤖 Beta: 콜 (10)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 체크",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "── 플랍 ──",
+     "street": "플랍",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[SB] 🤖 Beta: 레이즈 → 60",
+     "street": "플랍",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 콜 (60)",
+     "street": "플랍",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BTN] 🤖 Alpha: 콜 (60)",
+     "street": "플랍",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "── 턴 ──",
+     "street": "턴",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[SB] 🤖 Beta: 체크",
+     "street": "턴",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 체크",
+     "street": "턴",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BTN] 🤖 Alpha: 체크",
+     "street": "턴",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "── 리버 ──",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[SB] 🤖 Beta: 체크",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 체크",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BTN] 🤖 Alpha: 체크",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "🏆 🤖 Gamma 승리 (240)",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    }
    ],
    "call_amount": 0,
    "min_raise_to": 0,
@@ -398,7 +672,7 @@
     },
     {
      "type": "winner",
-     "log": "🏆 🤖 Gamma 승리",
+     "log": "🏆 🤖 Gamma 승리 (240)",
      "winners": [
       "🤖 Gamma"
      ],
@@ -493,6 +767,20 @@
     "🤖 Beta": "투 페어 [J♥ J♦ 8♣ 8♠ 6♦]",
     "🤖 Gamma": "풀 하우스 [J♥ J♦ 8♥ 8♣ 8♠]"
    },
+   "pots": [
+    {
+     "amount": 240,
+     "eligible": [
+      "🤖 Alpha",
+      "🤖 Beta",
+      "🤖 Gamma"
+     ],
+     "winners": [
+      "🤖 Gamma"
+     ],
+     "returned": false
+    }
+   ],
    "gto": null,
    "action_log": [
     "[SB] 🤖 Beta: 스몰 블라인드 (10)",
@@ -513,7 +801,246 @@
     "[SB] 🤖 Beta: 체크",
     "[BB] 🤖 Gamma: 체크",
     "[BTN] 🤖 Alpha: 체크",
-    "🏆 🤖 Gamma 승리"
+    "🏆 🤖 Gamma 승리 (240)"
+   ],
+   "log_entries": [
+    {
+     "text": "[SB] 🤖 Beta: 스몰 블라인드 (10)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 빅 블라인드 (20)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[UTG] Human: 폴드",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BTN] 🤖 Alpha: 콜 (20)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[SB] 🤖 Beta: 콜 (10)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 체크",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "── 플랍 ──",
+     "street": "플랍",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[SB] 🤖 Beta: 레이즈 → 60",
+     "street": "플랍",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 콜 (60)",
+     "street": "플랍",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BTN] 🤖 Alpha: 콜 (60)",
+     "street": "플랍",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "── 턴 ──",
+     "street": "턴",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[SB] 🤖 Beta: 체크",
+     "street": "턴",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 체크",
+     "street": "턴",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BTN] 🤖 Alpha: 체크",
+     "street": "턴",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "── 리버 ──",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[SB] 🤖 Beta: 체크",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BB] 🤖 Gamma: 체크",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "[BTN] 🤖 Alpha: 체크",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    },
+    {
+     "text": "🏆 🤖 Gamma 승리 (240)",
+     "street": "리버",
+     "board": [
+      "8♣",
+      "8♠",
+      "J♥",
+      "2♦",
+      "J♦"
+     ],
+     "hero_cards": [
+      "K♠",
+      "6♠"
+     ]
+    }
    ],
    "call_amount": 0,
    "min_raise_to": 0,
@@ -737,7 +1264,7 @@
     },
     {
      "type": "winner",
-     "log": "🏆 🤖 Gamma 승리",
+     "log": "🏆 🤖 Gamma 승리 (240)",
      "winners": [
       "🤖 Gamma"
      ],
@@ -809,6 +1336,7 @@
    "game_over": false,
    "winners": [],
    "showdown_hands": {},
+   "pots": null,
    "gto": {
     "found": false,
     "position": "BB"
@@ -819,6 +1347,53 @@
     "[UTG] 🤖 Alpha: 콜 (20)",
     "[BTN] 🤖 Beta: 콜 (20)",
     "[SB] 🤖 Gamma: 콜 (10)"
+   ],
+   "log_entries": [
+    {
+     "text": "[SB] 🤖 Gamma: 스몰 블라인드 (10)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "7♣",
+      "6♣"
+     ]
+    },
+    {
+     "text": "[BB] Human: 빅 블라인드 (20)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "7♣",
+      "6♣"
+     ]
+    },
+    {
+     "text": "[UTG] 🤖 Alpha: 콜 (20)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "7♣",
+      "6♣"
+     ]
+    },
+    {
+     "text": "[BTN] 🤖 Beta: 콜 (20)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "7♣",
+      "6♣"
+     ]
+    },
+    {
+     "text": "[SB] 🤖 Gamma: 콜 (10)",
+     "street": "프리플랍",
+     "board": [],
+     "hero_cards": [
+      "7♣",
+      "6♣"
+     ]
+    }
    ],
    "call_amount": 0,
    "min_raise_to": 40,

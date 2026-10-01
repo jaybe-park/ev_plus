@@ -221,6 +221,8 @@ export function projectState(next: GameState, d: DisplayState): GameState {
     pot: d.pot,
     community_cards: next.community_cards.slice(0, d.cardCount),
     action_log: next.action_log.slice(0, Math.max(0, next.action_log.length - d.logPending)),
+    // log_entries는 action_log와 1:1 — 같은 개수를 끝에서 숨긴다
+    log_entries: next.log_entries?.slice(0, Math.max(0, next.log_entries.length - d.logPending)),
     players: next.players.map((p) => {
       const s = d.seats[p.name];
       return s ? { ...p, chips: s.chips, current_bet: s.bet, is_folded: s.folded, is_all_in: s.allIn } : p;

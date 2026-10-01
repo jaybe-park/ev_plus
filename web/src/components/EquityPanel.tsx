@@ -33,7 +33,7 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
 
   if (!display) {
     return (
-      <div className="flex items-center justify-center h-24 text-gray-600 text-xs text-center px-4">
+      <div className="py-2 text-gray-600 text-xs text-center">
         내 차례가 되면 에퀴티가 표시됩니다
       </div>
     );
@@ -53,7 +53,7 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
   });
 
   return (
-    <div className={`p-3 space-y-3 transition-opacity ${stale ? "opacity-50" : ""}`}>
+    <div className={`space-y-2 transition-opacity ${stale ? "opacity-50" : ""}`}>
       {/* 게이지 */}
       <div>
         <div className="flex items-baseline justify-between mb-1">
@@ -87,25 +87,6 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
         )}
       </div>
 
-      {/* 상대별 브레이크다운 */}
-      <div className="space-y-1">
-        <div className="text-[10px] text-gray-500 px-2">상대별 1:1</div>
-        {sortedOpponents.map((op) => (
-          <div key={op.name} className="flex items-center justify-between px-2 py-1 text-xs">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span className="text-gray-300 truncate">{displayName(op.name)}</span>
-              <span className="text-gray-500">{op.position}</span>
-              <span className={`px-1 rounded text-[10px] shrink-0 ${ROLE_COLORS[op.role]}`}>
-                {ROLE_LABELS[op.role]}
-              </span>
-            </div>
-            <span className="text-gray-300 shrink-0">
-              {op.equity !== null ? pct(op.equity) : "—"}
-            </span>
-          </div>
-        ))}
-      </div>
-
       {/* 콜 EV */}
       {display.call_ev_bb !== null && callAmount > 0 && (
         <div className="flex items-center justify-between bg-gray-800/50 rounded-lg px-2 py-1.5 text-xs">
@@ -117,22 +98,39 @@ export default function EquityPanel({ equity, callAmount, isMyTurn }: Props) {
         </div>
       )}
 
-      {/* 스트리트 히스토리 */}
-      {view.history.length > 0 && (
-        <div className="text-[10px] text-gray-500">
-          {view.history.map((h, i) => (
-            <span key={h.street}>
-              {i > 0 && " → "}
-              {h.street} {pct(h.value)}
-            </span>
-          ))}
+      {/* 자세히(접힘): 상대별 1:1 · 스트리트 추이 · 출처 */}
+      <details>
+        <summary className="text-xs text-gray-500 cursor-pointer select-none">에퀴티 자세히 (상대별 1:1)</summary>
+        <div className="mt-1 space-y-2">
+          <div className="space-y-0.5">
+            {sortedOpponents.map((op) => (
+              <div key={op.name} className="flex items-center justify-between px-1 py-0.5 text-xs">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-gray-300 truncate">{displayName(op.name)}</span>
+                  <span className="text-gray-500">{op.position}</span>
+                  <span className={`px-1 rounded text-[10px] shrink-0 ${ROLE_COLORS[op.role]}`}>
+                    {ROLE_LABELS[op.role]}
+                  </span>
+                </div>
+                <span className="text-gray-300 shrink-0">
+                  {op.equity !== null ? pct(op.equity) : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+          {view.history.length > 0 && (
+            <div className="text-[10px] text-gray-500">
+              {view.history.map((h, i) => (
+                <span key={h.street}>
+                  {i > 0 && " → "}
+                  {h.street} {pct(h.value)}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="text-[10px] text-gray-600">{view.meta}</div>
         </div>
-      )}
-
-      {/* 메타 */}
-      <div className="text-[10px] text-gray-600">
-        {view.meta}
-      </div>
+      </details>
     </div>
   );
 }

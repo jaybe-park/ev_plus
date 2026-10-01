@@ -86,6 +86,8 @@ class WebGameSession:
         self.showdown_hands: Dict[str, str] = {}
         self.pots: List[dict] = []         # 핸드 종료 시 팟 계층(메인/사이드/반환), get_state가 싣는다
         self.action_log: List[str] = []
+        # action_log와 1:1로 맞춘 구조화 로그(그 줄 시점의 스트리트·보드·내 홀카드) — 화면 로그 줄 표시용
+        self.log_entries: List[dict] = []
 
         # 애니메이션 이벤트 버퍼 — 공개 변경 메서드 한 번(요청 하나) 동안만 쓰고, 그 메서드의
         # 반환값으로 넘긴 뒤 비운다. get_state()는 이 버퍼를 읽지도 비우지도 않는다.
@@ -217,6 +219,7 @@ class WebGameSession:
             "pots": self.pots if self.hand_over else None,
             "gto": self._get_gto_panel() if waiting else None,
             "action_log": self.action_log[-30:],
+            "log_entries": self.log_entries[-30:],
             "call_amount": call_amount,
             "min_raise_to": min_raise_to,
             "can_raise": can_raise,
@@ -232,6 +235,16 @@ class WebGameSession:
     def _emit(self, event: dict) -> None:
         self._events.append(event)
 
+    def _append_log(self, text: str) -> None:
+        """로그 한 줄 추가. action_log(문자열)와 log_entries(그 시점 스트리트·보드·내 홀카드)를 함께 쌓는다."""
+        self.action_log.append(text)
+        self.log_entries.append({
+            "text": text,
+            "street": self.game.current_street.value,
+            "board": [str(c) for c in self.game.community_cards],
+            "hero_cards": [str(c) for c in self.human.hole_cards],
+        })
+
     # ──────────────────────────────────────────
     # 핸드 시작
     # ──────────────────────────────────────────
@@ -242,6 +255,7 @@ class WebGameSession:
         self.showdown_hands = {}
         self.pots = []
         self.action_log = []
+        self.log_entries = []
 
         # 에퀴티/평가 상태 초기화 (새 핸드마다 리셋)
         self._equity_cache = {}
@@ -298,7 +312,7 @@ class WebGameSession:
             pot_so_far += posted  # 블라인드는 core가 이미 다 포스팅했다 — 이벤트 시점의 팟은 누적분
             pos = positions.get(p.name, "")
             log_text = f"[{pos}] {p.name}: {kind} 블라인드 ({posted})"
-            self.action_log.append(log_text)
+            self._append_log(log_text)
             self._emit({
                 "type": "blind", "player": p.name, "position": pos,
                 "amount": posted, "street": "프리플랍",
@@ -381,7 +395,7 @@ class WebGameSession:
             pass
 
         log_text = self._fmt_log(player, action, real_amount)
-        self.action_log.append(log_text)
+        self._append_log(log_text)
 
         # 액션 이벤트 발행
         self._emit({
@@ -437,7 +451,7 @@ class WebGameSession:
         self._equity_cache = {}
 
         street_log = f"── {street.value} ──"
-        self.action_log.append(street_log)
+        self._append_log(street_log)
 
         # 스트리트 전환 이벤트
         self._emit({
@@ -478,7 +492,7 @@ class WebGameSession:
                 return
             winner = result.winners[0]
             win_log = f"🏆 {winner.name} 승리 ({won}, 상대 폴드)"
-            self.action_log.append(win_log)
+            self._append_log(win_log)
             self._emit({
                 "type": "winner", "winners": [winner.name],
                 "pot": won, "log": win_log,
@@ -496,7 +510,7 @@ class WebGameSession:
             })
             self.showdown_hands = {name: str(ev) for name, ev in result.evaluations.items()}
             win_log = f"🏆 {', '.join(self.winners)} 승리 ({won})"
-            self.action_log.append(win_log)
+            self._append_log(win_log)
             self._emit({
                 "type": "winner",
                 "log": win_log,
