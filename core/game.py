@@ -46,19 +46,21 @@ class ActionResult:
 
 @dataclass
 class PotShare:
-    """팟 한 계층(메인/사이드)의 분배 결과. eligible이 1명이면 초과 베팅 반환."""
+    """팟 한 계층(메인/사이드)의 분배 결과.
+    returned=True는 아무도 콜하지 않은 초과 베팅(본인 돈)을 돌려준 계층이다(eligible 1명)."""
     amount: int
     eligible: List[Player]
     winners: List[Player]
+    returned: bool = False
 
 
 @dataclass
 class ShowdownResult:
     """showdown()의 결과.
 
-    pot        : 분배한 총액
+    pot        : 분배한 총액(반환분 포함)
     winners    : 승자(초과 베팅 반환만 받은 사람은 제외, 버튼 왼쪽 순서 아님 — 팟 순서)
-    pots       : 계층별 분배(메인 → 사이드 순)
+    pots       : 계층별 분배(메인 → 사이드 → 반환 순)
     evaluations: 쇼다운에 참여한 사람의 핸드 평가(전원 폴드로 끝나면 빈 dict)
     contested  : 2명 이상이 카드를 겨뤘는가(봇 카드 공개 조건)
     """
@@ -325,8 +327,10 @@ class TexasHoldem:
 
         - 1명만 남으면 팟 전액.
         - 아니면 calculate_side_pots() 계층마다 eligible 중 최강 핸드가 나눠 갖고, 홀수 칩은
-          버튼 왼쪽부터 돌아 처음 만나는 승자에게. eligible 1명 계층(초과 베팅 반환)의
-          수령자는 승자에서 뺀다.
+          버튼 왼쪽부터 돌아 처음 만나는 승자에게.
+        - 아무도 콜하지 않은 초과 베팅(최대 기여 − 두 번째 기여)은 returned 계층으로 따로
+          돌려주고, 그 사람은 반환만으로는 승자가 아니다. eligible 1명이지만 폴드한 사람의
+          돈이 든 계층은 반환이 아니라 그 사람이 이긴 팟이다.
         """
         total = self.pot
         contenders = [p for p in self.players if not p.is_folded]
@@ -350,7 +354,17 @@ class TexasHoldem:
         }
         pots: List[PotShare] = []
         winners: List[Player] = []
-        for amount, eligible in self.calculate_side_pots():
+        layers = self.calculate_side_pots()
+        uncalled = 0
+        if layers and len(layers[-1][1]) == 1:
+            top = layers[-1][1][0]
+            others = max((p.total_bet_this_round for p in self.players if p is not top), default=0)
+            uncalled = max(0, min(layers[-1][0], top.total_bet_this_round - others))
+            if uncalled == layers[-1][0]:
+                layers = layers[:-1]
+            else:
+                layers[-1] = (layers[-1][0] - uncalled, layers[-1][1])
+        for amount, eligible in layers:
             best = max(evaluations[p.name] for p in eligible)
             pot_winners = [p for p in eligible if evaluations[p.name] == best]
             share, remainder = divmod(amount, len(pot_winners))
@@ -359,8 +373,10 @@ class TexasHoldem:
             if remainder:
                 self.order_from_button_left(pot_winners)[0].chips += remainder
             pots.append(PotShare(amount, eligible, pot_winners))
-            if len(eligible) > 1:
-                winners.extend(w for w in pot_winners if w not in winners)
+            winners.extend(w for w in pot_winners if w not in winners)
+        if uncalled > 0:
+            top.chips += uncalled
+            pots.append(PotShare(uncalled, [top], [top], returned=True))
 
         self.pot = 0
         self._emit("showdown", {
@@ -372,7 +388,7 @@ class TexasHoldem:
                               evaluations=evaluations, contested=True)
 
     # ──────────────────────────────────────────
-    # 액션 판정 (ADR 0038, 0046)
+    # 액션 판정 (ADR 0038, 0048)
     # ──────────────────────────────────────────
 
     def apply_action(self, player: Player, action: Action, amount: int = 0,
@@ -417,7 +433,7 @@ class TexasHoldem:
         if action in (Action.RAISE, Action.ALL_IN):
             if not raise_allowed and max_to > self.current_bet:
                 raise IllegalActionError(
-                    "레이즈할 수 없습니다 — 불완전 올인 뒤에는 콜 또는 폴드만 가능합니다.")
+                    "레이즈할 수 없습니다 — 불완전 올인 뒤이거나 콜할 상대가 없어 콜 또는 폴드만 가능합니다.")
             return action
         raise IllegalActionError(f"알 수 없는 액션: {action}")
 
@@ -434,7 +450,11 @@ class TexasHoldem:
         """레이즈 권한(TDA Rule 47). bet_seen = 이번 라운드에서 각 플레이어가 마지막으로
         행동한 직후의 current_bet. 아직 행동하지 않았거나, 그 뒤로 오른 금액의 합계
         (current_bet − 그 값)가 풀 레이즈(min_raise) 이상이면 레이즈할 수 있다 — 불완전
-        올인 여러 개의 합이 풀 레이즈가 되면 재오픈된다."""
+        올인 여러 개의 합이 풀 레이즈가 되면 재오픈된다.
+        나 외에 행동 가능한(폴드·올인 아닌) 플레이어가 없으면 레이즈를 콜할 사람이 없으므로
+        레이즈할 수 없다(콜·폴드만)."""
+        if not any(p is not player and not p.is_folded and not p.is_all_in for p in self.players):
+            return False
         seen = bet_seen.get(player.name)
         return seen is None or self.current_bet - seen >= self.min_raise
 

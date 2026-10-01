@@ -76,7 +76,7 @@ class WebGameSession:
         self.session_reviews: List[dict] = []
 
         # 룰(베팅 순서·액션 판정·라운드 진행·팟 분배·버튼)은 전부 core TexasHoldem이 갖는다.
-        # 세션은 그 결과를 이벤트·로그·RL 기록·평가로 옮길 뿐이다(T-024).
+        # 세션은 그 결과를 이벤트·로그·RL 기록·평가로 옮길 뿐이다(ADR 0047).
 
         # 핸드/게임 상태
         self.hand_number: int = 0
@@ -84,14 +84,15 @@ class WebGameSession:
         self.game_over: bool = False
         self.winners: List[str] = []
         self.showdown_hands: Dict[str, str] = {}
+        self.pots: List[dict] = []         # 핸드 종료 시 팟 계층(메인/사이드/반환), get_state가 싣는다
         self.action_log: List[str] = []
 
         # 애니메이션 이벤트 버퍼 — 공개 변경 메서드 한 번(요청 하나) 동안만 쓰고, 그 메서드의
-        # 반환값으로 넘긴 뒤 비운다. get_state()는 이 버퍼를 읽지도 비우지도 않는다(T-026).
+        # 반환값으로 넘긴 뒤 비운다. get_state()는 이 버퍼를 읽지도 비우지도 않는다.
         self._events: List[dict] = []
 
         # 같은 세션에 대한 동시 요청 직렬화용(엔드포인트가 with session.lock: 으로 감싼다).
-        # FastAPI 동기 def 엔드포인트는 스레드풀에서 동시에 돈다(T-026).
+        # FastAPI 동기 def 엔드포인트는 스레드풀에서 동시에 돈다.
         self.lock = threading.RLock()
 
         self._start_new_hand()
@@ -135,7 +136,7 @@ class WebGameSession:
     def next_hand(self) -> List[dict]:
         """hand_over일 때만 새 핸드 시작. 새로 생긴 이벤트를 반환(무시된 요청은 [])."""
         # 핸드 진행 중(hand_over=False) 호출은 무시한다. 가드가 없으면 팟에 들어간 칩이
-        # _reset_hand()로 사라진다("다음 핸드" 연타·중복 요청 — T-025).
+        # _reset_hand()로 사라진다("다음 핸드" 연타·중복 요청).
         if self.game_over or not self.hand_over:
             return []
         self._events = []
@@ -174,7 +175,7 @@ class WebGameSession:
         can_raise = False
         if waiting:
             call_amount = max(0, self.game.current_bet - self.human.current_bet)
-            # 불완전 올인만 마주해 액션이 닫혔거나 스택이 콜 이하면 레이즈 불가 → min_raise_to=0
+            # 불완전 올인만 마주해 액션이 닫혔거나, 콜할 상대가 없거나, 스택이 콜 이하면 레이즈 불가 → min_raise_to=0
             # (프론트 ActionBar는 min_raise_to=0이면 레이즈 UI를 끈다)
             can_raise = (self.game.can_raise(self.human)
                          and self.human.chips > call_amount)
@@ -213,6 +214,7 @@ class WebGameSession:
             "game_over": self.game_over,
             "winners": self.winners,
             "showdown_hands": self.showdown_hands,
+            "pots": self.pots if self.hand_over else None,
             "gto": self._get_gto_panel() if waiting else None,
             "action_log": self.action_log[-30:],
             "call_amount": call_amount,
@@ -238,6 +240,7 @@ class WebGameSession:
         self.hand_over = False
         self.winners = []
         self.showdown_hands = {}
+        self.pots = []
         self.action_log = []
 
         # 에퀴티/평가 상태 초기화 (새 핸드마다 리셋)
@@ -300,7 +303,7 @@ class WebGameSession:
                 "type": "blind", "player": p.name, "position": pos,
                 "amount": posted, "street": "프리플랍",
                 "log": log_text, "chips_after": p.chips,
-                # 재생 표시 상태용(T-029): 이 이벤트 직후의 팟·그 플레이어 이번 스트리트 베팅
+                # 재생 표시 상태용: 이 이벤트 직후의 팟·그 플레이어 이번 스트리트 베팅
                 "pot_after": pot_so_far, "bet_after": posted,
             })
 
@@ -390,7 +393,7 @@ class WebGameSession:
             "street": street,
             "log": log_text,
             "chips_after": player.chips,
-            "pot_after": self.game.pot,          # 재생 표시 상태용(T-029)
+            "pot_after": self.game.pot,          # 재생 표시 상태용
             "bet_after": player.current_bet,
         })
 
@@ -407,7 +410,7 @@ class WebGameSession:
 
     def _bot_decision(self, player: Player):
         """봇 결정. 판단 중 예외가 나면 로그를 남기고 core의 안전 폴백(콜할 금액이 없으면
-        체크, 있으면 폴드)으로 대신해 게임을 계속 진행한다(T-026)."""
+        체크, 있으면 폴드)으로 대신해 게임을 계속 진행한다."""
         bot = self.bots.get(player.name)
         if bot is None:
             return self.game.fallback_action(player, Action.CHECK), 0
@@ -441,7 +444,7 @@ class WebGameSession:
             "type": "street_start",
             "street": street.value,
             "log": street_log,
-            "pot_after": self.game.pot,  # 스트리트 전환 직후 팟(베팅은 모두 0) — T-029
+            "pot_after": self.game.pot,  # 스트리트 전환 직후 팟(베팅은 모두 0)
         })
 
         # 커뮤니티 카드 이벤트 (장별로 분리)
@@ -458,17 +461,27 @@ class WebGameSession:
         """core showdown()(사이드팟·홀수 칩 포함)을 호출하고 결과를 이벤트·로그로 옮긴다."""
         result = self.game.showdown()
         self.winners = [w.name for w in result.winners]
+        # 결과 창 계층 표시(메인/사이드/반환). 승자 이벤트·로그 금액은 반환분을 뺀 실제 수령 합
+        self.pots = [{
+            "amount": s.amount,
+            "eligible": [p.name for p in s.eligible],
+            "winners": [p.name for p in s.winners],
+            "returned": s.returned,
+        } for s in result.pots]
+        won = sum(s.amount for s in result.pots if not s.returned)
+        # 이 핸드에서 팟을 받은 사람(반환 포함) 전원의 최종 칩 — 재생 표시가 서버 최종 칩과 같아진다
+        receivers = {p.name: p for s in result.pots for p in s.winners}
 
         if not result.contested:
             if not result.winners:  # 겨룰 카드가 없는 비정상 상태 — 팟만 정리
                 self.hand_over = True
                 return
             winner = result.winners[0]
-            win_log = f"🏆 {winner.name} 승리 (상대 폴드)"
+            win_log = f"🏆 {winner.name} 승리 ({won}, 상대 폴드)"
             self.action_log.append(win_log)
             self._emit({
                 "type": "winner", "winners": [winner.name],
-                "pot": result.pot, "log": win_log,
+                "pot": won, "log": win_log,
                 "winner_chips": {winner.name: winner.chips},
             })
         else:
@@ -482,14 +495,14 @@ class WebGameSession:
                 },
             })
             self.showdown_hands = {name: str(ev) for name, ev in result.evaluations.items()}
-            win_log = f"🏆 {', '.join(self.winners)} 승리"
+            win_log = f"🏆 {', '.join(self.winners)} 승리 ({won})"
             self.action_log.append(win_log)
             self._emit({
                 "type": "winner",
                 "log": win_log,
                 "winners": self.winners,
-                "pot": result.pot,
-                "winner_chips": {w.name: w.chips for w in result.winners},
+                "pot": won,
+                "winner_chips": {name: p.chips for name, p in receivers.items()},
             })
 
         # RL 학습 데이터: 핸드 결과 + reward 역산
@@ -548,7 +561,7 @@ class WebGameSession:
         return f"{pos_str} {player.name}: {action.value}"
 
     def _get_gto_panel(self) -> Optional[dict]:
-        """GTO 패널용 — advisor 추천(`get_recommendation`) 하나에서만 만든다(T-013, ADR 0007·0035).
+        """GTO 패널용 — advisor 추천(`get_recommendation`) 하나에서만 만든다(ADR 0007·0035).
 
         패널·플레이 평가·봇이 모두 같은 판정기(구조화 시퀀스 → 노드 키)를 쓴다. 패널은
         `node_key`로 `/gto/preflop/range?action_seq=`를 조회하므로 힌트와 레인지가 항상 같은 노드다.
@@ -592,7 +605,7 @@ class WebGameSession:
         return self.human.chips, self.human.total_bet_this_round, others
 
     def _record_equity_history(self, vs_range: float) -> None:
-        """스트리트당 한 번(그 스트리트 첫 결정)만 vs_range를 히스토리에 기록 — 패널과 같은 기준(T-006)"""
+        """스트리트당 한 번(그 스트리트 첫 결정)만 vs_range를 히스토리에 기록 — 패널과 같은 기준"""
         street_name = self.game.current_street.value
         if street_name in self._equity_history_streets:
             return

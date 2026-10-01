@@ -375,13 +375,32 @@ def test_2_8_core_cumulative_short_allins_reopen():
 
 
 def test_2_4_allin_ends_round_when_no_callers():
-    """모두 폴드하고 올인한 사람 혼자 남으면 라운드 즉시 종료"""
+    """올인에 콜할 사람이 없으면 라운드가 끝난다(core next_to_act/round_over):
+    ① UTG 올인 → SB·BB 폴드 → 다음 차례 None, 다음 스트리트 없음
+    ② UTG 올인 → SB 폴드 → BB 콜(스택 남음) → 행동 가능 1명·콜 없음 → 라운드 종료(런아웃)"""
+    game, players = make_game(3, chips=1000, sb=10)   # 딜러 P0: UTG=P0, SB=P1, BB=P2
+    game.start_hand()
+    players[0].chips = 300
+    assert game.next_to_act() is players[0]
+    game.act(players[0], Action.ALL_IN)
+    assert game.next_to_act() is players[1] and not game.round_over()
+    game.act(players[1], Action.FOLD)
+    assert game.next_to_act() is players[2] and not game.round_over()
+    game.act(players[2], Action.FOLD)
+    assert game.next_to_act() is None, "1명만 남으면 다음 차례가 없어야 함"
+    assert game.advance_street() is None, "1명만 남으면 다음 스트리트가 없어야 함"
+
     game, players = make_game(3, chips=1000, sb=10)
     game.start_hand()
-    players[0].fold()
-    players[1].fold()
-    active = [p for p in players if not p.is_folded]
-    assert len(active) == 1
+    players[0].chips = 300
+    game.act(players[0], Action.ALL_IN)
+    game.act(players[1], Action.FOLD)
+    game.act(players[2], Action.CALL)
+    assert players[2].chips > 0 and players[2].current_bet == game.current_bet == 300
+    assert game.round_over() and game.next_to_act() is None, \
+        "올인을 콜하고 행동 가능한 사람이 1명뿐이면 라운드 종료"
+    assert game.advance_street() is not None and game.next_to_act() is None, \
+        "포스트플랍도 물을 상대가 없어 바로 끝나야 함(런아웃)"
 
 def test_2_5_preflop_betting_order_3players():
     """3인 프리플랍 베팅 순서: UTG(=BTN=P0) → SB(P1) → BB(P2)"""
@@ -391,19 +410,25 @@ def test_2_5_preflop_betting_order_3players():
     game.start_hand()
     order = game._betting_order(Street.PREFLOP)
     names = [p.name for p in order]
-    assert names[0] == "P0", f"UTG should be P0, got {names[0]}"
+    assert names == ["P0", "P1", "P2"], f"UTG(P0) → SB(P1) → BB(P2)여야 함: {names}"
 
 def test_2_6_headsup_btn_acts_first_preflop():
-    """헤즈업: BTN/SB가 프리플랍 먼저 행동"""
+    """헤즈업 행동 순서(core next_to_act): 프리플랍 BTN/SB 먼저 → 림프하면 BB 옵션 →
+    BB 체크로 라운드 종료 → 플랍은 BB 먼저."""
     game, players = make_game(2, chips=1000, sb=10)
-    # 2인: dealer=0 → BTN/SB=P0, BB=P1
+    game.dealer_index = 1                     # BTN/SB=P1, BB=P0 (dealer 0이 아닌 쪽도 확인)
     game.start_hand()
-    order = game._betting_order(Street.PREFLOP)
-    # 프리플랍 UTG = (dealer+3)%2 = 1%2 = 1 → P1(BB)?
-    # 헤즈업에서는 BTN/SB가 먼저여야 하는데 확인
-    positions = game.get_positions()
-    btn_sb = [name for name, pos in positions.items() if pos == "BTN/SB"]
-    assert len(btn_sb) == 1, f"헤즈업에서 BTN/SB 포지션 1개여야 함: {positions}"
+    assert game.get_positions() == {"P1": "BTN/SB", "P0": "BB"}, game.get_positions()
+    assert game.next_to_act() is players[1], "프리플랍은 BTN/SB가 먼저"
+    game.act(players[1], Action.CALL)
+    assert game.next_to_act() is players[0], "BTN/SB 림프 뒤 BB가 옵션을 가져야 함"
+    assert game.can_raise(players[0])
+    game.act(players[0], Action.CHECK)
+    assert game.next_to_act() is None and game.round_over()
+    assert game.advance_street() == Street.FLOP
+    assert game.next_to_act() is players[0], "포스트플랍은 BB가 먼저"
+    game.act(players[0], Action.CHECK)
+    assert game.next_to_act() is players[1]
 
 def test_2_7_postflop_sb_acts_first():
     """포스트플랍: SB(또는 딜러 왼쪽)가 먼저 행동"""
@@ -419,40 +444,64 @@ def test_2_7_postflop_sb_acts_first():
 # ═════════════════════════════════════════════════════════════
 
 def test_3_1_pot_conservation():
-    """100핸드 시뮬 — 총 칩 합은 항상 초기값과 동일해야 함
-    (칩 + 팟 합계가 게임 내내 일정해야 함)"""
+    """100핸드 시뮬(시드 고정, 3초 이내) — 사람·봇 모두 레이즈·올인을 섞어 친다.
+    매 결정 지점과 매 핸드 끝에 칩 + 팟 합계가 시작 총합과 같아야 하고, 레이즈·올인·
+    사이드팟(기여 다른 2명 이상 쇼다운)이 실제로 나와야 한다."""
+    import logging
+    lg = logging.getLogger("server.session")
+    old_level = lg.level
+    lg.setLevel(logging.ERROR)  # 봇 폴백 경고는 의도된 것
+    try:
+        _pot_conservation_sim()
+    finally:
+        lg.setLevel(old_level)
+
+
+def _pot_conservation_sim():
     from server.session import WebGameSession
+    from core.game import IllegalActionError
     import random
 
-    sess = WebGameSession("sim", "Human", 500, 5, "medium", 10)
-    stub_all_bots(sess)
-    # 초기값: 플레이어 칩 + 현재 팟 (블라인드가 이미 팟에 들어간 상태)
+    rng = random.Random(31)
+    start = time.perf_counter()
+    sess = WebGameSession("sim", "Human", 500, 5, "medium", 10, equity_enabled=False)
+    for name, bot in list(sess.bots.items()):
+        sess.bots[name] = _RandomBot(bot.player, rng, shove=0.08)
     total_initial = sum(p.chips for p in sess.game.players) + sess.game.pot
     assert total_initial == 3000, f"초기 총합이 3000(6×500)이어야 함: {total_initial}"
 
-    for _ in range(100):
-        if sess.game_over:
-            break
-        for _ in range(20):
+    seen = {"raise": 0, "allin": 0, "multi_pot": 0}
+    hands = 0
+    while hands < 100:
+        for _ in range(40):
             state = sess.get_state()
-            if state["hand_over"] or state["game_over"]:
+            if state["hand_over"] or not state["waiting_for_action"]:
                 break
-            if not state["waiting_for_action"]:
-                break
-            action = random.choice(["call", "check", "fold"])
-            if state["call_amount"] == 0 and action == "fold":
-                action = "check"
-            if state["call_amount"] > 0 and action == "check":
-                action = "call"  # 벳을 마주한 체크는 불법(거절됨)
-            sess.submit_action(action, 0)
-
+            assert _total_chips(sess) == total_initial, "칩 보존 실패(핸드 진행 중)"
+            act = rng.choice(["fold", "check", "call", "call", "raise", "allin"])
+            try:
+                sess.submit_action(act, rng.randint(0, state["current_bet"] * 3 + 60))
+            except IllegalActionError:
+                sess.submit_action("call" if state["call_amount"] > 0 else "check", 0)
         state = sess.get_state()
-        if state["hand_over"]:
+        assert state["hand_over"], "핸드가 끝나지 않음"
+        assert _total_chips(sess) == total_initial, \
+            f"칩 보존 실패: 초기 {total_initial}, 현재 {_total_chips(sess)} (pot={sess.game.pot})"
+        log = " ".join(state["action_log"])
+        seen["raise"] += "레이즈" in log
+        seen["allin"] += "올인" in log
+        seen["multi_pot"] += sum(1 for p in state["pots"] if not p["returned"]) > 1
+        hands += 1
+        if not sess.game_over:
             sess.next_hand()
-
-    total_now = sum(p.chips for p in sess.game.players) + sess.game.pot
-    assert total_now == total_initial, \
-        f"칩 보존 실패: 초기 {total_initial}, 현재 {total_now} (pot={sess.game.pot})"
+        if sess.game_over:   # 파산으로 게임 종료 → 새 세션으로 이어서
+            sess = WebGameSession("sim", "Human", 500, 5, "medium", 10, equity_enabled=False)
+            for name, bot in list(sess.bots.items()):
+                sess.bots[name] = _RandomBot(bot.player, rng, shove=0.08)
+    assert hands >= 100, f"100핸드를 못 침: {hands}"
+    assert all(v > 0 for v in seen.values()), f"레이즈·올인·사이드팟이 나와야 함: {seen}"
+    elapsed = time.perf_counter() - start
+    assert elapsed < 3.0, f"3초 이내여야 함: {elapsed:.2f}s"
 
 def test_3_2_split_pot_even():
     """정확한 타이 → 균등 분배"""
@@ -507,6 +556,15 @@ def test_3_4_winner_takes_all():
     winners = game.showdown().winners
     assert len(winners) == 1
     assert players[0].chips == initial + 300
+
+def test_3_6_sidepot_independent_calculator_2000():
+    """독립 사이드팟 계산기(코드 공유 없음, tests/test_sidepot_indep.py)와 core showdown()을
+    시드 고정 2,000 시나리오로 대조: 플레이어별 칩 증가분(홀수 칩 수령자 포함)·계층·반환(2초 이내)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_sidepot_indep as indep
+    indep.test_ref_distribute_examples()
+    indep.test_sidepot_matches_independent_calculator()
+
 
 def test_3_5_allin_player_cannot_win_more_than_contributed():
     """core showdown(CLI 경로)도 사이드팟을 나눈다(T-024): P0 100 올인(AA), P1·P2 500씩(KK/QQ)
@@ -595,24 +653,21 @@ def test_4_3_preflop_all_fold_no_showdown():
     assert players[0].chips == initial + 60
 
 def test_4_4_street_bet_reset():
-    """스트리트 전환 시 current_bet과 player.current_bet이 리셋되는지"""
-    game, players = make_game(3, chips=1000, sb=10)
+    """스트리트 전환(core advance_street) 시 current_bet·플레이어 베팅·min_raise가 리셋되고
+    핸드 누적 기여·팟은 유지된다."""
+    game, players = make_game(3, chips=1000, sb=10)   # UTG=P0, SB=P1, BB=P2
     game.start_hand()
-
-    # 프리플랍 베팅 시뮬
-    game.current_bet = 60
-    players[0].current_bet = 60
-    players[1].current_bet = 60
-    players[2].current_bet = 60
-
-    # FLOP으로 전환
-    game.current_bet = 0
-    for p in players:
-        p.reset_for_street()
-
-    assert game.current_bet == 0
+    game.act(players[0], Action.RAISE, 100)            # +80 → min_raise 80
+    game.act(players[1], Action.CALL)
+    game.act(players[2], Action.CALL)
+    assert game.round_over() and game.min_raise == 80 and game.current_bet == 100
+    assert game.advance_street() == Street.FLOP
+    assert game.current_bet == 0 and game.min_raise == 20, (game.current_bet, game.min_raise)
     for p in players:
         assert p.current_bet == 0, f"{p.name}.current_bet should be 0"
+        assert p.total_bet_this_round == 100, f"{p.name} 핸드 누적 기여는 유지: {p.total_bet_this_round}"
+    assert game.pot == 300 and len(game.community_cards) == 3
+    assert game.acted == set() and game.next_to_act() is players[1], "플랍 새 라운드는 SB부터"
 
 def test_4_5_game_over_when_human_busted():
     """사람 파산 시 next_hand() 호출 시점에 game_over 처리"""
@@ -628,17 +683,28 @@ def test_4_5_game_over_when_human_busted():
     assert sess.game_over, "사람 파산 후 game_over여야 함"
 
 def test_4_6_minimum_raise_rule():
-    """최소 레이즈는 이전 레이즈 크기 이상이어야 함"""
-    game, players = make_game(3, chips=1000, sb=10)
+    """최소 레이즈는 이전 레이즈 크기 이상 — 모자란 요청은 최소 레이즈-투로 보정되고,
+    보정값이 스택 이상이면 올인으로 적용된다."""
+    game, players = make_game(3, chips=1000, sb=10)   # UTG=P0, SB=P1, BB=P2
     game.start_hand()
-    # 첫 레이즈 40 (BB=20 기준 +20)
-    game.apply_action(players[0], Action.RAISE, 40)
-    assert game.min_raise == 20, f"min_raise should be 20, got {game.min_raise}"
-    assert game.current_bet == 40
-
-    # 두 번째 레이즈는 최소 40+20=60 이상이어야 함 → game.apply_action이 보정하는지 확인
-    game.apply_action(players[1], Action.RAISE, 60)
-    assert game.current_bet == 60
+    # 요청 25(최소 40 미만) → 40으로 보정
+    assert game.validate(players[0], Action.RAISE, 25) == (Action.RAISE, 40)
+    r = game.act(players[0], Action.RAISE, 25)
+    assert r.to_amount == 40 and game.current_bet == 40 and game.min_raise == 20, \
+        (r, game.current_bet, game.min_raise)
+    # 요청 50(최소 60 미만) → 60으로 보정
+    r = game.act(players[1], Action.RAISE, 50)
+    assert r.to_amount == 60 and r.moved == 50 and game.current_bet == 60, (r, game.current_bet)
+    # 풀 레이즈 +100 → min_raise 100, 다음 요청 170(최소 260 미만) → 260
+    r = game.act(players[2], Action.RAISE, 160)
+    assert game.min_raise == 100 and r.to_amount == 160, (game.min_raise, r)
+    assert game.validate(players[0], Action.RAISE, 170) == (Action.RAISE, 260)
+    # 보정값이 스택(칩 + 이번 베팅) 이상이면 올인
+    players[0].chips = 150                             # 스택 40 + 150 = 190 < 260
+    assert game.validate(players[0], Action.RAISE, 170) == (Action.ALL_IN, 190)
+    r = game.act(players[0], Action.RAISE, 170)
+    assert r.action == Action.ALL_IN and players[0].chips == 0 and game.current_bet == 190, r
+    assert game.min_raise == 100 and not r.reopens, "+30 불완전 올인은 min_raise 유지"
 
 def _cli_controller(stacks, names=None):
     """cli.main.GameController를 setup() 입력 없이 만든다(봇 결정은 콜백으로 주입)."""
@@ -781,6 +847,33 @@ def _cli_vs_web_one_seed(seed, names, stacks, make_decider, hand_actions):
         assert cli == web, f"seed {seed} 핸드 {i + 1}: CLI {cli} ≠ 웹 {web}"
     assert len(web_hands) == len(cli_hands), (seed, len(cli_hands), len(web_hands))
     return len(cli_hands)
+
+
+def test_4_11_cli_raise_prompt_no_negative_chips():
+    """CLI 레이즈 안내는 최소 레이즈-투를 낼 스택이 있을 때만(웹 ActionBar `maxRaise >= min_raise_to`).
+    BB(스택 150)가 100 레이즈를 마주하면 최소 레이즈-투 180 > 스택 → [r] 없이 콜·올인만, 음수 칩 없음."""
+    import io
+    import contextlib
+    from unittest import mock
+
+    def prompt(h_stack):
+        ctl = _cli_controller([h_stack, 1000, 1000], ["H", "A", "B"])
+        g = ctl.game
+        g.dealer_index = 1                     # BTN=A, SB=B, BB=H, UTG=A
+        g.start_hand()
+        h, a, b = g.players
+        g.act(a, Action.RAISE, 100)
+        g.act(b, Action.FOLD)
+        assert g.next_to_act() is h
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch("builtins.input", return_value="f"):
+            ctl._get_human_action(h, g._get_game_state(), "[BB]")
+        return out.getvalue()
+
+    text = prompt(150)
+    assert "[r]" not in text and "[a] 올인" in text and "→ -" not in text, text
+    text = prompt(1000)
+    assert "[r] 레이즈" in text and "→ -" not in text, text
 
 
 def test_4_7_community_cards_count_per_street():
@@ -1108,22 +1201,30 @@ def test_6_5_sidepot_shortstack_wins_mainpot_only():
     assert p0.chips + p1.chips + p2.chips == 1600, "팟 총합 보존 실패"
 
 def test_6_6_sidepot_three_allins():
-    """3명 다른 올인 → 팟이 3개로 정확히 분리"""
-    from server.session import WebGameSession
-    sess = WebGameSession("sp2", "Human", 1000, 2, "easy", 10)
-    stub_all_bots(sess)
+    """기여가 다른 3명 올인(100/300/600) → 메인 300(3명)·사이드 400(2명)·반환 300(1명)으로
+    정확히 분리(core showdown). 같은 기여(200×3)면 팟 1개."""
+    game, players = make_game(3, chips=0, sb=10)
+    _set_contributions(game, [100, 300, 600])
+    for p in players:
+        p.is_all_in = True
+    force_community(game, [c("2", "H"), c("7", "D"), c("9", "S"), c("3", "C"), c("5", "H")])
+    force_hole_cards(game, {0: [c("A", "S"), c("A", "H")], 1: [c("K", "S"), c("K", "H")],
+                            2: [c("Q", "S"), c("Q", "H")]})
+    res = game.showdown()
+    layers = [(s.amount, [p.name for p in s.eligible], [p.name for p in s.winners], s.returned)
+              for s in res.pots]
+    assert layers == [(300, ["P0", "P1", "P2"], ["P0"], False),
+                      (400, ["P1", "P2"], ["P1"], False),
+                      (300, ["P2"], ["P2"], True)], layers
+    assert [p.chips for p in players] == [300, 400, 300], [p.chips for p in players]
+    assert [w.name for w in res.winners] == ["P0", "P1"], "반환만 받은 P2는 승자가 아님"
 
-    p0, p1, p2 = sess.human, sess.game.players[1], sess.game.players[2]
-
-    p0.total_bet_this_round = 200;  p0.chips = 0;  p0.is_all_in = True
-    p1.total_bet_this_round = 200;  p1.chips = 0;  p1.is_all_in = True
-    p2.total_bet_this_round = 200;  p2.chips = 0;  p2.is_all_in = True
-    sess.game.pot = 600
-
-    pots = sess.game.calculate_side_pots()
-    assert len(pots) == 1, f"동일 기여액이면 팟 1개여야 함: {len(pots)}"
-    assert pots[0][0] == 600
-    assert len(pots[0][1]) == 3
+    game, players = make_game(3, chips=0, sb=10)
+    _set_contributions(game, [200, 200, 200])
+    for p in players:
+        p.hole_cards = [c("2", "S"), c("3", "S")]
+    pots = game.calculate_side_pots()
+    assert [(a, len(e)) for a, e in pots] == [(600, 3)], f"동일 기여액이면 팟 1개여야 함: {pots}"
 
 def test_6_7_sidepot_folded_player_contribution():
     """폴드한 플레이어의 기여분은 팟에 포함되지만 수령 불가"""
@@ -2642,6 +2743,9 @@ class _RefTable:
         return p not in self.folded and p not in self.allin
 
     def may_raise(self, p):
+        # 콜할 상대가 없으면(나 외에 폴드·올인 아닌 사람 0) 레이즈 불가
+        if not any(q != p and self._can_act(q) for q in self.seats):
+            return False
         return p not in self.seen or self.level - self.seen[p] >= self.min
 
     def next_actor(self):
@@ -3304,6 +3408,102 @@ def test_8_24_old_sessions_pruned_and_return_404():
         m._last_seen.update(saved[1])
 
 
+def test_8_29_no_raise_when_no_opponent_can_act():
+    """콜할 상대가 없으면 레이즈 불가: 3인 BTN 폴드 · SB 올인 30 → BB(사람)는 콜/폴드만
+    (core validate가 RAISE·ALL_IN 거절, 응답 can_raise=false·min_raise_to=0)."""
+    from core.game import IllegalActionError
+    # 좌석 [Human, Alpha, Beta], 딜러 Alpha → SB=Beta, BB=Human, UTG=Alpha(BTN)
+    sess, _ = _scripted_session(2, dealer_index=1, chips=[1000, 1000, 30],
+                                scripts={"🤖 Alpha": [(Action.FOLD, 0)],
+                                         "🤖 Beta": [(Action.ALL_IN, 0)]})
+    g = sess.game
+    st = sess.get_state()
+    assert st["waiting_for_action"] and st["call_amount"] == 10, st["call_amount"]
+    assert st["can_raise"] is False and st["min_raise_to"] == 0, (st["can_raise"], st["min_raise_to"])
+    for act in (Action.RAISE, Action.ALL_IN):
+        try:
+            g.validate(sess.human, act, 200)
+            raise AssertionError(f"콜할 상대가 없는데 {act.value}가 허용됨")
+        except IllegalActionError:
+            pass
+    assert g.validate(sess.human, Action.CALL) == (Action.CALL, 30)
+    assert g.validate(sess.human, Action.FOLD)[0] == Action.FOLD
+    for bad in [("raise", 200), ("allin", 0)]:
+        try:
+            sess.submit_action(*bad)
+            raise AssertionError(f"세션이 {bad}를 받음")
+        except IllegalActionError:
+            pass
+    sess.submit_action("call", 0)
+    assert sess.hand_over and _total_chips(sess) == 2030
+    # 봇도 같은 규칙: 콜할 상대 없는 봇의 레이즈 요청은 콜로 대체
+    sess, _ = _scripted_session(2, dealer_index=2, chips=[30, 1000, 1000],
+                                scripts={"🤖 Beta": [(Action.FOLD, 0)],
+                                         "🤖 Alpha": [(Action.RAISE, 500)]})
+    # 좌석 [Human, Alpha, Beta], 딜러 Beta → SB=Human, BB=Alpha, UTG=Beta
+    assert sess.get_state()["waiting_for_action"]
+    sess.submit_action("allin", 0)                 # 사람(SB) 30 올인
+    log =[l for l in sess.action_log if "🤖 Alpha" in l]
+    assert any("콜" in l for l in log) and not any("레이즈" in l for l in log), \
+        f"상대 전원 올인인데 봇 레이즈가 적용됨: {log}"
+
+
+def _three_allin_session():
+    """3인 [Human 1000, Alpha 100, Beta 300], 딜러 Human → SB=Alpha, BB=Beta, UTG=Human.
+    사람 올인 → 두 봇 콜(올인). 강도 Alpha AA > Beta KK > Human QQ."""
+    sess, _ = _scripted_session(2, dealer_index=0, chips=[1000, 100, 300])
+    g = sess.game
+    holes = {"Human": [c("Q", "S"), c("Q", "H")], "🤖 Alpha": [c("A", "S"), c("A", "H")],
+             "🤖 Beta": [c("K", "S"), c("K", "H")]}
+    for p in g.players:
+        p.hole_cards = holes[p.name]
+    board = [c("2", "H"), c("7", "D"), c("9", "S"), c("3", "C"), c("5", "C")]
+    g.deal_community = lambda street: g.community_cards.extend(
+        board[len(g.community_cards):{Street.FLOP: 3, Street.TURN: 4, Street.RIVER: 5}[street]])
+    assert sess.get_state()["waiting_for_action"]
+    return sess, sess.submit_action("allin", 0)
+
+
+def test_8_30_hand_over_pots_main_side_returned():
+    """핸드 종료 응답의 pots: 3명 다른 스택 올인 → 메인 300(3명, Alpha)·사이드 400(2명, Beta)·
+    반환 700(Human). winner 이벤트 pot과 "🏆 … 승리" 로그 금액은 반환분을 뺀 700."""
+    from server.schemas import GameStateResponse
+    sess, events = _three_allin_session()
+    st = sess.get_state(events)
+    assert st["hand_over"], "올인 런아웃 후 핸드가 끝나야 함"
+    assert st["pots"] == [
+        {"amount": 300, "eligible": ["🤖 Alpha", "🤖 Beta", "Human"], "winners": ["🤖 Alpha"], "returned": False},
+        {"amount": 400, "eligible": ["🤖 Beta", "Human"], "winners": ["🤖 Beta"], "returned": False},
+        {"amount": 700, "eligible": ["Human"], "winners": ["Human"], "returned": True},
+    ], st["pots"]
+    chips = {p.name: p.chips for p in sess.game.players}
+    assert chips == {"Human": 700, "🤖 Alpha": 300, "🤖 Beta": 400}, chips
+    win = [e for e in events if e["type"] == "winner"]
+    assert len(win) == 1 and win[0]["pot"] == 700, win
+    assert win[0]["winner_chips"] == chips, f"반환받은 사람 칩도 winner_chips에: {win[0]['winner_chips']}"
+    assert st["winners"] == ["🤖 Alpha", "🤖 Beta"], st["winners"]
+    assert st["action_log"][-1] == "🏆 🤖 Alpha, 🤖 Beta 승리 (700)", st["action_log"][-1]
+    assert GameStateResponse(**st).pots[2].returned is True
+    # 핸드 진행 중에는 pots가 없다
+    sess.next_hand()
+    assert sess.get_state()["pots"] is None
+
+
+def test_8_31_fold_win_pots_single_layer():
+    """전원 폴드로 끝난 핸드도 pots는 1계층(반환 아님), winner pot = 팟 전액."""
+    # 좌석 [Human, Alpha, Beta], 딜러 Human → UTG=Human
+    sess, _ = _scripted_session(2, dealer_index=0,
+                                scripts={"🤖 Alpha": [(Action.FOLD, 0)], "🤖 Beta": [(Action.FOLD, 0)]})
+    ev = sess.submit_action("raise", 60)
+    st = sess.get_state(ev)
+    assert st["hand_over"]
+    assert st["pots"] == [{"amount": 90, "eligible": ["Human"], "winners": ["Human"],
+                           "returned": False}], st["pots"]
+    win = [e for e in ev if e["type"] == "winner"]
+    assert win[0]["pot"] == 90 and st["action_log"][-1] == "🏆 Human 승리 (90, 상대 폴드)", \
+        (win, st["action_log"][-1])
+
+
 # ═════════════════════════════════════════════════════════════
 # 실행
 # ═════════════════════════════════════════════════════════════
@@ -3338,6 +3538,7 @@ ALL_TESTS = [
     ("3-3  홀수 팟 나머지 처리",              test_3_3_split_pot_odd_remainder),
     ("3-4  1명 남았을 때 팟 전액",            test_3_4_winner_takes_all),
     ("3-5  올인 플레이어 팟 수령 한도",       test_3_5_allin_player_cannot_win_more_than_contributed),
+    ("3-6  독립 사이드팟 계산기 2,000 대조",   test_3_6_sidepot_independent_calculator_2000),
     # 영역 4
     ("4-1  딜러 버튼 로테이션",               test_4_1_dealer_rotation),
     ("4-2  파산 플레이어 제거",               test_4_2_bankrupt_player_removed),
@@ -3349,6 +3550,7 @@ ALL_TESTS = [
     ("4-8  딜된 카드 중복 없음",              test_4_8_deck_no_duplicates),
     ("4-9  CLI 사이드팟·무빙 버튼(T-024)",     test_4_9_cli_sidepot_and_moving_button),
     ("4-10 CLI = 웹 세션 같은 동작(T-024)",    test_4_10_cli_and_web_session_same_behavior),
+    ("4-11 CLI 레이즈 안내에 음수 칩 없음",    test_4_11_cli_raise_prompt_no_negative_chips),
     # 영역 5
     ("5-1  폴드 후 봇 자동 완료",             test_5_1_fold_then_bots_complete),
     ("5-2  핸드 종료 후 액션 무시",           test_5_2_action_ignored_when_hand_over),
@@ -3432,6 +3634,9 @@ ALL_TESTS = [
     ("8-26 불완전 올인 합계 < 풀 레이즈 → 닫힘",     test_8_26_cumulative_short_allins_below_full_raise_stay_closed),
     ("8-27 평가에 실제 레이즈 금액 전달",            test_8_27_grade_receives_real_raise_amount),
     ("8-28 퍼저가 되돌린 T-038 버그를 잡는다",       test_8_28_fuzzer_catches_reverted_cumulative_reopen),
+    ("8-29 콜할 상대 없으면 레이즈 불가",            test_8_29_no_raise_when_no_opponent_can_act),
+    ("8-30 핸드 종료 pots: 메인·사이드·반환",        test_8_30_hand_over_pots_main_side_returned),
+    ("8-31 전원 폴드 핸드 pots 1계층",              test_8_31_fold_win_pots_single_layer),
 ]
 
 
