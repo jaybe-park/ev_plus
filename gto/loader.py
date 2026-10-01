@@ -1,6 +1,8 @@
 """
-GTO 데이터 로더 — SQLite 기반 (v2)
-앱 시작 시 프리플랍 데이터 전체를 메모리에 로드하고 캐시.
+GTO 데이터 로더 — SQLite 기반
+프리플랍 노드를 처음 쓸 때 DB에서 전부 읽어 메모리에 캐시한다.
+노드+핸드 읽기(`read_preflop_nodes`)와 빈도합 허용 범위(`FREQ_SUM_MIN/MAX`)는 이 모듈 하나가
+주인이다 — 서버 저장 API·수집기·감사 스크립트가 같은 함수·상수를 쓴다.
 """
 
 import sys
@@ -10,16 +12,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logging
 import random
 from typing import Optional
-from core.card import Card, Rank
+from core.card import Card
 
 logger = logging.getLogger(__name__)
 
-# 핸드별 빈도 합 검증 허용 범위. 이 밖이면 손상 데이터로 간주해 조용히 넘어가지
-# 않고(=fold 등 특정 액션에 잔여를 몰아주지 않고) "데이터 없음"으로 처리한다.
-_FREQ_SUM_MIN = 0.9
-_FREQ_SUM_MAX = 1.1
+# 핸드별 fold+call+raise+allin 합 허용 범위(ADR 0002). 밖이면 손상 데이터 — 저장 거부,
+# 로드 시 스킵(잔여를 특정 액션에 몰아주지 않는다).
+FREQ_SUM_MIN = 0.9
+FREQ_SUM_MAX = 1.1
+
+ACTIONS = ("fold", "call", "raise", "allin")
 
 _RANK_GTO = {"10": "T"}
+
 
 def _rank_sym(rank) -> str:
     return _RANK_GTO.get(rank.symbol, rank.symbol)
@@ -45,126 +50,137 @@ def hand_to_notation(card1: Card, card2: Card) -> str:
         return f"{s1}{s2}o"
 
 
+def freq_sum_ok(freqs: dict) -> bool:
+    """핸드 하나의 액션 빈도 합이 [FREQ_SUM_MIN, FREQ_SUM_MAX] 안인가."""
+    total = sum((freqs.get(a) or 0.0) for a in ACTIONS)
+    return FREQ_SUM_MIN <= total <= FREQ_SUM_MAX
+
+
+def read_preflop_nodes(conn) -> list:
+    """`gto_preflop_situations` 전 행(id 순)을 핸드와 함께 읽는다(필터·검증 없음).
+
+    반환: [{id, action_seq, position, vs_position, range_type, raise_size, situation_label,
+    hero_position, hands: {hand: {action: freq}}}] — 핸드 빈도는 0보다 큰 액션만 담는다.
+    conn은 sqlite3.Row 팩토리 연결(읽기 전용 연결도 된다).
+    """
+    hands_by_sid: dict = {}
+    for h in conn.execute(
+        "SELECT situation_id, hand, freq_fold, freq_call, freq_raise, freq_allin "
+        "FROM gto_preflop_hands"
+    ):
+        freqs = {a: h[f"freq_{a}"] for a in ACTIONS if (h[f"freq_{a}"] or 0) > 0}
+        hands_by_sid.setdefault(h["situation_id"], {})[h["hand"]] = freqs
+    nodes = []
+    for s in conn.execute("SELECT * FROM gto_preflop_situations ORDER BY id"):
+        keys = s.keys()
+        nodes.append({
+            "id": s["id"],
+            "action_seq": s["action_seq"],
+            "position": s["position"],
+            "vs_position": s["vs_position"],
+            "range_type": s["range_type"],
+            "raise_size": s["raise_size"],
+            "situation_label": s["situation_label"],
+            "hero_position": s["hero_position"] if "hero_position" in keys else None,
+            "hands": hands_by_sid.get(s["id"], {}),
+        })
+    return nodes
+
+
+def collected_by_seq(nodes: list) -> dict:
+    """read_preflop_nodes 결과 → {action_seq: {"hands", "raise_size"}} (수집기·감사용)."""
+    return {
+        n["action_seq"]: {"hands": n["hands"], "raise_size": n["raise_size"]}
+        for n in nodes if n["action_seq"] is not None
+    }
+
+
 # ──────────────────────────────────────────
 # 메모리 캐시
-# (position, vs_position, range_type) → range_data dict
+# _cache: (position, vs_position, range_type) → range_data (콜러 없는 노드만)
+# _cache_by_seq: action_seq → range_data (같은 객체 공유)
 # ──────────────────────────────────────────
 _cache: dict = {}
-# ② 시퀀스 키(노드 키) → range_data dict. _cache와 같은 range_data 객체를 공유.
 _cache_by_seq: dict = {}
 _loaded: bool = False
 
 
+def invalidate() -> None:
+    """캐시를 비운다 — 다음 조회 때 DB에서 다시 읽는다(저장 API가 저장 후 호출)."""
+    global _cache, _cache_by_seq, _loaded
+    _cache = {}
+    _cache_by_seq = {}
+    _loaded = False
+
+
 def _load_all() -> None:
-    """앱 첫 사용 시 DB에서 전체 프리플랍 데이터를 로드."""
-    global _loaded
+    """첫 사용 시 DB에서 전체 프리플랍 데이터를 로드."""
+    global _cache, _cache_by_seq, _loaded
     if _loaded:
         return
-    # 재로드(_loaded=False로 무효화) 시 두 캐시를 모두 초기화 — 라벨 캐시는 "먼저 들어온
-    # 콜러 없는 노드 유지" 규칙이라 옛 항목이 남으면 새 데이터가 가려진다.
-    _cache.clear()
-    _cache_by_seq.clear()
-
+    by_label: dict = {}
+    by_seq: dict = {}
     try:
         from db.connection import get_connection
-        conn = get_connection()
-        cur = conn.cursor()
-
         from gto.node_key import has_caller
 
-        situations = cur.execute(
-            "SELECT * FROM gto_preflop_situations ORDER BY id"
-        ).fetchall()
+        conn = get_connection()
+        try:
+            nodes = read_preflop_nodes(conn)
+        finally:
+            conn.close()
 
-        for s in situations:
-            hands_rows = cur.execute(
-                "SELECT hand, freq_fold, freq_call, freq_raise, freq_allin "
-                "FROM gto_preflop_hands WHERE situation_id = ?",
-                (s["id"],)
-            ).fetchall()
-
+        for s in nodes:
             hands = {}
-            for h in hands_rows:
-                freq_sum = (
-                    h["freq_fold"] + h["freq_call"] + h["freq_raise"] + h["freq_allin"]
-                )
-                if not (_FREQ_SUM_MIN <= freq_sum <= _FREQ_SUM_MAX):
-                    # 손상 핸드 — 원인 불명 상태에서 잔여를 특정 액션에 몰아주지
-                    # 않고 "데이터 없음"으로 처리해 상위 호출부가 휴리스틱 폴백을
-                    # 타도록 한다. 조용히 넘어가지 않고 식별 가능하게 경고 로그.
+            for hand, freqs in s["hands"].items():
+                if not freq_sum_ok(freqs):
                     logger.warning(
-                        "GTO 손상 핸드 스킵: situation_id=%s hand=%s freq_sum=%.3f "
-                        "(fold=%.3f call=%.3f raise=%.3f allin=%.3f)",
-                        s["id"], h["hand"], freq_sum,
-                        h["freq_fold"], h["freq_call"], h["freq_raise"], h["freq_allin"],
+                        "GTO 손상 핸드 스킵: situation_id=%s hand=%s freqs=%s",
+                        s["id"], hand, freqs,
                     )
                     continue
+                hands[hand] = freqs
 
-                freqs = {}
-                if h["freq_fold"]  > 0: freqs["fold"]  = h["freq_fold"]
-                if h["freq_call"]  > 0: freqs["call"]  = h["freq_call"]
-                if h["freq_raise"] > 0: freqs["raise"] = h["freq_raise"]
-                if h["freq_allin"] > 0: freqs["allin"] = h["freq_allin"]
-                if not freqs:
-                    freqs = {"fold": 1.0}
-                hands[h["hand"]] = freqs
-
-            key = (s["position"], s["vs_position"], s["range_type"])
             seq_key = s["action_seq"]
             entry = {
-                "situation":     s["situation_label"],
-                "raise_size":    s["raise_size"],  # REAL(bb) 또는 None — 텍스트 플레이스홀더 없음
-                "range_type":    s["range_type"],
-                "hands":         hands,
-                "node_key":      seq_key,
+                "situation":  s["situation_label"],
+                "raise_size": s["raise_size"],  # REAL(bb) 또는 None
+                "range_type": s["range_type"],
+                "hands":      hands,
+                "node_key":   seq_key,
             }
-
-            # 노드 키(action_seq) 인덱스 — 정확한 노드 조회(ADR 0035 1순위).
             if seq_key is not None:
-                _cache_by_seq[seq_key] = entry
+                by_seq[seq_key] = entry
 
-            # 간단 라벨 인덱스(ADR 0035 2순위, 근사): 한 라벨에 노드가 여럿일 수 있다
-            # (예 "BB vs BTN open" = F-F-F-R2.5-F 와 F-F-F-R2.5-C). 라벨은 **콜러 없는
-            # 노드**만 대표한다 — 콜러 있는 노드를 라벨로 내주면 헤즈업 팟이 멀티웨이
-            # 데이터를 받는다(T-001). 콜러 없는 노드가 없으면 라벨 조회는 None.
+            # 간단 라벨(ADR 0035 2순위)은 콜러 없는 노드만 대표한다 — 콜러 있는 노드를 라벨로
+            # 내주면 헤즈업 팟이 멀티웨이 데이터를 받는다(ADR 0044).
             if seq_key is None or has_caller(seq_key):
                 continue
-            if key in _cache:
-                # 같은 라벨의 콜러 없는 노드가 둘 이상(사이즈만 다른 수동 저장 등) — 먼저
-                # 저장된 행(id 작은 쪽)을 유지하고 식별 가능하게 경고한다.
+            key = (s["position"], s["vs_position"], s["range_type"])
+            if key in by_label:
                 logger.warning(
                     "GTO 라벨 %s에 콜러 없는 노드가 여럿: %r 유지, %r 무시",
-                    key, _cache[key].get("node_key"), seq_key,
+                    key, by_label[key].get("node_key"), seq_key,
                 )
                 continue
-            _cache[key] = entry
-
-        conn.close()
-        _loaded = True
-
+            by_label[key] = entry
     except Exception as e:
         # DB 없거나 마이그레이션 전이면 실패 (힌트 없음) — 원인은 로그로 남긴다
         logger.warning("GTO 프리플랍 데이터 로드 실패: %s", e)
-        _loaded = True  # 재시도 방지
+    _cache, _cache_by_seq, _loaded = by_label, by_seq, True
 
 
 def get_range_by_seq(node_key) -> Optional[dict]:
-    """② 캐노니컬 노드 키로 프리플랍 레인지 조회(시퀀스 키 경로).
-
-    node_key는 gto.advisor.canonical_node_key / gto.url_generator.situation_to_node_key가
-    생성한 캐노니컬 문자열(예: "R2.5-R8-F-F-F-F", RFI UTG는 ""). 없으면 None.
-    """
+    """노드 키(action_seq)로 프리플랍 레인지 조회. UTG RFI는 "". 없으면 None."""
     _load_all()
     return _cache_by_seq.get(node_key)
 
 
 def get_children_by_prefix(prefix) -> list:
-    """②' 데이터 기반 트리-인지 스냅용: 주어진 프리픽스 **바로 다음 위치**에
-    수집된 노드 키들이 실제로 갖는 토큰 목록(중복 제거, 등장 순서 유지)을 반환.
+    """프리픽스 **바로 다음 위치**에 수집된 노드 키들이 갖는 토큰 목록(중복 제거, 등장 순).
 
-    prefix = 지금까지 만든 캐노니컬 토큰들을 '-'로 join한 문자열(루트=""). 반환 토큰은
-    수집된 형제 노드들의 그 지점 액션(F/X/C/R{실측bb})이며, 레이즈 형제 스냅에 쓰인다.
-    수집 데이터(_cache_by_seq)에서만 읽으므로 하드코딩 사이즈 테이블에 의존하지 않는다.
+    prefix = 토큰을 '-'로 이은 문자열(루트=""). 반환 토큰은 수집된 형제 노드들의 그 지점
+    액션(F/X/C/R{실측bb})이며 레이즈 형제 스냅에 쓰인다(ADR 0010).
 
     예: 수집분에 "R2.5-R8-F-F-F-F"만 있으면
         get_children_by_prefix("")      → ["R2.5"]
@@ -241,9 +257,8 @@ def get_call_range(my_pos: str, opener_pos: str) -> Optional[dict]:
 def get_action_frequencies(range_data: dict, hand_notation: str) -> Optional[dict]:
     """
     레인지 데이터에서 특정 핸드의 액션 빈도 반환.
-    핸드가 없으면(손상되어 로드 시 스킵됐거나 원래 미수집) None을 반환해
-    상위 호출부가 "데이터 없음"으로 처리하고 휴리스틱 폴백을 타게 한다.
-    (부족분을 fold 등 특정 액션에 몰아주지 않음 — 원인 불명 상태에서 새 가정을 얹지 않기 위함)
+    핸드가 없으면(손상되어 로드 시 스킵됐거나 원래 미수집) None — 상위 호출부가 "데이터 없음"으로
+    처리하고 휴리스틱 폴백을 탄다(부족분을 fold 등 특정 액션에 몰아주지 않음, ADR 0002).
     """
     if range_data is None:
         return None
@@ -259,19 +274,3 @@ def sample_action(frequencies: dict) -> str:
         if r < cumulative:
             return action
     return list(frequencies.keys())[-1]
-
-
-def find_opener_position(positions: dict, game_state: dict, big_blind: int) -> Optional[str]:
-    """현재 레이즈를 처음 한 플레이어의 포지션 찾기"""
-    current_bet = game_state.get("current_bet", 0)
-    if current_bet <= big_blind:
-        return None
-    players = game_state.get("players", [])
-    opener = max(
-        (p for p in players if p.get("current_bet", 0) == current_bet),
-        key=lambda p: p.get("current_bet", 0),
-        default=None,
-    )
-    if opener:
-        return positions.get(opener["name"])
-    return None

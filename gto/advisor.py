@@ -7,7 +7,7 @@ GTO 어드바이저
 from typing import Optional
 from .loader import (
     hand_to_notation, get_open_range, get_vs_open_range, get_vs_3bet_range,
-    get_action_frequencies, sample_action, find_opener_position,
+    get_action_frequencies, sample_action,
     get_range_by_seq, get_children_by_prefix,
 )
 from .url_generator import POS_INDEX
@@ -23,7 +23,7 @@ def _save_missing_seq(node_key_live: str, hero_position: str) -> None:
     이동(url_from_node_key)해 수집한다. gto_missing_spots_preflop 테이블을 재사용하되
     range_type='seq'로 구분하고, 노드 키를 vs_position에 저장해
     UNIQUE(street, position, vs_position, range_type)로 자연 dedupe.
-    (간단 라벨 enum 행 큐 기록은 ADR 0035 이후 하지 않는다 — 정확한 노드 키가 수집 단위.)
+    간단 라벨 enum 행은 큐에 넣지 않는다(ADR 0035 — 정확한 노드 키가 수집 단위).
     """
     try:
         from db.connection import get_connection
@@ -45,21 +45,12 @@ def _save_missing_seq(node_key_live: str, hero_position: str) -> None:
 
 
 def _count_raises(preflop_seq: list) -> int:
-    """구조화 프리플랍 시퀀스에서 자발적 레이즈 횟수.
-
-    (구) _count_preflop_raises(한글 action_log 파싱)의 대체. 기존 한글 파서가
-    "레이즈" 문자열만 셌고 "올인"은 세지 않았던 것과 동일하게, 여기서도
-    action == "raise"만 카운트한다(allin 제외) — 기존 라우팅 동작 보존.
-    """
+    """구조화 프리플랍 시퀀스에서 자발적 레이즈(`raise`) 횟수. `allin`은 세지 않는다."""
     return sum(1 for a in preflop_seq if a.get("action") == "raise")
 
 
 def _raisers(preflop_seq: list) -> list:
-    """레이즈한 포지션 목록(행동 순서, 중복 제거).
-
-    (구) _find_raisers_in_log의 대체. 기존과 동일하게 "raise" 액션만 대상으로
-    하고, 같은 포지션의 중복은 제거한다.
-    """
+    """레이즈(`raise`)한 포지션 목록(행동 순서, 중복 제거)."""
     out = []
     for a in preflop_seq:
         if a.get("action") == "raise":
@@ -77,11 +68,10 @@ def _fmt_bb(x) -> str:
 
 
 def canonical_preflop_actions(preflop_seq: list) -> str:
-    """구조화 시퀀스 → GTO Wizard `preflop_actions` 캐노니컬 문자열.
+    """구조화 시퀀스 → GTO Wizard `preflop_actions` 문자열(라이브 실측 사이즈).
 
     F=fold, X=check, C=call, R{bb}=raise/allin to-amount(bb).
     예: [UTG raise 2.5, HJ raise 8, CO fold] → "R2.5-R8-F".
-    ②(시퀀스 키 스키마)에서 노드 키 생성에 재사용하기 위한 헬퍼(이번 필수 아님).
     """
     parts = []
     for a in preflop_seq:
@@ -108,30 +98,23 @@ def _parse_raise_bb(token: str) -> Optional[float]:
 
 
 def canonical_node_key(preflop_seq: list, prefix_tokens: Optional[list] = None) -> Optional[str]:
-    """구조화 라이브 시퀀스 → 캐노니컬 노드 키(②' 데이터 기반 트리-인지 스냅).
+    """구조화 라이브 시퀀스 → 수집 트리의 노드 키(데이터 기반 스냅, ADR 0010·0037).
 
-    (②의 깊이-캐노니컬 하드코딩 스냅을 대체) 라이브 시퀀스를 앞에서부터 훑으며 키를
-    **점증 생성**한다. 각 자발적 레이즈에 대해:
+    라이브 시퀀스를 앞에서부터 훑으며 키를 점증 생성한다. 각 자발적 레이즈에 대해:
       1) 지금까지 만든 프리픽스에서 **수집된 자식 노드들**을 loader로 조회
-         (get_children_by_prefix — 하드코딩 사이즈 테이블이 아니라 수집 데이터에서 읽음).
-      2) 그중 레이즈-형제 사이즈로 스냅. GTO Wizard 트리는 노드당 레이즈 사이즈가 1개라
-         보통 형제가 유일 → 그 토큰 사용. 2개 이상이면 **bb 절대거리 최소**로 선택.
-         (스토어된 토큰 문자열을 그대로 이어붙여 loader 키와 정확히 일치시킴.)
-      3) 해당 프리픽스/브랜치에 **수집된 레이즈-형제가 없으면**(미수집 브랜치) 숫자로
-         억지 매칭하지 않고 **None 반환** → 상위(_recommend_by_seq)가 큐 등록 + equity
-         휴리스틱 폴백을 타게 한다(추측 금지 대원칙).
-      4) 라이브 액션이 **올인**이면(2)의 대상을 "올인 형제"로 좁힌다: 이 프리픽스
-         노드 자신에 저장된 raise_size(수집 당시 "레이즈" 액션의 실측 사이즈)와
-         정확히 일치하는 형제는 "레이즈" 토큰임이 확정되므로 후보에서 제외하고,
-         남은 형제(있다면)만 대상으로 (2)의 스냅을 적용한다. 남는 형제가 없으면
-         (올인 데이터가 수집되지 않음) None(억지 매칭 금지 — 숏스택 올인이 일반
-         레이즈 노드로 새지 않게 함, T-014).
+         (get_children_by_prefix — 수집 데이터에서 읽는다).
+      2) 그중 레이즈 형제 사이즈로 스냅. 형제가 하나면 그것, 둘 이상이면 bb 절대거리 최소.
+         저장된 토큰 문자열을 그대로 이어붙여 loader 키와 정확히 일치시킨다.
+      3) 그 프리픽스에 수집된 레이즈 형제가 없으면 None(상위가 큐 등록 + 휴리스틱 폴백).
+      4) 라이브 액션이 **올인**이면 (2)의 대상을 "올인 형제"로 좁힌다: 이 프리픽스 노드
+         자신에 저장된 raise_size(수집 당시 "레이즈" 액션의 실측 사이즈)와 정확히 일치하는
+         형제는 레이즈 토큰이므로 제외하고, 남은 형제만 대상으로 스냅한다. 남는 형제가
+         없으면 None.
     fold/check/call은 사이즈가 없으므로 그대로 이어붙인다. 블라인드는 preflop_seq에
     자발 액션으로 들어오지 않으므로 자동 제외(GTO Wizard 포맷과 동일).
 
     예(수집분에 "R2.5-R8-F-F-F-F"만 있을 때):
-      [UTG raise 2.3, HJ raise 7.5, CO~BB fold] → "R2.5-R8-F-F-F-F"
-      (2.3→형제 R2.5, 7.5→형제 R8로 스냅). 미수집 브랜치면 None.
+      [UTG raise 2.3, HJ raise 7.5, CO~BB fold] → "R2.5-R8-F-F-F-F". 미수집 브랜치면 None.
 
     prefix_tokens: 라이브 시퀀스 앞에 붙일 토큰. 헤즈업은 HEADSUP_PREFIX(F-F-F-F)를 넘겨
     6-max SB vs BB 트리로 옮긴다(ADR 0005).
@@ -152,16 +135,9 @@ def canonical_node_key(preflop_seq: list, prefix_tokens: Optional[list] = None) 
             ]
             raise_children = [(c, s) for c, s in raise_children if s is not None]
             if not raise_children:
-                return None  # 미수집 브랜치 — 억지 매칭 금지, 상위가 큐/폴백 처리
+                return None
 
             if act == "allin":
-                # T-014 (ADR 0010 확장): 라이브 올인을 "레이즈" 형제와 뭉뚱그려
-                # bb 최소거리로 스냅하지 않는다 — 숏스택 올인이 우연히 일반 레이즈
-                # 사이즈에 가까우면 비올인 노드로 잘못 스냅될 수 있다(원래 버그).
-                # 이 프리픽스 노드 자신에 저장된 raise_size(수집 당시 "레이즈" 액션에
-                # 쓰인 실측 사이즈)를 알면, 그 값과 정확히 일치하는 형제는 "레이즈"
-                # 토큰임이 데이터로 확정되므로 후보에서 제외한다(추측이 아니라
-                # 저장된 값과의 일치 확인). 남는 형제만 "올인 형제" 후보로 본다.
                 parent = get_range_by_seq(prefix)
                 known_raise_bb = parent.get("raise_size") if parent else None
                 if known_raise_bb is not None:
@@ -170,11 +146,11 @@ def canonical_node_key(preflop_seq: list, prefix_tokens: Optional[list] = None) 
                         if abs(s - known_raise_bb) > 1e-9
                     ]
                 if not raise_children:
-                    return None  # 올인 형제 데이터 없음 — 억지 매칭 금지, 큐/폴백
+                    return None
 
             live = a.get("amount_bb")
             if live is None:
-                # 사이즈 미상 라이브 레이즈: 형제 유일이면 그걸로, 다의면 매칭 불가
+                # 사이즈 미상 라이브 레이즈: 형제가 하나일 때만 매칭
                 if len(raise_children) == 1:
                     toks.append(raise_children[0][0])
                 else:
@@ -187,6 +163,11 @@ def canonical_node_key(preflop_seq: list, prefix_tokens: Optional[list] = None) 
 def _gto_position(position: str) -> str:
     """헤즈업 딜러 라벨 "BTN/SB"는 GTO 조회에서만 6-max "SB"로 본다(ADR 0005)."""
     return "SB" if position == "BTN/SB" else position
+
+
+def _is_short_handed(positions: Optional[dict]) -> bool:
+    """3~5인 테이블 — 포지션 구성이 6-max 트리와 달라 GTO 데이터에 대응시키지 않는다(ADR 0005)."""
+    return 3 <= len(positions or {}) <= 5
 
 
 class GTOAdvisor:
@@ -204,7 +185,7 @@ class GTOAdvisor:
         1. 액션 순서 키로 **정확한 노드**를 찾는다(사이즈는 수집된 형제로 스냅, ADR 0010).
            결과 `approx=False`.
         2. 없을 때만 **간단 라벨**(포지션·상대·상황 종류)로 찾는다. 라벨은 콜러 없는 노드만
-           대표한다(loader). 데이터 모델 밖 가드(ADR 0006)는 이 경로에 그대로 있다.
+           대표한다(loader). 데이터 모델 밖 가드(ADR 0006, 올인·림프·3~5인)는 이 경로에 있다.
            결과 `approx=True` → 힌트 문자열·플레이 평가에 "(근사)" 표시.
         3. 둘 다 없으면 None(힌트 없음, 봇 휴리스틱)이고, 정확한 노드 키를 미수집 큐에 넣는다.
         """
@@ -229,8 +210,7 @@ class GTOAdvisor:
         """라이브 시퀀스를 6-max 트리 노드 키로 옮길 때 앞에 붙일 토큰.
 
         - 헤즈업(딜러 라벨 "BTN/SB")이면 F-F-F-F — 6-max SB vs BB 트리(ADR 0005).
-        - 3~5인 테이블이면 None — 포지션 구성이 달라 트리에 대응시키지 않는다(ADR 0005).
-          (간단 라벨 경로는 기존대로 동작하고 결과는 근사로 표시된다.)
+        - 3~5인 테이블이면 None — 트리에 대응시키지 않는다(ADR 0005).
         - 그 외(6인, 또는 positions를 모르는 호출)는 빈 프리픽스.
         """
         labels = set((positions or {}).values())
@@ -240,7 +220,7 @@ class GTOAdvisor:
             or any(a.get("position") == "BTN/SB" for a in preflop_seq)
         ):
             return list(HEADSUP_PREFIX)
-        if 3 <= len(positions or {}) <= 5:
+        if _is_short_handed(positions):
             return None
         return []
 
@@ -275,7 +255,7 @@ class GTOAdvisor:
         if meta is None or meta["hero_position"] != _gto_position(my_position):
             return None, None
         if node_key is None:
-            return None, live_key  # 미수집 브랜치 — 억지 매칭 금지
+            return None, live_key
 
         data = get_range_by_seq(node_key)
         if data is None:
@@ -316,75 +296,54 @@ class GTOAdvisor:
         """간단 라벨 조회(ADR 0035 2순위 — 호출부가 결과를 근사로 표시한다).
 
         RFI / vs_open / vs_3bet 세 가지 상황 지원. 라벨이 가리키는 노드는 콜러 없는
-        노드뿐이다(loader). 데이터 모델 밖 가드(ADR 0006)에 걸리면 None.
+        노드뿐이다(loader). 데이터 모델 밖이면 None:
+        - 3~5인 테이블(ADR 0005)
+        - 시퀀스에 올인이 있음(올인을 레이즈 라벨로 읽지 않는다, ADR 0037)
+        - RFI는 시퀀스에 콜·레이즈가 없을 때만(림프 팟은 RFI가 아니다, ADR 0046), BB는 RFI 불가
+        - vs_open에서 오프너가 히어로보다 뒤 좌석 / vs_3bet에서 히어로 ≠ 오프너(ADR 0006)
         미수집 큐 기록은 하지 않는다(get_recommendation이 정확한 노드 키로 기록).
         """
         if len(hole_cards) < 2:
             return None
-
-        # 헤즈업(2인) 매핑: core/game.py의 딜러 라벨 "BTN/SB"는 UI/핸드
-        # 히스토리 표시용 원본이므로 여기서 건드리지 않는다. GTO 조회 시점
-        # 에서만 6-max "SB"로 국소 치환해 기존 SB RFI/vs_open/vs_3bet 데이터를
-        # 재사용한다(헤즈업 트리는 SB(딜러) vs BB 단둘로 6-max SB 스팟과
-        # 게임 트리가 구조적으로 동일하다고 판단, ADR 0005).
-        if my_position == "BTN/SB":
-            my_position = "SB"
-
-        hand = hand_to_notation(hole_cards[0], hole_cards[1])
-        current_bet = game_state.get("current_bet", 0)
-        street = game_state.get("street", "프리플랍")
-        # 구조화 프리플랍 시퀀스 (core/game.py._get_game_state가 제공).
-        # 없으면(구식 game_state) 빈 시퀀스로 폴백 — RFI 등 시퀀스 불필요 경로는 정상 동작.
-        preflop_seq = game_state.get("preflop_seq") or []
-
-        if street != "프리플랍":
+        if game_state.get("street", "프리플랍") != "프리플랍":
+            return None
+        if _is_short_handed(positions):
             return None
 
-        # ── 베팅 라운드 판별 ────────────────────────────
-        raise_count = _count_raises(preflop_seq)
-        is_rfi = current_bet <= big_blind
+        # 헤즈업 딜러 라벨 "BTN/SB"는 조회 시점에서만 6-max "SB"로 본다(ADR 0005).
+        my_position = _gto_position(my_position)
+        hand = hand_to_notation(hole_cards[0], hole_cards[1])
+        current_bet = game_state.get("current_bet", 0)
+        preflop_seq = game_state.get("preflop_seq") or []
+        actions = [a.get("action") for a in preflop_seq]
+        if "allin" in actions:
+            return None
 
-        # RFI
-        # BB는 강제 베팅 상태라 "오픈(RFI)"이 원천적으로 불가능하다.
-        # 림프된 팟(current_bet == big_blind)에서 BB가 레이즈하는 상황은
-        # 우리 데이터 모델이 지원하지 않으므로 조회/기록 없이 폴백시킨다.
-        if is_rfi and my_position != "BB":
+        raise_count = _count_raises(preflop_seq)
+        raisers = [_gto_position(p) for p in _raisers(preflop_seq)]
+        is_rfi = current_bet <= big_blind and not any(a in ("call", "raise") for a in actions)
+
+        if is_rfi:
+            if my_position == "BB":
+                return None
             range_data = get_open_range(my_position)
             if range_data is None:
                 return None
             freqs = get_action_frequencies(range_data, hand)
             if freqs is None:
-                # 핸드 데이터 손상(로드 시 스킵됨) 또는 미수집 — 특정 액션에
-                # 몰아주지 않고 상위(봇)가 휴리스틱 폴백을 타도록 None 반환.
                 return None
             return {
                 "hand": hand,
                 "frequencies": freqs,
                 "situation": range_data.get("situation", f"{my_position} RFI"),
-                # 실측 bb 값만 사용 — 없으면 None (추측/플레이스홀더 금지, 상위에서 폴백 처리)
                 "raise_size": range_data.get("raise_size") or None,
                 "raise_count": 0,
                 "node_key": range_data.get("node_key"),
             }
 
-        # vs_open (레이즈 1번)
-        if raise_count <= 1:
-            # 오프너 = 시퀀스상 첫 레이저. 레이즈가 없는데 current_bet가 BB를
-            # 넘는 경우(예: 올인만 발생 — 위 _count_raises는 allin을 세지 않음)는
-            # 기존과 동일하게 current_bet 기반 find_opener_position으로 폴백한다.
-            raisers = _raisers(preflop_seq)
-            opener_pos = raisers[0] if raisers else find_opener_position(
-                positions, game_state, big_blind
-            )
-            if opener_pos is None:
-                return None
-            if opener_pos == "BTN/SB":
-                opener_pos = "SB"
-            # 우리 데이터 모델은 "오프너가 나보다 먼저 행동하는" open/vs_open
-            # 구조만 지원한다. (예: 림프 후 아이솔레이트 레이즈처럼) 오프너가
-            # 포지션 순서상 my_position보다 뒤인 경우는 데이터 모델 밖의
-            # 상황이므로 조회/기록 없이 None 반환. 헤즈업 포지션(BTN/SB 등
-            # POS_INDEX에 없는 값)은 비교 불가하므로 기존 로직을 유지한다.
+        if raise_count == 1:
+            opener_pos = raisers[0]
+            # 오프너가 히어로보다 뒤 좌석(림프 후 아이솔레이트 등)은 모델 밖
             if my_position in POS_INDEX and opener_pos in POS_INDEX:
                 if POS_INDEX[opener_pos] > POS_INDEX[my_position]:
                     return None
@@ -403,36 +362,27 @@ class GTOAdvisor:
                 "node_key": range_data.get("node_key"),
             }
 
-        # vs_3bet (레이즈 2번)
-        if raise_count == 2:
-            raisers = _raisers(preflop_seq)
-            if len(raisers) >= 2:
-                opener_pos, three_bettor_pos = raisers[0], raisers[1]
-                if opener_pos == "BTN/SB":
-                    opener_pos = "SB"
-                if three_bettor_pos == "BTN/SB":
-                    three_bettor_pos = "SB"
-                # 우리 데이터 모델은 "원래 오프너가 3벳에 대응하는" 레인지만
-                # 수집한다. my_position이 오프너가 아니면(림프 후 대응 등)
-                # 데이터 모델 밖의 상황이므로 조회/기록 없이 None 반환.
-                if my_position != opener_pos:
-                    return None
-                range_data = get_vs_3bet_range(my_position, opener_pos, three_bettor_pos)
-                if range_data is None:
-                    return None
-                freqs = get_action_frequencies(range_data, hand)
-                if freqs is None:
-                    return None
-                return {
-                    "hand": hand,
-                    "frequencies": freqs,
-                    "situation": range_data.get("situation", f"{my_position} vs 3bet"),
-                    "raise_size": range_data.get("raise_size") or None,
-                    "raise_count": 2,
-                    "node_key": range_data.get("node_key"),
-                }
+        if raise_count == 2 and len(raisers) >= 2:
+            opener_pos, three_bettor_pos = raisers[0], raisers[1]
+            # 오프너가 3벳에 대응하는 레인지만 있다 — 히어로가 오프너가 아니면 모델 밖
+            if my_position != opener_pos:
+                return None
+            range_data = get_vs_3bet_range(my_position, opener_pos, three_bettor_pos)
+            if range_data is None:
+                return None
+            freqs = get_action_frequencies(range_data, hand)
+            if freqs is None:
+                return None
+            return {
+                "hand": hand,
+                "frequencies": freqs,
+                "situation": range_data.get("situation", f"{my_position} vs 3bet"),
+                "raise_size": range_data.get("raise_size") or None,
+                "raise_count": 2,
+                "node_key": range_data.get("node_key"),
+            }
 
-        # 4벳+ 이상: GTO 데이터 없음 → None 반환 (봇이 별도 처리)
+        # 레이즈 없는 림프 팟, 4벳 이상: 라벨 데이터 없음
         return None
 
     def format_hint(self, recommendation: Optional[dict]) -> Optional[str]:
@@ -468,7 +418,7 @@ class GTOAdvisor:
     ) -> Optional[dict]:
         """
         봇용 GTO 액션 샘플링.
-        반환: {"action": "fold"|"call"|"raise", "raise_count": N} 또는 None
+        반환: {"action": "fold"|"call"|"raise"|"allin", "raise_count": N, "raise_size": bb|None} 또는 None
         """
         import random
         if random.random() > gto_compliance:

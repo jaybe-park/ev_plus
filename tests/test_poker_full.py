@@ -1360,8 +1360,7 @@ def _seed_situation(position, vs_position, range_type, raise_size, label,
         )
     conn.commit()
     conn.close()
-    gto_loader._cache = {}
-    gto_loader._loaded = False
+    gto_loader.invalidate()
 
 
 def test_6_13_seq_key_and_enum_key_same_range():
@@ -1602,14 +1601,12 @@ def test_6_20_allin_with_no_allin_sibling_returns_none():
 
 def test_7_1_save_invalidates_loader_cache():
     """G2: /gto/preflop/save가 로더 캐시(enum+시퀀스)를 자동 무효화해, 호출부가
-    수동으로 gto_loader._cache/_loaded를 리셋하지 않아도 새로 저장한 노드가
-    즉시 조회된다."""
+    수동으로 캐시를 비우지 않아도 새로 저장한 노드가 즉시 조회된다."""
     from server.main import save_gto_preflop, GtoPreflopSaveRequest
     from gto.loader import get_open_range, get_range_by_seq
     import gto.loader as gto_loader
 
-    gto_loader._cache = {}
-    gto_loader._loaded = False
+    gto_loader.invalidate()
     assert get_open_range("HJ") is None, "사전 상태: HJ RFI 미수집이어야 함"
 
     req = GtoPreflopSaveRequest(
@@ -1737,8 +1734,7 @@ def _fresh_gto_db():
     prev = os.environ.get("EV_PLUS_DB")
     path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
     os.environ["EV_PLUS_DB"] = path
-    gto_loader._cache = {}
-    gto_loader._loaded = False
+    gto_loader.invalidate()
     try:
         yield path
     finally:
@@ -1746,8 +1742,7 @@ def _fresh_gto_db():
             os.environ.pop("EV_PLUS_DB", None)
         else:
             os.environ["EV_PLUS_DB"] = prev
-        gto_loader._cache = {}
-        gto_loader._loaded = False
+        gto_loader.invalidate()
 
 
 def _save_client():
@@ -2168,22 +2163,102 @@ def test_7_18_headsup_first_decision_panel_shows_range():
 
 
 def test_7_19_label_fallback_panel_marked_approx():
-    """T-013 + ADR 0035: 라벨 예비로 답한 추천은 패널에도 근사(approx=True)로 실리고,
-    패널은 그 라벨이 가리키는 노드(콜러 없는 노드)의 레인지를 받는다. 3~5인 테이블은
-    시퀀스 경로가 없어 항상 라벨 예비다(4인: 사람=UTG, 딜러=Alpha). UTG RFI 노드 키는
-    빈 문자열이다(`?action_seq=`)."""
-    _seed_situation("UTG", None, "open", 2.5, "UTG RFI",
-                    {"AKs": {"raise": 1.0}}, "")
-    sess, _ = _scripted_session(3, dealer_index=1)
-    assert sess.game.get_positions()[sess.human.name] == "UTG", sess.game.get_positions()
-    sess.human.hole_cards = [c("A", "S"), c("K", "S")]
-    state = sess.get_state()
-    _assert_panel_matches_hint(state, "", want_approx=True)
+    """ADR 0035: 라벨 예비로 답한 추천은 패널에도 근사(approx=True)로 실리고, 패널은 그
+    라벨이 가리키는 노드(콜러 없는 노드)의 레인지를 받는다. 6인: 사람=BB(딜러=Delta),
+    HJ 오픈 → CO 콜 → BTN·SB 폴드. 정확한 노드(F-R2.5-C-F-F)는 미수집."""
+    with _fresh_gto_db():
+        _seed_situation("BB", "HJ", "vs_open", 14.0, "BB vs HJ open",
+                        {"AKs": {"raise": 0.6, "call": 0.4}}, "F-R2.5-F-F-F")
+        sess, _ = _scripted_session(5, dealer_index=4, scripts={
+            "🤖 Alpha": [(Action.FOLD, 0)], "🤖 Beta": [(Action.RAISE, 50)],
+            "🤖 Gamma": [(Action.CALL, 50)], "🤖 Delta": [(Action.FOLD, 0)],
+            "🤖 Epsilon": [(Action.FOLD, 0)]})
+        assert sess.game.get_positions()[sess.human.name] == "BB", sess.game.get_positions()
+        sess.human.hole_cards = [c("A", "S"), c("K", "S")]
+        state = sess.get_state()
+        assert state["waiting_for_action"] and state["current_bet"] == 50, state["current_bet"]
+        _assert_panel_matches_hint(state, "F-R2.5-F-F-F", want_approx=True)
 
-    # 추천이 없으면 found=False(패널 "GTO 데이터 없음"), 포스트플랍·폴드 후엔 None
-    sess.human.hole_cards = [c("7", "H"), c("2", "C")]
-    assert sess.get_state()["gto"] == {"found": False, "position": "UTG"}
-    assert _panel_range("R9-R9")["found"] is False
+        # 추천이 없으면 found=False(패널 "GTO 데이터 없음"), 포스트플랍·폴드 후엔 None
+        sess.human.hole_cards = [c("7", "H"), c("2", "C")]
+        assert sess.get_state()["gto"] == {"found": False, "position": "BB"}
+        assert _panel_range("R9-R9")["found"] is False
+
+
+_SIX_MAX = {"U": "UTG", "H": "HJ", "C": "CO", "B": "BTN", "S": "SB", "Bb": "BB"}
+
+
+def test_7_20_allin_in_seq_label_fallback_none_and_queued():
+    """ADR 0037: 시퀀스에 올인이 있으면 라벨 예비 경로는 올인을 레이즈 라벨로 읽지 않는다
+    (None → 힌트 "데이터 없음"). 정확한 노드 키는 미수집 큐에 남는다.
+    ① UTG 올인 → HJ: "HJ vs UTG open" 라벨 노드를 내주지 않는다
+    ② UTG 오픈 → HJ 3벳 → CO 올인 → UTG: "UTG vs HJ 3bet" 라벨 노드를 내주지 않는다"""
+    from gto.advisor import GTOAdvisor
+    with _fresh_gto_db():
+        _seed_situation("UTG", None, "open", 2.5, "UTG RFI", {"AKo": {"raise": 1.0}}, "")
+        _seed_situation("HJ", "UTG", "vs_open", 8.0, "HJ vs UTG open",
+                        {"AKo": {"raise": 0.9, "call": 0.1}}, "R2.5")
+        _seed_situation("UTG", "UTG/HJ", "vs_3bet", 20.0, "UTG vs HJ 3bet",
+                        {"AKo": {"raise": 0.3, "call": 0.7}}, "R2.5-R8-F-F-F-F")
+        advisor = GTOAdvisor()
+        hole = [c("A", "S"), c("K", "H")]
+
+        gs = {"street": "프리플랍", "current_bet": 2000,
+              "preflop_seq": [{"position": "UTG", "action": "allin", "amount_bb": 100.0}]}
+        assert advisor._recommend_by_enum(hole, "HJ", _SIX_MAX, gs, 20) is None
+        rec = advisor.get_recommendation(hole, "HJ", _SIX_MAX, gs, 20)
+        assert rec is None, f"UTG 올인에 HJ vs UTG open 라벨을 내줌: {rec}"
+        assert ("HJ", "R100") in _queued_seq_keys(), _queued_seq_keys()
+
+        seq = [{"position": "UTG", "action": "raise", "amount_bb": 2.5},
+               {"position": "HJ", "action": "raise", "amount_bb": 8.0},
+               {"position": "CO", "action": "allin", "amount_bb": 100.0},
+               {"position": "BTN", "action": "fold"}, {"position": "SB", "action": "fold"},
+               {"position": "BB", "action": "fold"}]
+        gs = {"street": "프리플랍", "current_bet": 2000, "preflop_seq": seq}
+        assert advisor._recommend_by_enum(hole, "UTG", _SIX_MAX, gs, 20) is None
+        rec = advisor.get_recommendation(hole, "UTG", _SIX_MAX, gs, 20)
+        assert rec is None, f"CO 올인에 UTG vs HJ 3bet 라벨을 내줌: {rec}"
+        assert ("UTG", "R2.5-R8-R100-F-F-F") in _queued_seq_keys(), _queued_seq_keys()
+
+
+def test_7_21_limped_pot_is_not_rfi():
+    """ADR 0046: 림프(레이즈 전 콜)가 있는 팟은 RFI가 아니다 — 라벨 예비 경로가 "HJ RFI"
+    노드를 내주지 않는다. 림프 노드(vs_limp)가 수집돼 있으면 시퀀스 경로로만 정확히 받는다."""
+    from gto.advisor import GTOAdvisor
+    with _fresh_gto_db():
+        _seed_situation("HJ", None, "open", 2.5, "HJ RFI", {"AKs": {"raise": 1.0}}, "F")
+        advisor = GTOAdvisor()
+        hole = [c("A", "S"), c("K", "S")]
+        gs = {"street": "프리플랍", "current_bet": 20,
+              "preflop_seq": [{"position": "UTG", "action": "call", "amount_bb": 1.0}]}
+        rec = advisor.get_recommendation(hole, "HJ", _SIX_MAX, gs, 20)
+        assert rec is None, f"림프 팟에 RFI 노드를 내줌: {rec}"
+        assert ("HJ", "C") in _queued_seq_keys(), _queued_seq_keys()
+
+        _seed_situation("HJ", "UTG", "vs_limp", 4.0, "HJ vs UTG limp", {"AKs": {"raise": 1.0}}, "C")
+        rec = advisor.get_recommendation(hole, "HJ", _SIX_MAX, gs, 20)
+        assert rec is not None and rec["node_key"] == "C" and rec["approx"] is False, rec
+
+
+def test_7_22_short_handed_table_has_no_label_fallback():
+    """ADR 0005: 3~5인 테이블은 시퀀스 경로뿐 아니라 라벨 예비 경로도 쓰지 않는다 — 6-max
+    "UTG RFI" 데이터를 4인 UTG에게 내주지 않고(패널 "GTO 데이터 없음"), 큐에도 넣지 않는다."""
+    from gto.advisor import GTOAdvisor
+    with _fresh_gto_db():
+        _seed_situation("UTG", None, "open", 2.5, "UTG RFI", {"AKs": {"raise": 1.0}}, "")
+        _seed_situation("BTN", None, "open", 2.5, "BTN RFI", {"AKs": {"raise": 1.0}}, "F-F-F")
+        sess, _ = _scripted_session(3, dealer_index=1)
+        assert sess.game.get_positions()[sess.human.name] == "UTG", sess.game.get_positions()
+        sess.human.hole_cards = [c("A", "S"), c("K", "S")]
+        assert sess.get_state()["gto"] == {"found": False, "position": "UTG"}
+
+        three = {"A": "BTN", "B": "SB", "C": "BB"}
+        gs = {"street": "프리플랍", "current_bet": 20, "preflop_seq": []}
+        advisor = GTOAdvisor()
+        assert advisor._recommend_by_enum([c("A", "S"), c("K", "S")], "BTN", three, gs, 20) is None
+        assert advisor.get_recommendation([c("A", "S"), c("K", "S")], "BTN", three, gs, 20) is None
+        assert _queued_seq_keys() == set(), _queued_seq_keys()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -3402,7 +3477,10 @@ ALL_TESTS = [
     ("7-16 save가 미수집 큐 collected=1 갱신(T-015)", test_7_16_save_marks_missing_queue_collected),
     ("7-17 패널 = advisor node_key(콜러·4벳)(T-013)", test_7_17_panel_is_bound_to_advisor_node_key),
     ("7-18 헤즈업 첫 결정 패널 레인지(T-013)",     test_7_18_headsup_first_decision_panel_shows_range),
-    ("7-19 라벨 예비는 패널도 근사(T-013)",        test_7_19_label_fallback_panel_marked_approx),
+    ("7-19 라벨 예비는 패널도 근사(ADR 0035)",     test_7_19_label_fallback_panel_marked_approx),
+    ("7-20 올인 시퀀스는 라벨 예비 None+큐(ADR 0037)", test_7_20_allin_in_seq_label_fallback_none_and_queued),
+    ("7-21 림프 팟은 RFI 아님(ADR 0046)",          test_7_21_limped_pot_is_not_rfi),
+    ("7-22 3~5인은 라벨 예비도 None(ADR 0005)",    test_7_22_short_handed_table_has_no_label_fallback),
     # 영역 8 — 세션 경로 룰
     ("8-1  next_hand 연타 → 한 핸드만, 칩 보존",  test_8_1_next_hand_double_call_keeps_chips),
     ("8-2  핸드 중 next_hand 무시",              test_8_2_next_hand_during_hand_ignored),
