@@ -1,6 +1,6 @@
 # AI 봇 — 현재 사양
 
-> 최종 갱신: 2026-10-01 · 관련 결정: [0049](../decisions/0049-grader-vs-range-symmetric-band.md), [0039](../decisions/0039-grader-uncertainty-band.md), [0014](../decisions/0014-difficulty-is-mc-resolution.md), [0034](../decisions/0034-abolish-equity-cache.md), [0045](../decisions/0045-equity-precision-1pp-adaptive-mc.md), [0015](../decisions/0015-aggression-margin.md), [0016](../decisions/0016-bot-validation-arena-legacy.md), [0023](../decisions/0023-postflop-range-narrowing.md), [0004](../decisions/0004-raise-size-measured.md), [0005](../decisions/0005-100bb-and-headsup-sb.md), [0007](../decisions/0007-structured-preflop-seq.md)
+> 최종 갱신: 2026-10-02 · 관련 결정: [0049](../decisions/0049-grader-vs-range-symmetric-band.md), [0039](../decisions/0039-grader-uncertainty-band.md), [0014](../decisions/0014-difficulty-is-mc-resolution.md), [0034](../decisions/0034-abolish-equity-cache.md), [0045](../decisions/0045-equity-precision-1pp-adaptive-mc.md), [0015](../decisions/0015-aggression-margin.md), [0016](../decisions/0016-bot-validation-arena-legacy.md), [0023](../decisions/0023-postflop-range-narrowing.md), [0004](../decisions/0004-raise-size-measured.md), [0005](../decisions/0005-100bb-and-headsup-sb.md), [0007](../decisions/0007-structured-preflop-seq.md)
 > 에퀴티 계산: [equity.md](equity.md) · 프리플랍 GTO 조회 규칙: [gto-preflop.md](gto-preflop.md)
 
 ## 무엇을 하는가
@@ -24,7 +24,10 @@
 
 ### 포스트플랍
 - equity: hard는 상대 레인지 정보가 하나라도 있으면 `ranged_equity`, 없으면(모두 unknown) `smart_equity`(vs 랜덤). easy·medium은 항상 `smart_equity` — 근거: [0014](../decisions/0014-difficulty-is-mc-resolution.md) · 강제 장치: 장치 없음
-- 상대 레인지(hard·에퀴티 패널 공용, `opponent_range_info`): 프리플랍 레이저 → 그 포지션 RFI 레이즈 레인지, 오프너에게 콜한 사람 → 그 오프너 상대 콜 레인지, 그 외 → 랜덤. 레인지는 GTO 빈도가 가중치(빈도 ≤ 2%인 핸드 제외). 반환 role은 raiser/caller/unknown이고 **레인지 데이터를 못 찾은 상대는 역할과 무관하게 `unknown`**(패널이 role 문자열을 그대로 보여주므로) — 강제 장치: `tests/test_equity.py::test_ranged_equity`(샘플러·콤보 수·블로커), `::test_role_unknown_without_range`(데이터 없는 레이저·콜러 = unknown)
+- 상대 레인지(hard·에퀴티 패널 공용, `opponent_range_info`)는 core가 넣는 구조화 `preflop_seq`(`[{position, action, amount_bb}]`, 블라인드 제외)만으로 정한다. 한글 `action_log`는 읽지 않으므로 CLI(core `_get_game_state()`)와 웹 세션이 같은 라인에서 같은 레인지를 쓴다. 이름→포지션은 `players[].position` — 근거: [0007](../decisions/0007-structured-preflop-seq.md) · 강제 장치: `tests/test_equity.py::test_range_cli_web_same`(UTG 오픈→HJ 3벳→CO 콜→UTG 콜을 core 상태와 세션 상태로 만들어 상대별 role·레인지·`_count_raises` 동일), `git grep action_log ai/` 0건
+  - 레이즈 = `raise`, 또는 그때까지 최고 베팅(시작 1bb)보다 높은 `allin`. 최고 베팅 이하의 올인(콜도 다 못 낸 숏스택)은 콜이다. 프리플랍 레이즈 횟수(`_count_raises`, 3회 이상이면 4벳+ 대응)도 같은 기준으로 올인을 센다
+  - 오프너(첫 레이즈) → 그 포지션 RFI 레이즈 레인지. 3벳터(처음 올린 레이즈가 두 번째) → "3벳터 vs 오프너 open" vs_open 노드의 레이즈(+올인) 빈도 레인지(RFI로 대신하지 않는다). 4벳 이상을 처음 올린 사람 → 데이터 없음(랜덤). 오픈 뒤 콜한 사람 → 그 오프너 상대 콜 레인지. 오픈 전 콜(림프)만 한 사람·림프 팟 → 랜덤. 오프너가 3벳에 콜하거나 4벳해도 RFI 레인지다
+  - 레인지는 GTO 빈도가 가중치(빈도 ≤ 2%인 핸드 제외). 반환 role은 raiser/caller/unknown이고 **레인지 데이터를 못 찾은 상대는 역할과 무관하게 `unknown`**(패널이 role 문자열을 그대로 보여주므로) — 강제 장치: `tests/test_equity.py::test_three_bettor_range`(격리 DB에 UTG RFI·HJ vs UTG open을 심고 UTG 오픈→HJ 3벳: HJ = raiser·vs_open 레이즈 빈도 가중, 노드 없으면 unknown), `::test_range_from_preflop_seq`(레이즈 번호·림프·올인 셈), `::test_ranged_equity`(샘플러·콤보 수·블로커), `::test_role_unknown_without_range`(데이터 없는 레이저·콜러 = unknown)
 - 헤즈업 딜러 라벨 `BTN/SB`는 레인지 조회 시 `SB`로 바꾼다(레이저·콜러 본인과 오프너 모두). BTN/SB 오픈 → SB RFI 레인지, BTN/SB 오픈에 BB 콜 → BB vs SB 콜 레인지 — 근거: [0005](../decisions/0005-100bb-and-headsup-sb.md) · 강제 장치: `tests/test_equity.py::test_headsup_range_uses_sb`(순수 함수 + 헤즈업 세션 패널 vs_range)
 - 벳을 받으면: equity가 레이즈 기준 이상이면 레이즈(트랩 빈도만큼 콜) → 드로우면 포지션 가중 세미블러프 레이즈 → 아니면 `equity ≥ 팟오즈 + 콜 마진 + 어그레션 마진 × min(벳/팟, 1.2)`이면 콜, 아니면 폴드. 드로우는 마진 −0.04(임플라이드 오즈) — 근거: [0015](../decisions/0015-aggression-margin.md) · 강제 장치: `tests/test_equity.py::test_bot_decisions`(넛 폴드 없음, 트래시 폴드, 좋은 오즈 드로우 폴드 없음)
 - 팟오즈(포스트플랍·프리플랍 휴리스틱)는 유효 콜·유효 팟 기준이다(`core/pot_odds.effective_call_pot`, 패널·Play Grader와 같은 함수). game_state에는 이번 스트리트 기여(`players[].current_bet`)만 있어 스트리트 기준으로 넘긴다 — 액션 중인 플레이어는 이전 스트리트를 모두 맞췄으므로 핸드 전체 기준과 같다. 어그레션 마진의 벳/팟은 캡하지 않은 원래 벳 크기(상대 레인지 신호)다 — 강제 장치: `tests/test_equity.py::test_bot_decisions`(스택 100이면 1,000 올인에 콜, 스택 5,000이면 폴드)
@@ -74,7 +77,7 @@ python3 scripts/tune_bot.py --profile hard --param semibluff_freq --evolve --sta
 
 ## 알려진 한계
 
-- 상대 레인지 추정(`opponent_range_info`)과 3벳+ 판정(`_count_raises`)은 아직 한글 `action_log`를 문자열·이름 부분매칭으로 파싱한다(ADR 0007 원칙 미적용). 3벳한 상대도 RFI 레인지로, 올인은 레이저로 취급하고, `_count_raises`는 올인을 세지 않는다 — TODO E-2(레인지 출발점)
+- 상대 레인지는 프리플랍 첫 레이즈 노드의 근사다: 림프 뒤 오픈도 RFI(ADR 0046의 vs_limp 노드 아님), 콜러가 낀 3벳(스퀴즈)도 콜러 없는 vs_open 노드, 3벳에 콜한 오프너도 RFI, 3벳에 콜드콜한 사람도 오프너 상대 콜 레인지 — E-2(레인지 출발점)
 - medium 봇 포스트플랍 EV는 vs_random 기준이다(3벳팟에서 과대, 어그레션 마진으로 근사). 패널·Play Grader는 vs_range다 — T-005(아레나 측정 뒤)
 - 복기 경계의 최소 1%p는 레인지 추정의 모델 오차를 대신하는 고정값이다(실측값 아님)
 - 포스트플랍 베팅 기반 레인지 좁히기 없음 — E-2
