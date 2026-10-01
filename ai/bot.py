@@ -124,10 +124,11 @@ def opponent_range_info(state: dict, opponents: list) -> list:
 
 def has_draw(hole: List[Card], board: List[Card]) -> bool:
     """
-    아웃 기반 드로우 판정(순수 함수). 플러시 드로우 = 홀+보드에 같은 수트 4장,
-    스트레이트 드로우(OESD·거트샷) = 랭크 비트마스크에 없는 랭크 하나를 더하면 5연속이 생김.
-    백도어(두 장이 더 필요)는 드로우가 아니다. 리버 제외·메이드 핸드(페어 이상) 제외는
-    호출자가 한다(이미 완성된 핸드는 드로우를 따질 필요가 없다).
+    아웃 기반 드로우 판정(순수 함수). 내 홀카드가 최소 1장 들어가는 드로우만 센다 —
+    플러시 드로우 = 같은 수트 4장 중 내 카드가 있음, 스트레이트 드로우(OESD·거트샷) = 없는 랭크
+    하나를 더하면 내 홀카드를 포함한 5연속이 생김. 보드만으로 생기는 드로우(홀카드 무관)는
+    아웃이 0이라 드로우가 아니다. 백도어(두 장이 더 필요)도 아니다. 리버 제외·메이드 핸드
+    (페어 이상) 제외는 호출자가 한다.
     """
     all_cards = list(hole) + list(board)
     if len(all_cards) < 5:
@@ -136,25 +137,31 @@ def has_draw(hole: List[Card], board: List[Card]) -> bool:
     suit_counts: Dict[Suit, int] = {}
     for card in all_cards:
         suit_counts[card.suit] = suit_counts.get(card.suit, 0) + 1
-    if any(n == 4 for n in suit_counts.values()):
+    hole_suits = {c.suit for c in hole}
+    if any(n == 4 and s in hole_suits for s, n in suit_counts.items()):
         return True
 
-    # 랭크 비트마스크: bit r (2~14), 에이스는 로우(bit 1)로도 센다
-    mask = 0
-    for card in all_cards:
-        v = card.rank.rank_value
-        mask |= 1 << v
-        if v == 14:
-            mask |= 1 << 1
+    def bits(cards_):
+        m = 0
+        for card in cards_:
+            v = card.rank.rank_value
+            m |= 1 << v
+            if v == 14:
+                m |= 1 << 1  # 에이스는 로우(휠)로도 센다
+        return m
+
+    mask = bits(all_cards)
+    hole_mask = bits(hole)
     straight_windows = [0b11111 << lo for lo in range(1, 11)]  # A-5 ~ T-A
     if any(mask & w == w for w in straight_windows):
-        return False  # 이미 스트레이트(메이드) — 호출자가 걸러내지만 드로우로는 보지 않는다
+        return False  # 이미 스트레이트(메이드)
     for v in range(2, 15):
         if mask & (1 << v):
             continue
         extra = (1 << v) | ((1 << 1) if v == 14 else 0)
         m2 = mask | extra
-        if any(m2 & w == w for w in straight_windows):
+        # 완성될 5연속 창에 내 홀카드 랭크가 들어가야 내 드로우다
+        if any(m2 & w == w and hole_mask & w for w in straight_windows):
             return True
     return False
 
@@ -416,8 +423,7 @@ class PokerBot:
             equity = smart_equity(hole, community, n_opps, prof["sims"])
         self.last_equity = round(equity, 4)
         made = made_hand_rank(hole, community)
-        # 드로우: 아직 하이카드인데 아웃이 있는 핸드(플러시 드로우·OESD·거트샷, 리버 제외).
-        # 에퀴티 기준(≥0.30)은 오버카드만 든 핸드를 전부 드로우로 봐서 폐기했다(ADR 0049).
+        # 드로우: 아직 하이카드인데 내 홀카드가 관여하는 아웃이 있는 핸드(리버 제외) — ADR 0049
         is_draw = street != "리버" and made <= 1 and has_draw(hole, community)
         pos = self._position_score(state)   # 0.0(첫 액션) ~ 1.0(마지막 액션)
         wet = board_wetness(community)

@@ -58,7 +58,7 @@ export interface EquityHistoryEntry {
 }
 
 export interface EquityInfo {
-  vs_random: number;       // 화면 비표시(ADR 0022/0034) — 평가·기록용
+  vs_random: number;       // 화면 비표시(ADR 0022/0034). 평가·기록은 vs_range(ADR 0049)
   vs_range: number;        // 패널이 보여주는 값(게이지·팟오즈 색·콜 EV·추이 모두 이 기준)
   range_applied: boolean;  // 레인지 정보가 있는 상대가 있나(없으면 vs_range = 랜덤 핸드 기준)
   pot_odds: number;

@@ -126,7 +126,7 @@ class EquityHistoryEntry(BaseModel):
 
 
 class EquityInfo(BaseModel):
-    vs_random: float                    # 랜덤 핸드 대비 승률 — 화면 비표시(ADR 0022/0034), 평가·기록용
+    vs_random: float                    # 랜덤 핸드 대비 승률 — 화면 비표시(ADR 0022/0034). 평가·기록은 vs_range(ADR 0049)
     vs_range: float                     # 상대 레인지 반영 종합 승률 — 패널이 보여주는 값
     range_applied: bool = False         # 레인지 정보가 있는 상대가 하나라도 있나(없으면 vs_range = vs_random)
     pot_odds: float = 0.0                # 유효 콜 / (유효 팟 + 유효 콜), 벳 없으면 0
